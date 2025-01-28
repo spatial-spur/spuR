@@ -1,0 +1,12 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+.DS_Store         # macOS Finder metadata files
+Thumbs.db         # Windows thumbnail cache
+desktop.ini       # Windows desktop metadata
+ehthumbs.db       # Windows Explorer metadata
+Icon?             # macOS resource fork files
+.vscode/          # VSCode workspace settings
+.idea/            # JetBrains IDE settings
