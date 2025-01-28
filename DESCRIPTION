@@ -1,11 +1,10 @@
 Package: spur
 Type: Package
-Title: What the Package Does (Title Case)
+Title: Spur: An R Package around Spatial Unit Roots
 Version: 0.1.0
-Author: Who wrote it
-Maintainer: The package maintainer <yourself@somewhere.net>
-Description: More about what it does (maybe more than one line)
-    Use four spaces when indenting paragraphs within the Description.
-License: What license is it under?
+Author: David Boll and Daniel Göttlich
+Maintainer: David Boll <david.boll@warwick.ac.uk>, Daniel Göttlich <daniel.goettlich@econ.uzh.ch>
+Description: Contains various functions to test for and correct spatial unit roots.
+License: ?
 Encoding: UTF-8
 LazyData: true
