@@ -10,3 +10,6 @@ ehthumbs.db       # Windows Explorer metadata
 Icon?             # macOS resource fork files
 .vscode/          # VSCode workspace settings
 .idea/            # JetBrains IDE settings
+
+functions/
+matlab_functions/
