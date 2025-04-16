@@ -14,16 +14,16 @@ spur_i0_test <- function(Y, distmat, emat, q) {
   n <- nrow(distmat)
   
   # 1) BM covariance matrix (approximation for demeaned value)
-  sigdm_bm <- get_sigma_lbm_dm(distmat)
+  sigdm_bm <- get_sigma_lbm_dm(distmat) # checked
   
   # 2) Construct R and eigenvalues for low-frequency weights
-  R_out <- Get_R(sigdm_bm, q)
+  R_out <- Get_R(sigdm_bm, q) # checked
   R <- R_out$R
   # (We assume the eigenvalues might be stored as lam if needed.)
   
   # 3) Compute covariance matrix for rho = 0.001
   rho <- 0.001
-  c_val <- getcbar(rho, distmat)
+  c_val <- getcbar(rho, distmat) # checked
   sigdm_rho <- get_sigma_dm(distmat, c_val)
   
   sigma <- diag(n)
@@ -85,7 +85,7 @@ spur_i0_test <- function(Y, distmat, emat, q) {
   
   for(ir in seq_len(n_rho)) {
     ch_om_ho <- ch_om_ho_mat[, , ir]
-    y_ho <- ch_om_ho %*% emat
+    y_ho <- t(ch_om_ho) %*% emat
     y_ho_ho <- ch_omi_ho %*% y_ho
     y_ho_ha <- ch_omi_ha %*% y_ho
     q_ho_ho <- colSums(y_ho_ho^2)

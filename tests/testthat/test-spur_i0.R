@@ -1,6 +1,7 @@
 library(testthat)
 library(dplyr)
 
+rm(list = c("getcbar", "lvech"))
 devtools::load_all()
 
 test_that("spur_i0_test returns expected values", {

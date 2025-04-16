@@ -6,7 +6,7 @@
 #'
 #' @param data A data frame containing the data.
 #' @param var A character string specifying the name of the numeric outcome variable to test.
-#' @param q An integer specifying the number of eigenvectors to use (default is 15).
+#' @param q An integer specifying the number of eigenvectors to use (default is 15). # nolint: line_length_linter.
 #' @param nrep An integer specifying the number of simulation replications for generating \code{emat} (default is 100000).
 #' @param latlong Logical; if \code{TRUE} the data frame must have columns \code{"lat"} and \code{"lon"} to build the distance matrix.
 #'

@@ -6,11 +6,11 @@
 #' @param sigma A numeric covariance matrix.
 #' @return A numeric matrix that has been demeaned.
 #' @export
-demean_sigma <- function(sigma) {
+demean_sigma <- function(sigma) {  
   n <- nrow(sigma)
-  # Subtract the column means replicated for each row
+  # Subtract column means - equivalent to repmat(mean(sigma,1),n,1)
   sigma_dm <- sigma - matrix(colMeans(sigma), n, n, byrow = TRUE)
-  # Subtract the row means replicated for each column
+  # Subtract row means - equivalent to repmat(mean(sigma_dm,2),1,n)
   sigma_dm <- sigma_dm - matrix(rowMeans(sigma_dm), n, n)
   return(sigma_dm)
 }

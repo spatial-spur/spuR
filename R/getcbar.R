@@ -10,8 +10,8 @@
 #' @return A numeric scalar \code{cbar} satisfying the desired property.
 #' @export
 getcbar <- function(rhobar, distmat) {
-  # Extract the lower-triangular part (including the diagonal) of distmat
-  vd <- distmat[lower.tri(distmat, diag = TRUE)]
+  # Extract the lower-triangular part (excluding the diagonal) of distmat
+  vd <- lvech(distmat)
   
   # Initialize c0 and c1
   c0 <- 10

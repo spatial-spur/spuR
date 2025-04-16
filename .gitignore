@@ -2,6 +2,8 @@
 .Rhistory
 .RData
 .Ruserdata
+.lintr
+.vscode
 
 .DS_Store         # macOS Finder metadata files
 Thumbs.db         # Windows thumbnail cache
