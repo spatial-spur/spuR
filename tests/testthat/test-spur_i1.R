@@ -6,7 +6,7 @@ library(here)
 rm(list = ls())
 devtools::load_all()
 
-test_that("spur_i0_test returns expected values", {
+test_that("spur_i1_test returns expected values", {
   # Load your dataset from the data/ directory
   load(here("data/chetty.Rda"))  # This should load an object called chetty
 
@@ -20,15 +20,15 @@ test_that("spur_i0_test returns expected values", {
     filter(!(State == "HI" | State == "AK"))
 
   # Call the spur_i0 wrapper function.
-  result <- spur_i0(var = "AM", q = 15, nrep = 100000, latlong = TRUE, data = chetty)
+  result <- spur_i1(var = "AM", q = 15, nrep = 100000, latlong = TRUE, data = chetty)
 
-  # For spur_i0_test, you expect:
-  #   Test Statistic (LFST) :    3.1451
-  #   P-value               :    0.0013
+  # For spur_i1_test, you expect:
+  #   Test Statistic (LFST) :    5.8605
+  #   P-value               :    0.3788
   # Allow a small tolerance for numerical differences (e.g., tolerance = 1e-4)
   cat("Test Statistic (LFST):", result$teststat, "\n")
   cat("P-value:", result$pvalue, "\n")
 
-  expect_equal(round(result$teststat, 4), 3.1451, tolerance = 1e-4)
-  expect_equal(round(result$pvalue, 4), 0.001, tolerance = 1e-3)
+  expect_equal(round(result$teststat, 4), 5.8605, tolerance = 1e-4)
+  expect_equal(round(result$pvalue, 4), 0.3788, tolerance = 1e-3)
 })

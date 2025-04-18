@@ -1,3 +1,6 @@
+files.sources = list.files("R", pattern = "\\.R$", full.names = TRUE)
+sapply(files.sources, source)
+
 # Create a simple test matrix in R
 test_matrix <- matrix(c(
   4, 2, 1,

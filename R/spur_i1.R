@@ -1,6 +1,6 @@
-#' SPUR I(0) Test Wrapper
+#' SPUR I(1) Test Wrapper
 #'
-#' A user-friendly wrapper for performing the spatial I(0) test. The user only needs to supply
+#' A user-friendly wrapper for performing the spatial I(1) test. The user only needs to supply
 #' a data frame and the name of the outcome variable. The function assumes that the data frame also
 #' contains spatial coordinates in columns `"lat"` and `"lon"` (if \code{latlong} is \code{TRUE}).
 #'
@@ -16,11 +16,11 @@
 #'   \item{teststat}{Test statistic (likelihood ratio) for the outcome variable.}
 #'   \item{ha_param}{The Ha parameter that yields roughly 50\% power.}
 #'   \item{cv}{A vector of critical values.}
-#'   \item{full}{The complete output from the core SPUR I(0) test function.}
+#'   \item{full}{The complete output from the core SPUR I(1) test function.}
 #' }
 #'
 #' @export
-spur_i0 <- function(var, q = 15, nrep = 100000, latlong = TRUE, data) {
+spur_i1 <- function(var, q = 15, nrep = 100000, latlong = TRUE, data) {
   # Check that the outcome variable exists in the data frame
   if (!var %in% names(data)) {
     stop("The variable specified does not exist in the data frame.")
@@ -55,7 +55,7 @@ spur_i0 <- function(var, q = 15, nrep = 100000, latlong = TRUE, data) {
 
   # Call the core SPUR I(0) test function.
   # Note: spur_i0_test() implements the test exactly as in our previous translation.
-  res <- spur_i0_test(Y, distmat, emat)
+  res <- spur_i1_test(Y, distmat, emat)
 
   # Extract key outputs.
   # For a single outcome variable, LR should be of length 1.

@@ -9,44 +9,47 @@
 #'
 #' @return A list with elements: LR, pvalue, cvalue, ha_parm, cvalue_mat, pvalue_mat, and rho_grid.
 #' @export
-spur_i0_test <- function(Y, distmat, emat, q) {
+spur_i0_test <- function(Y, distmat, emat) {
   #--- Determine sizes ---
+  q <- nrow(emat)
   n <- nrow(distmat)
-  
+
   # 1) BM covariance matrix (approximation for demeaned value)
   sigdm_bm <- get_sigma_lbm_dm(distmat) # checked
-  
+
   # 2) Construct R and eigenvalues for low-frequency weights
   R_out <- Get_R(sigdm_bm, q) # checked
   R <- R_out$R
   # (We assume the eigenvalues might be stored as lam if needed.)
-  
+
   # 3) Compute covariance matrix for rho = 0.001
   rho <- 0.001
   c_val <- getcbar(rho, distmat) # checked
   sigdm_rho <- get_sigma_dm(distmat, c_val)
-  
+
   sigma <- diag(n)
   # Demean sigma: subtract column and row means
   sigma_dm <- sweep(sigma, 2, colMeans(sigma), "-")
   sigma_dm <- sweep(sigma_dm, 1, rowMeans(sigma_dm), "-")
   sigdm_wn <- sigma_dm
-  
+
   # 4) Matrices used in analysis
   om_rho <- t(R) %*% sigdm_rho %*% R
   om_wn  <- t(R) %*% sigdm_wn  %*% R
   om_bm  <- t(R) %*% sigdm_bm %*% R
-  
+
+  #browser()
+
   # 5) Find Ha parameter yielding ~50% power
   om_i0   <- om_rho
   om_ho   <- om_rho
   ha_parm <- get_ha_parm_I0(om_ho, om_i0, om_bm, emat)
   om_ha   <- om_i0 + ha_parm * om_bm
-  
+
   # 6) Compute Cholesky decompositions
   ch_omi_ho <- chol(solve(om_ho))
   ch_omi_ha <- chol(solve(om_ha))
-  
+
   # 7) Get LR for data
   n_y <- ncol(Y)
   LR <- numeric(n_y)
@@ -59,14 +62,14 @@ spur_i0_test <- function(Y, distmat, emat, q) {
     q_P_ha <- sum(y_P_ha^2)
     LR[i] <- q_P_ho / q_P_ha
   }
-  
+
   # 8) Construct om_ho for a grid of rho values
   rho_min <- 0.0001
   rho_max <- 0.03
   n_rho <- 30
   rho_grid <- seq(from = rho_min, to = rho_max, length.out = n_rho)
   ch_om_ho_mat <- array(NA_real_, dim = c(q, q, n_rho))
-  
+
   for(i in seq_len(n_rho)) {
     om_ho_i <- diag(q)
     rho_i <- rho_grid[i]
@@ -77,12 +80,12 @@ spur_i0_test <- function(Y, distmat, emat, q) {
     }
     ch_om_ho_mat[, , i] <- chol(om_ho_i)
   }
-  
+
   # 9) Compute p-values and critical values
   pvalue_mat <- matrix(NA_real_, nrow = n_rho, ncol = n_y)
   sz_vec <- c(0.01, 0.05, 0.10)
   cvalue_mat <- matrix(NA_real_, nrow = n_rho, ncol = length(sz_vec))
-  
+
   for(ir in seq_len(n_rho)) {
     ch_om_ho <- ch_om_ho_mat[, , ir]
     y_ho <- t(ch_om_ho) %*% emat
@@ -97,11 +100,11 @@ spur_i0_test <- function(Y, distmat, emat, q) {
       pvalue_mat[ir, j] <- mean(lr_ho > LR[j])
     }
   }
-  
+
   # 10) Compute maximum critical values and p-values across the rho grid
   cvalue <- apply(cvalue_mat, 2, max)
   pvalue <- apply(pvalue_mat, 2, max)
-  
+
   # 11) Return output as a list
   SP <- list(
     LR = LR,
