@@ -1,6 +1,6 @@
 #' Get Spatial Coordinates Matrix
 #'
-#' Validates coordinate data and sets global flag for distance calculation method.
+#' Validates coordinate data and reports the distance calculation mode.
 #' R translation of the Stata Mata 'get_s_matrix' function.
 #'
 #' @param coords A matrix or data frame containing coordinates.
@@ -20,10 +20,6 @@ get_s_matrix <- function(coords, latlong = FALSE) {
   
   # Print diagnostic message (equivalent to the stata("disp...") calls)
   cat("Found", ns, "observations and", ncol(coords), "-dimensional locations\n")
-  
-  # Set global flag for distance calculation method (equivalent to: latlongflag=latlong!="")
-  # Using global variable - not ideal in R but matches Stata approach
-  latlongflag <<- latlong
   
   # Print additional diagnostics
   if (!latlong) {

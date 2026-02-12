@@ -6,7 +6,6 @@
 #' @param cluster_values A vector containing cluster identifiers
 #' @param use_rows Logical vector indicating which rows to include
 #' @return A matrix (column vector) of cluster values for selected observations
-#' @export
 get_cluster_matrix <- function(cluster_values, use_rows = NULL) {
   # If use_rows is provided, subset the cluster values
   if (!is.null(use_rows)) {

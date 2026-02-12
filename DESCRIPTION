@@ -1,10 +1,20 @@
-Package: spur
-Type: Package
-Title: Spur: An R Package around Spatial Unit Roots
-Version: 0.1.0
-Author: David Boll and Daniel Göttlich
-Maintainer: David Boll <david.boll@warwick.ac.uk>, Daniel Göttlich <daniel.goettlich@econ.uzh.ch>
-Description: Contains various functions to test for and correct spatial unit roots.
-License: ?
+Package: spuR
+Title: Spatial Unit Root Tests and Transformations
+Version: 0.0.0.9000
+Authors@R:
+    person("Paul", "Boll", email = "paul@example.com", role = c("aut", "cre"))
+Author: Paul Boll [aut, cre]
+Maintainer: Paul Boll <paul@example.com>
+Description: Implements spatial I(0)/I(1) tests and spatial transformation
+    utilities translated from Stata workflows used in the project.
+License: GPL-3
 Encoding: UTF-8
-LazyData: true
+Depends:
+    R (>= 4.2.0)
+Imports:
+    RSpectra
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2

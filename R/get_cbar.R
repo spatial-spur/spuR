@@ -8,8 +8,7 @@
 #' @param rhobar A numeric scalar representing the target value.
 #' @param distmat A numeric matrix of distances.
 #' @return A numeric scalar \code{cbar} satisfying the desired property.
-#' @export
-getcbar <- function(rhobar, distmat) {
+get_cbar <- function(rhobar, distmat) {
   # Extract the lower-triangular part (excluding the diagonal) of distmat
   vd <- lvech(distmat)
   
@@ -65,4 +64,9 @@ getcbar <- function(rhobar, distmat) {
   
   cbar <- sqrt(c0 * c1)
   return(cbar)
+}
+
+#' @rdname get_cbar
+getcbar <- function(rhobar, distmat) {
+  get_cbar(rhobar = rhobar, distmat = distmat)
 }

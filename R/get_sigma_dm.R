@@ -6,7 +6,6 @@
 #' @param distmat A numeric matrix of distances.
 #' @param c A numeric constant used in the exponential transformation.
 #' @return A numeric matrix representing the demeaned sigma.
-#' @export
 get_sigma_dm <- function(distmat, c) {
   n <- nrow(distmat)
   sigma <- exp(-c * distmat)

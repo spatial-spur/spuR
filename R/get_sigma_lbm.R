@@ -4,7 +4,6 @@
 #'
 #' @param distmat A numeric matrix of distances.
 #' @return A numeric matrix representing the LBM covariance matrix.
-#' @export
 get_sigma_lbm <- function(distmat) {
   n <- nrow(distmat)
   # Replicate the first column and first row of the distance matrix

@@ -1,143 +1,137 @@
 #' Create Transformation Matrix
 #'
-#' Creates a transformation matrix based on the specified transformation method.
+#' Internal constructor for SPUR spatial transformation matrices.
 #'
 #' @param s A numeric matrix of spatial coordinates.
-#' @param transformation A string specifying the transformation type: "nn", "iso", "cluster", or "lbmgls".
-#' @param radius A numeric scalar, required for "iso" transformation.
-#' @param cluster A vector of cluster IDs, required for "cluster" transformation.
-#' @param latlong Logical; if TRUE, coordinates are latitude/longitude.
-#' @return A numeric matrix representing the spatial transformation.
-#' @export
-make_transform <- function(s, transformation, radius = NULL, cluster = NULL, latlong = FALSE) {
-  H <- NULL
-  
-  if (transformation == "nn") {
-    H <- nn_matrix(s, latlong)
-  } else if (transformation == "iso") {
-    if (is.null(radius)) {
-      stop("Radius required for iso transformation")
-    }
-    H <- iso_matrix(s, radius, latlong)
-  } else if (transformation == "cluster") {
-    if (is.null(cluster)) {
-      stop("Cluster vector required for cluster transformation")
-    }
-    H <- cluster_matrix(cluster)
-  } else if (transformation == "lbmgls") {
-    H <- lbm_gls_matrix(s, latlong)
-  } else {
-    stop("Invalid transformation.")
-  }
-  
-  return(H)
-}
-
-# Helper transformation functions that need to be implemented:
-# nn_matrix, iso_matrix, cluster_matrix, lbm_gls_matrix
-
-#' Create Nearest Neighbor Transformation Matrix
-#'
-#' @param s A numeric matrix of spatial coordinates.
-#' @return A numeric matrix representing nearest neighbor transformation.
+#' @param transformation One of `"nn"`, `"iso"`, `"cluster"`, or `"lbmgls"`.
+#' @param radius Numeric radius for the isotropic transformation.
+#' @param cluster Numeric cluster ids for the cluster transformation.
+#' @param latlong Logical; if `TRUE`, treat coordinates as latitude/longitude.
+#' @return A numeric transformation matrix.
 #' @keywords internal
-nn_matrix <- function(s) {
-  # Implement nearest neighbor transformation
-  stop("nn_matrix not yet implemented")
+make_transform <- function(s,
+                           transformation,
+                           radius = NULL,
+                           cluster = NULL,
+                           latlong = FALSE) {
+  if (transformation == "nn") {
+    return(nn_matrix(s = s, latlong = latlong))
+  }
+  if (transformation == "iso") {
+    if (is.null(radius)) {
+      stop("Radius required for iso transformation.")
+    }
+    return(iso_matrix(s = s, radius = radius, latlong = latlong))
+  }
+  if (transformation == "cluster") {
+    if (is.null(cluster)) {
+      stop("Cluster vector required for cluster transformation.")
+    }
+    return(cluster_matrix(cluster = cluster))
+  }
+  if (transformation == "lbmgls") {
+    return(lbm_gls_matrix(s = s, latlong = latlong))
+  }
+  stop("Invalid transformation.")
 }
 
-#' Create Isotropic Transformation Matrix
+#' Nearest-Neighbor Transformation Matrix
+#'
+#' Direct translation of `nn_matrix.mata`.
 #'
 #' @param s A numeric matrix of spatial coordinates.
-#' @param radius A numeric scalar defining the neighborhood radius.
-#' @return A numeric matrix representing isotropic transformation.
+#' @param latlong Logical; if `TRUE`, coordinates are latitude/longitude.
+#' @return A numeric matrix.
+#' @keywords internal
+nn_matrix <- function(s, latlong = FALSE) {
+  if (isTRUE(latlong)) {
+    distmat <- get_distmat_lat_lon(s)
+  } else {
+    distmat <- get_distmat_euclidean(s)
+  }
+  distmat <- distmat / max(distmat)
+
+  distmat_nozeros <- distmat + (distmat == 0) * 1e10
+  rowmins <- apply(distmat_nozeros, 1L, min)
+  rowmins_mat <- distmat_nozeros == matrix(rowmins, nrow = nrow(distmat_nozeros), ncol = ncol(distmat_nozeros))
+  rowmins_mat <- rowmins_mat / rowSums(rowmins_mat)
+
+  diag(nrow(s)) - rowmins_mat
+}
+
+#' Isotropic Transformation Matrix
+#'
+#' Direct translation of `iso_matrix.mata`.
+#'
+#' @param s A numeric matrix of spatial coordinates.
+#' @param radius Numeric scalar radius (meters when `latlong = TRUE`).
+#' @param latlong Logical; if `TRUE`, coordinates are latitude/longitude.
+#' @return A numeric matrix.
 #' @keywords internal
 iso_matrix <- function(s, radius, latlong = FALSE) {
-  # Calculate distance matrix
-  if (ncol(s) == 2 && latlong) {
-    distmat <- getdistmat_lat_lon(s)
+  distmat <- if (isTRUE(latlong)) {
+    get_distmat_lat_lon(s)
   } else {
-    distmat <- getdistmat_euclidian(s)
+    get_distmat_euclidean(s)
   }
-  
-  # Create isotropic weights
-  n <- nrow(s)
-  H <- matrix(0, nrow = n, ncol = n)
-  
-  for (i in 1:n) {
-    # Find neighbors within radius
-    neighbors <- which(distmat[i, ] <= radius)
-    if (length(neighbors) > 0) {
-      # Assign equal weights to all neighbors
-      H[i, neighbors] <- 1 / length(neighbors)
-    }
+
+  if (isTRUE(latlong)) {
+    distmat <- distmat * 3.14159265359 * 6371000.009 * 2
   }
-  
-  return(H)
+
+  distmat_nozeros <- distmat + (distmat == 0) * 1e10
+  dist_below_b <- distmat_nozeros <= radius
+  dist_below_b <- dist_below_b / rowSums(dist_below_b)
+
+  iso_mat <- diag(nrow(distmat)) - dist_below_b
+  iso_mat[is.na(iso_mat)] <- 0
+  iso_mat
 }
 
-#' Create Cluster Transformation Matrix
+#' Cluster Transformation Matrix
 #'
-#' @param cluster A vector of cluster IDs.
-#' @return A numeric matrix representing cluster transformation.
+#' Direct translation of `cluster_matrix.mata`.
+#'
+#' @param cluster A vector of cluster ids.
+#' @return A numeric matrix.
 #' @keywords internal
 cluster_matrix <- function(cluster) {
+  cluster <- as.vector(cluster)
   n <- length(cluster)
-  H <- matrix(0, nrow = n, ncol = n)
-  
-  # Get unique cluster IDs
-  unique_clusters <- unique(cluster)
-  
-  # Create cluster weights
-  for (c in unique_clusters) {
-    members <- which(cluster == c)
-    if (length(members) > 0) {
-      for (i in members) {
-        H[i, members] <- 1 / length(members)
-      }
-    }
-  }
-  
-  return(H)
+  clust_mat <- outer(cluster, cluster, "==")
+  clust_mat <- clust_mat / rowSums(clust_mat)
+  diag(n) - clust_mat
 }
 
-#' Create LBM-GLS Transformation Matrix
+#' LBM-GLS Transformation Matrix
+#'
+#' Direct translation of `lbm_gls_matrix.mata`.
 #'
 #' @param s A numeric matrix of spatial coordinates.
-#' @return A numeric matrix representing LBM-GLS transformation.
+#' @param latlong Logical; if `TRUE`, coordinates are latitude/longitude.
+#' @return A numeric matrix.
 #' @keywords internal
 lbm_gls_matrix <- function(s, latlong = FALSE) {
-  # Calculate appropriate distance matrix
-  if (ncol(s) == 2 && latlong) {
-    distmat <- getdistmat_lat_lon(s) # slightly different from stata 
+  distmat <- if (isTRUE(latlong)) {
+    get_distmat_lat_lon(s)
   } else {
-    distmat <- getdistmat_euclidian(s)
+    get_distmat_euclidean(s)
   }
-  
-  # Normalize distance matrix
   distmat <- distmat / max(distmat)
-  
-  # Get LBM covariance matrix
-  sigma_lbm_dm = get_sigma_lbm_dm(distmat) # exactly identical
-  
-  # Compute eigendecomposition
-  eig <- eigen(sigma_lbm_dm, symmetric = TRUE) 
+
+  sigma_lbm_dm <- get_sigma_lbm_dm(distmat)
+
+  eig <- eigen(sigma_lbm_dm, symmetric = TRUE)
   values <- eig$values
   vectors <- eig$vectors
-  
-  # Sort eigenvalues decreasing (to match Stata's order() function)
+
   idx <- order(values, decreasing = TRUE)
   values <- values[idx]
-  vectors <- vectors[, idx]
-  
-  # Filter out small or negative eigenvalues
-  idx <- values > 1e-10
-  values <- values[idx]
-  vectors <- vectors[, idx]
-  
-  # Create GLS transformation matrix
-  dsi <- 1 / sqrt(values)
-  H <- vectors %*% diag(dsi) %*% t(vectors)
-  
-  return(H)
+  vectors <- vectors[, idx, drop = FALSE]
+
+  keep <- values > 1e-10
+  values <- values[keep]
+  vectors <- vectors[, keep, drop = FALSE]
+
+  vectors %*% diag(1 / sqrt(values)) %*% t(vectors)
 }

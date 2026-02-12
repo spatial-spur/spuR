@@ -1,163 +1,146 @@
-#' Transform Variables Using Spatial Transformations
+#' Transform Variables Using SPUR Spatial Transformations
 #'
-#' This function applies spatial transformations to variables, similar to the Stata spurtransform command.
-#' It supports different transformation methods: "lbmgls" (default), "iso", "cluster", and "nn".
+#' R equivalent of Stata `spurtransform`.
 #'
-#' @param data A data frame containing the variables and spatial coordinates.
-#' @param vars Character vector of variable names to transform.
-#' @param prefix String prefix to add to transformed variable names.
-#' @param transformation Type of transformation: "lbmgls" (default), "iso", "cluster", or "nn".
-#' @param radius Numeric radius parameter for "iso" transformation.
-#' @param clustvar Name of clustering variable for "cluster" transformation.
-#' @param latlong Logical; if TRUE, coordinates are latitude/longitude.
-#' @param lat Name of the latitude column (or y-coordinate if latlong=FALSE).
-#' @param lon Name of the longitude column (or x-coordinate if latlong=FALSE).
-#' @param replace Logical; if TRUE, replace existing variables with the same names.
-#' @param separately Logical; if TRUE, handle missing values in each variable separately.
-#'
-#' @return A data frame with the original and transformed variables.
+#' @param data A data frame containing variables and coordinates.
+#' @param vars Character vector of numeric variable names to transform.
+#' @param prefix Prefix for transformed variable names.
+#' @param transformation One of `"lbmgls"`, `"nn"`, `"iso"`, or `"cluster"`.
+#' @param radius Radius used by `transformation = "iso"`.
+#' @param clustvar Cluster variable used by `transformation = "cluster"`.
+#' @param latlong Logical; if `TRUE`, coordinates are latitude/longitude.
+#' @param lat Name of latitude column when `coord_cols` is `NULL`.
+#' @param lon Name of longitude column when `coord_cols` is `NULL`.
+#' @param coord_cols Optional explicit coordinate column names.
+#' @param replace Logical; allow overwriting existing output columns.
+#' @param separately Logical; handle missingness separately by variable.
+#' @return A data frame with transformed variables appended.
 #' @export
-#' 
+spur_transform <- function(data,
+                           vars,
+                           prefix = "tr",
+                           transformation = "lbmgls",
+                           radius = NULL,
+                           clustvar = NULL,
+                           latlong = TRUE,
+                           lat = "lat",
+                           lon = "lon",
+                           coord_cols = NULL,
+                           replace = FALSE,
+                           separately = FALSE) {
+  if (!length(vars)) {
+    stop("vars must contain at least one variable name.")
+  }
+  if (!all(vars %in% names(data))) {
+    stop("At least one variable in vars was not found in data.")
+  }
+  if (!all(vapply(data[vars], is.numeric, logical(1)))) {
+    stop("All variables in vars must be numeric.")
+  }
 
-# Stata equivalent:
-# program spurtransform, sortpreserve 
-#   version 14
-#   syntax varlist(numeric) [if] [in] , PREfix(string) [ transformation(string) radius(real -1) clustvar(varname) latlong Replace separately] 
-options(digits = 8)
-spur_transform <- function(data, vars, prefix = "tr", transformation = "lbmgls", 
-                          radius = NULL, clustvar = NULL, latlong = TRUE,
-                          lat = "lat", lon = "lon", 
-                          replace = FALSE, separately = FALSE) {
-  
-    # Check inputs - keep this validation logic
-    
-    # Stata equivalent:
-    # if "`transformation'"=="" {
-    #   local transformation "lbmgls"
-    # }
-    # Default is already handled in R function signature
-    
-    # Stata equivalent:
-    # if "`transformation'"!="iso" & `radius'!=-1 {
-    #   di as error "Option radius only allowed with transformation(iso)."
-    #   exit
-    # }
-    if (transformation == "iso" && is.null(radius)) {
-        stop("Radius required for iso transformation")
+  allowed <- c("lbmgls", "nn", "iso", "cluster")
+  if (!transformation %in% allowed) {
+    stop("Invalid transformation.")
+  }
+
+  if (transformation != "iso" && !is.null(radius)) {
+    stop("Option radius only allowed with transformation(iso).")
+  }
+  if (transformation == "iso" && is.null(radius)) {
+    stop("Radius missing.")
+  }
+  if (transformation == "iso" && radius <= 0) {
+    stop("Radius must be positive.")
+  }
+
+  if (transformation != "cluster" && !is.null(clustvar)) {
+    stop("Option clustvar only allowed with transformation(cluster).")
+  }
+  if (transformation == "cluster" && is.null(clustvar)) {
+    stop("Clustvar missing.")
+  }
+  if (!is.null(clustvar) && !clustvar %in% names(data)) {
+    stop("clustvar was not found in data.")
+  }
+
+  if (!is.character(prefix) || length(prefix) != 1L || !nzchar(prefix) || make.names(prefix) != prefix) {
+    stop("prefix must be a valid name prefix.")
+  }
+
+  coord_cols <- .resolve_coord_cols(
+    data = data,
+    latlong = latlong,
+    coord_cols = coord_cols,
+    lat = lat,
+    lon = lon
+  )
+
+  base_sample <- if (isTRUE(separately)) {
+    rep(TRUE, nrow(data))
+  } else {
+    stats::complete.cases(data[vars])
+  }
+
+  cluster_group <- if (transformation == "cluster") {
+    as.numeric(factor(data[[clustvar]]))
+  } else {
+    NULL
+  }
+
+  result <- data
+
+  for (var in vars) {
+    out_var <- paste0(prefix, var)
+    if (out_var %in% names(result) && !isTRUE(replace)) {
+      stop(sprintf("%s already defined or invalid name", out_var))
     }
-    
-    # Stata equivalent:
-    # if "`transformation'"=="iso" & `radius'<=0 {
-    #   di as error "Radius must be positive."
-    #   exit
-    # }
-    if (transformation == "iso" && radius <= 0) {
-        stop("Radius must be positive")
+
+    use_rows <- base_sample
+    if (isTRUE(separately)) {
+      use_rows <- use_rows & !is.na(data[[var]])
     }
-    
-    # Stata equivalent:
-    # if "`transformation'"=="cluster" & "`clustvar'"=="" {
-    #   di as error "Clustvar missing."
-    #   exit
-    # }
-    if (transformation == "cluster" && is.null(clustvar)) {
-        stop("Clustvar required for cluster transformation")
-    }
-    
-    # Stata equivalent:
-    # if "`transformation'"!="cluster" & "`clustvar'"!="" {
-    #   di as error "Option clustvar only allowed with transformation(cluster)."
-    #   exit
-    # }
-    if (transformation != "cluster" && !is.null(clustvar)) {
-        stop("Clustvar only allowed with transformation(cluster)")
-    }
-    
-    # Check for coordinates - no direct Stata equivalent
-    # Stata expects specific columns while R allows specification
-    if (!all(c(lat, lon) %in% names(data))) {
-        stop(paste("Data frame must contain columns:", lat, "and", lon))
-    }
-    
-    base_sample <- rep(TRUE, nrow(data))
-    
-    # Check for required coordinates
-    if (!all(c(lat, lon) %in% names(data))) {
-        stop(paste("Data frame must contain columns:", lat, "and", lon))
-    }
-    
-    # Extract coordinates and standardize names
-    coords <- data[, c(lat, lon)]
-    names(coords) <- c("lat", "lon")  # Rename to standard names for internal use
-    
-    # Convert cluster variable if needed
     if (transformation == "cluster") {
-        # Convert cluster variable to consecutive numbers (like egen group)
-        cluster <- as.numeric(factor(data[[clustvar]]))
-    } else {
-        cluster <- NULL
+      use_rows <- use_rows & !is.na(data[[clustvar]])
     }
-    
-    # Prepare result dataframe
-    result <- data
-    
-    # Stata equivalent:
-    # foreach name of local varlist {
-    for (var in vars) {
-        # Handle missing values
-        # Stata equivalent:
-        # qui gen `touse2' = `touse'
-        # if "`separately'"!="" {
-        #   qui replace `touse2' = 0 if missing(`name')
-        # }
-        # if "`transformation'"=="cluster" {
-        #   qui replace `touse2' = 0 if missing(`clustervar')
-        # }
-        # Start with base sample for each variable (equivalent to qui gen `touse2' = `touse')
-        use_rows <- base_sample
-        
-        # Add variable-specific filtering
-        if (separately) {
-            use_rows <- use_rows & !is.na(data[[var]])
-        }
-        if (transformation == "cluster") {
-            use_rows <- use_rows & !is.na(data[[clustvar]])
-        }
-        
-        # Skip if no observations to use
-        if (sum(use_rows) == 0) {
-            warning(paste("No valid observations for variable:", var))
-            next
-        }
 
-        # Create coordinates specific to this variable's non-missing pattern
-        # Stata equivalent:
-        # mata: s = get_s_matrix("`touse2'", "`latlong'")
-        var_coords <- get_s_matrix(coords[use_rows, ], latlong) # identical
-        
-        if (transformation == "cluster") {
-          # Get cluster values for the observations to use
-          cluster_matrix <- get_cluster_matrix(data[[clustvar]], use_rows) # identical
-        } else {
-          cluster_matrix <- 0
-        }
-        
-        H <- make_transform(var_coords, transformation, radius, cluster_matrix, latlong = latlong) # minimally different
-        
-        # Apply transformation with the variable-specific matrix
-        # Stata equivalent:
-        # mata: hy = transform("`name'", H, "`touse2'", "`transformation'")
-        
-        transformed <- transform(data, var, H, transformation, use_rows)  # identical
-        
-        # Insert results
-        # Stata equivalent:
-        # quietly mata: st_addvar("double", "`prefix'`name'")
-        # mata: st_store(., "`prefix'`name'", "`touse2'", hy)
-        result_vec <- rep(NA, nrow(data))
-        result_vec[use_rows] <- transformed
-        result[[paste0(prefix, var)]] <- result_vec
+    if (!any(use_rows)) {
+      warning(sprintf("No valid observations for variable: %s", var))
+      next
     }
-    
-    return(result)
+
+    s <- .extract_coords(
+      data = data,
+      use_rows = use_rows,
+      coord_cols = coord_cols,
+      latlong = latlong
+    )
+
+    cluster_vals <- if (transformation == "cluster") {
+      get_cluster_matrix(cluster_values = cluster_group, use_rows = use_rows)
+    } else {
+      NULL
+    }
+
+    H <- make_transform(
+      s = s,
+      transformation = transformation,
+      radius = radius,
+      cluster = cluster_vals,
+      latlong = latlong
+    )
+
+    transformed <- spur_transform_vector(
+      data = data,
+      varname = var,
+      H = H,
+      transformation = transformation,
+      use_rows = use_rows
+    )
+
+    result_vec <- rep(NA_real_, nrow(data))
+    result_vec[use_rows] <- transformed
+    result[[out_var]] <- result_vec
+  }
+
+  result
 }

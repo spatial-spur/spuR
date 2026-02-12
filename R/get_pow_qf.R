@@ -12,13 +12,14 @@
 #' @param om1 A numeric matrix representing the alternative covariance matrix.
 #' @param e A numeric matrix of test statistics or error terms.
 #' @return A numeric scalar representing the computed power.
-#' @export
-getpow_qf <- function(om0, om1, e) {
+get_pow_qf <- function(om0, om1, e) {
   # Compute inverses of om0 and om1
   om0i <- solve(om0)
   om1i <- solve(om1)
   
-  # Cholesky decompositions
+  # Mata::cholesky() returns a lower-triangular factor L with A = L %*% t(L),
+  # while R::chol() returns upper-triangular U with A = t(U) %*% U.
+  # In Mata code, factors are stored as cholesky(A)' (i.e., U), so use chol(A).
   ch_om0 <- chol(om0)
   ch_om1 <- chol(om1)
   ch_om0i <- chol(om0i)
@@ -40,10 +41,15 @@ getpow_qf <- function(om0, om1, e) {
   lr_a <- qo_a / qe
   
   # Determine the 95th percentile critical value of lr_o
-  cv <- as.numeric(quantile(lr_o, probs = 0.95))
+  cv <- as.numeric(stats::quantile(lr_o, probs = 0.95))
   
   # Compute power as the proportion of lr_a values exceeding the critical value
   pow <- mean(lr_a > cv)
   
   return(pow)
+}
+
+#' @rdname get_pow_qf
+getpow_qf <- function(om0, om1, e) {
+  get_pow_qf(om0 = om0, om1 = om1, e = e)
 }

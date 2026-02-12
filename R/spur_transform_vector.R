@@ -1,8 +1,7 @@
 
-#' Transform Variable Using Spatial Transformation Matrix
+#' Transform One Variable with a Spatial Matrix
 #'
-#' This function transforms a variable using a spatial transformation matrix.
-#' Direct R equivalent of the Stata transform() function.
+#' Internal helper that applies a spatial transformation matrix to one variable.
 #'
 #' @param data Data frame containing the variable
 #' @param varname Name of the variable to transform
@@ -11,8 +10,8 @@
 #' @param use_rows Logical vector indicating which rows to use (equivalent to touse)
 #'
 #' @return A numeric vector of transformed values
-#' @export
-transform <- function(data, varname, H, transformation, use_rows = NULL) {
+#' @keywords internal
+spur_transform_vector <- function(data, varname, H, transformation, use_rows = NULL) {
   # Extract the variable
   y <- data[[varname]]
   

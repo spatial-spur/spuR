@@ -1,9 +1,11 @@
 #' Compute Eigenvectors for Low-Frequency Weights
 #'
-#' Constructs eigenvectors corresponding to the largest \code{qmax} eigenvalues
-#' of the \code{n x n} matrix \code{sig}. The eigenvectors are normalized such that
-#' \code{t(R) \%*\% R = I} (if the optional normalization is applied).
+#' Constructs the eigenvectors corresponding to the largest \code{qmax}
+#' eigenvalues of \code{sig}. This follows the ordering in the Stata/Mata
+#' implementation (\code{order(d, -1)}).
 #'
+#' @name get_r
+#' @aliases get_r Get_R
 #' @param sig A numeric matrix.
 #' @param qmax An integer specifying the number of largest eigenvalues/eigenvectors to retain.
 #' @return A list with components:
@@ -11,25 +13,28 @@
 #'   \item{R}{A matrix whose columns are the eigenvectors corresponding to the largest \code{qmax} eigenvalues.}
 #'   \item{DS}{A numeric vector containing the largest \code{qmax} eigenvalues.}
 #' }
-#' @export
-Get_R <- function(sig, qmax) {
+get_r <- function(sig, qmax) {
   n <- nrow(sig)
-  eig_out <- eigen(sig)
-  values <- eig_out$values
-  vectors <- eig_out$vectors
-  
-  # Sort eigenvalues in descending order and get the sorting indices
-  idx <- order(values, decreasing = TRUE)
-  sorted_values <- values[idx]
-  
-  DS <- sorted_values[1:qmax]
-  R <- vectors[, idx[1:qmax], drop = FALSE]
-  
-  # Optional normalization: Normalize so that t(R) %*% R/n = 1
-  # Uncomment the following lines if such normalization is desired.
-  # rr <- sum(R[, 1]^2)
-  # scl <- sqrt(n / rr)
-  # R <- scl * R
-  
-  return(list(R = R, DS = DS))
+
+  # Use iterative partial eigendecomposition only when matrix is large.
+  # For small n, full eigen() is more stable for strict parity checks.
+  use_rspectra <- qmax < n && n >= 500L
+  eig_out <- if (use_rspectra) {
+    RSpectra::eigs_sym(sig, k = qmax, which = "LM")
+  } else {
+    eigen(sig, symmetric = TRUE)
+  }
+  idx <- order(eig_out$values, decreasing = TRUE)
+  values <- eig_out$values[idx]
+  vectors <- eig_out$vectors[, idx, drop = FALSE]
+
+  list(
+    R = vectors[, seq_len(qmax), drop = FALSE],
+    DS = values[seq_len(qmax)]
+  )
+}
+
+#' @rdname get_r
+Get_R <- function(sig, qmax) {
+  get_r(sig = sig, qmax = qmax)
 }

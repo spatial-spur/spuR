@@ -5,46 +5,33 @@
 #' @param Y A numeric matrix (n x number_of_series).
 #' @param distmat A numeric distance matrix (n x n).
 #' @param emat A numeric simulation matrix (q x number_of_simulations).
-#' @param q An integer specifying the number of eigenvectors.
 #'
 #' @return A list with elements: LR, pvalue, cvalue, ha_parm, cvalue_mat, pvalue_mat, and rho_grid.
-#' @export
 spur_i0_test <- function(Y, distmat, emat) {
   #--- Determine sizes ---
   q <- nrow(emat)
-  n <- nrow(distmat)
 
   # 1) BM covariance matrix (approximation for demeaned value)
-  sigdm_bm <- get_sigma_lbm_dm(distmat) # checked
+  sigdm_bm <- get_sigma_lbm_dm(distmat)
 
   # 2) Construct R and eigenvalues for low-frequency weights
-  R_out <- Get_R(sigdm_bm, q) # checked
+  R_out <- get_r(sigdm_bm, q)
   R <- R_out$R
-  # (We assume the eigenvalues might be stored as lam if needed.)
 
   # 3) Compute covariance matrix for rho = 0.001
   rho <- 0.001
-  c_val <- getcbar(rho, distmat) # checked
+  c_val <- get_cbar(rho, distmat)
   sigdm_rho <- get_sigma_dm(distmat, c_val)
-
-  sigma <- diag(n)
-  # Demean sigma: subtract column and row means
-  sigma_dm <- sweep(sigma, 2, colMeans(sigma), "-")
-  sigma_dm <- sweep(sigma_dm, 1, rowMeans(sigma_dm), "-")
-  sigdm_wn <- sigma_dm
 
   # 4) Matrices used in analysis
   om_rho <- t(R) %*% sigdm_rho %*% R
-  om_wn  <- t(R) %*% sigdm_wn  %*% R
-  om_bm  <- t(R) %*% sigdm_bm %*% R
-
-  #browser()
+  om_bm <- t(R) %*% sigdm_bm %*% R
 
   # 5) Find Ha parameter yielding ~50% power
-  om_i0   <- om_rho
-  om_ho   <- om_rho
-  ha_parm <- get_ha_parm_I0(om_ho, om_i0, om_bm, emat)
-  om_ha   <- om_i0 + ha_parm * om_bm
+  om_i0 <- om_rho
+  om_ho <- om_rho
+  ha_parm <- get_ha_param_i0(om_ho, om_i0, om_bm, emat)
+  om_ha <- om_i0 + ha_parm * om_bm
 
   # 6) Compute Cholesky decompositions
   ch_omi_ho <- chol(solve(om_ho))
@@ -74,7 +61,7 @@ spur_i0_test <- function(Y, distmat, emat) {
     om_ho_i <- diag(q)
     rho_i <- rho_grid[i]
     if (rho_i > 0) {
-      c_i <- getcbar(rho_i, distmat)
+      c_i <- get_cbar(rho_i, distmat)
       sigdm_ho_i <- get_sigma_dm(distmat, c_i)
       om_ho_i <- t(R) %*% sigdm_ho_i %*% R
     }
@@ -94,7 +81,7 @@ spur_i0_test <- function(Y, distmat, emat) {
     q_ho_ho <- colSums(y_ho_ho^2)
     q_ho_ha <- colSums(y_ho_ha^2)
     lr_ho <- q_ho_ho / q_ho_ha
-    cv_vec <- quantile(lr_ho, probs = 1 - sz_vec)
+    cv_vec <- stats::quantile(lr_ho, probs = 1 - sz_vec)
     cvalue_mat[ir, ] <- cv_vec
     for(j in seq_len(n_y)) {
       pvalue_mat[ir, j] <- mean(lr_ho > LR[j])

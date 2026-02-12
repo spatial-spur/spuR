@@ -1,8 +1,9 @@
-#' SPUR I(0) Test
+#' SPUR I(0) Residual Test
 #'
-#' R equivalent of Stata `spurtest i0`.
+#' R equivalent of Stata `spurtest i0resid`.
 #'
-#' @param var Name of numeric outcome variable to test.
+#' @param dep_var Dependent variable name.
+#' @param indep_vars Optional character vector of independent variable names.
 #' @param q Number of low-frequency weighted averages.
 #' @param nrep Number of Monte Carlo draws.
 #' @param latlong Logical; if `TRUE`, use spherical distances.
@@ -12,23 +13,32 @@
 #' @param lon Name of longitude column when `coord_cols` is `NULL`.
 #' @return A list with `pvalue`, `teststat`, `ha_param`, `cv`, and `full`.
 #' @export
-spur_i0 <- function(var,
-                    q = 15,
-                    nrep = 100000,
-                    latlong = TRUE,
-                    data,
-                    coord_cols = NULL,
-                    lat = "lat",
-                    lon = "lon") {
-  if (!var %in% names(data)) {
-    stop("The variable specified does not exist in data.")
+spur_i0_resid <- function(dep_var,
+                          indep_vars = character(0),
+                          q = 15,
+                          nrep = 100000,
+                          latlong = TRUE,
+                          data,
+                          coord_cols = NULL,
+                          lat = "lat",
+                          lon = "lon") {
+  vars <- c(dep_var, indep_vars)
+  if (!all(vars %in% names(data))) {
+    stop("At least one variable was not found in data.")
   }
-  if (!is.numeric(data[[var]])) {
-    stop("The variable specified must be numeric.")
+  if (!all(vapply(data[vars], is.numeric, logical(1)))) {
+    stop("dep_var and indep_vars must be numeric.")
   }
 
-  use_rows <- !is.na(data[[var]])
-  Y <- as.matrix(data[[var]][use_rows])
+  use_rows <- stats::complete.cases(data[vars])
+  Y <- as.matrix(data[[dep_var]][use_rows])
+
+  if (length(indep_vars)) {
+    X <- as.matrix(data[use_rows, indep_vars, drop = FALSE])
+  } else {
+    X <- matrix(numeric(0), nrow = sum(use_rows), ncol = 0)
+  }
+  X_in <- cbind(1, X)
 
   coord_cols <- .resolve_coord_cols(
     data = data,
@@ -46,7 +56,7 @@ spur_i0 <- function(var,
   distmat <- .normalized_distmat(coords = s, latlong = latlong)
 
   emat <- .draw_emat(q = q, nrep = nrep)
-  res <- spur_i0_test(Y = Y, distmat = distmat, emat = emat)
+  res <- spur_i0_resid_test(Y = Y, X_in = X_in, distmat = distmat, emat = emat)
 
   teststat <- res$LR[1]
   pvalue <- res$pvalue[1]
@@ -54,7 +64,7 @@ spur_i0 <- function(var,
   cv <- res$cvalue
 
   .format_spur_test_output(
-    title = "Spatial I(0) Test Results",
+    title = "Spatial I(0) Test Results for Residuals",
     stat_label = "LFST",
     teststat = teststat,
     pvalue = pvalue
