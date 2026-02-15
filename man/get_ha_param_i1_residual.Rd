@@ -2,12 +2,9 @@
 % Please edit documentation in R/get_ha_param_i1_residual.R
 \name{get_ha_param_i1_residual}
 \alias{get_ha_param_i1_residual}
-\alias{get_ha_parm_I1_residual}
 \title{Compute Ha Parameter for I(1) Residual Test}
 \usage{
 get_ha_param_i1_residual(om_ho, distmat, R, e, M)
-
-get_ha_parm_I1_residual(om_ho, distmat, R, e, M)
 }
 \arguments{
 \item{om_ho}{Null covariance matrix in low-frequency space.}

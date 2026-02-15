@@ -9,7 +9,10 @@
 #' @param R A numeric matrix of eigenvectors.
 #' @param e A numeric matrix (or vector) used in the computation of power.
 #' @return A numeric scalar representing the parameter \code{g}.
+#' @keywords internal
 get_ha_param_i1 <- function(om_ho, distmat, R, e) {
+  pow_eval <- .make_pow_qf_evaluator(om0 = om_ho, e = e)
+
   ## Goal: choose c so that the quadratic‑form test has ≈ 50 % power
 
   ## ---- lower bracket: power just under 0.5 ------------------
@@ -19,7 +22,7 @@ get_ha_param_i1 <- function(om_ho, distmat, R, e) {
     c        <- ctry
     sigdm_c  <- get_sigma_dm(distmat, c)
     om_c     <- t(R) %*% sigdm_c %*% R
-    pow      <- get_pow_qf(om_ho, om_c, e)
+    pow      <- pow_eval(om_c)
     ctry     <- ctry / 2
   }
   c1 <- c        # store lower bound
@@ -31,7 +34,7 @@ get_ha_param_i1 <- function(om_ho, distmat, R, e) {
     c        <- ctry
     sigdm_c  <- get_sigma_dm(distmat, c)
     om_c     <- t(R) %*% sigdm_c %*% R
-    pow      <- get_pow_qf(om_ho, om_c, e)
+    pow      <- pow_eval(om_c)
     ctry     <- 2 * ctry
   }
   c2 <- c        # store upper bound
@@ -42,7 +45,7 @@ get_ha_param_i1 <- function(om_ho, distmat, R, e) {
     c        <- (c1 + c2) / 2
     sigdm_c  <- get_sigma_dm(distmat, c)
     om_c     <- t(R) %*% sigdm_c %*% R
-    pow      <- get_pow_qf(om_ho, om_c, e)
+    pow      <- pow_eval(om_c)
 
     if (pow > 0.5) {
       c2 <- c
@@ -55,10 +58,4 @@ get_ha_param_i1 <- function(om_ho, distmat, R, e) {
 
   ## return parameter that achieves ≈50 % power
   c
-}
-#-------------------------------------------------------------
-
-#' @rdname get_ha_param_i1
-get_ha_parm_I1 <- function(om_ho, distmat, R, e) {
-  get_ha_param_i1(om_ho = om_ho, distmat = distmat, R = R, e = e)
 }

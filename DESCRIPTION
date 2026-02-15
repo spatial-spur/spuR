@@ -1,20 +1,36 @@
 Package: spuR
 Title: Spatial Unit Root Tests and Transformations
-Version: 0.0.0.9000
-Authors@R:
-    person("Paul", "Boll", email = "paul@example.com", role = c("aut", "cre"))
-Author: Paul Boll [aut, cre]
-Maintainer: Paul Boll <paul@example.com>
-Description: Implements spatial I(0)/I(1) tests and spatial transformation
-    utilities translated from Stata workflows used in the project.
+Version: 0.1.0
+Authors@R: c(
+    person("Paul", "Boll", email = "paul@example.com",
+           role = c("aut", "cre")),
+    person("Sascha O.", "Becker", role = "aut"),
+    person("Hans-Joachim", "Voth", role = "aut"),
+    person("Ulrich K.", "Mueller", role = "ctb",
+           comment = "Original MATLAB implementation"),
+    person("Mark W.", "Watson", role = "ctb",
+           comment = "Original MATLAB implementation")
+    )
+Description: Implements low-frequency spatial unit root tests and
+    spatial transformations for cross-sectional data as developed by
+    Mueller and Watson (2024) <doi:10.3982/ECTA20682>. Provides I(0) and
+    I(1) tests for detecting spatial unit roots, residual-based variants
+    for regression settings, half-life confidence intervals for spatial
+    persistence, and spatial transformations (LBM-GLS, nearest-neighbor,
+    isotropic, cluster) for correcting spatial dependence. See Becker,
+    Boll, and Voth (2025) for a practical guide to these methods.
 License: GPL-3
 Encoding: UTF-8
+URL: https://github.com/pauldavidboll/spuR
+BugReports: https://github.com/pauldavidboll/spuR/issues
 Depends:
     R (>= 4.2.0)
 Imports:
+    stats,
     RSpectra
 Suggests:
     testthat (>= 3.0.0)
 Config/testthat/edition: 3
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2
+LazyData: true

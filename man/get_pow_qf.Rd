@@ -2,12 +2,9 @@
 % Please edit documentation in R/get_pow_qf.R
 \name{get_pow_qf}
 \alias{get_pow_qf}
-\alias{getpow_qf}
 \title{Compute Power Using Quadratic Forms}
 \usage{
 get_pow_qf(om0, om1, e)
-
-getpow_qf(om0, om1, e)
 }
 \arguments{
 \item{om0}{A numeric matrix representing the null covariance matrix.}
@@ -28,3 +25,4 @@ of covariance matrices. It computes:
 where \eqn{qe} is the column sum of \eqn{e^2}. The critical value is the 95th percentile of
 \eqn{lr\_o}, and power is computed as the proportion of \eqn{lr\_a} exceeding that critical value.
 }
+\keyword{internal}

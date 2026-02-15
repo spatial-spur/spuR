@@ -17,5 +17,6 @@ spur_i0_test(Y, distmat, emat)
 A list with elements: LR, pvalue, cvalue, ha_parm, cvalue_mat, pvalue_mat, and rho_grid.
 }
 \description{
-This function implements the spatial I(0) test. It is called internally by \code{spur_i0()}.
+This function implements the spatial I(0) test. It is called internally by \code{spurtest_i0()}.
 }
+\keyword{internal}

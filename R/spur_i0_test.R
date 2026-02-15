@@ -1,12 +1,13 @@
 #' Core SPUR I(0) Test Function
 #'
-#' This function implements the spatial I(0) test. It is called internally by \code{spur_i0()}.
+#' This function implements the spatial I(0) test. It is called internally by \code{spurtest_i0()}.
 #'
 #' @param Y A numeric matrix (n x number_of_series).
 #' @param distmat A numeric distance matrix (n x n).
 #' @param emat A numeric simulation matrix (q x number_of_simulations).
 #'
 #' @return A list with elements: LR, pvalue, cvalue, ha_parm, cvalue_mat, pvalue_mat, and rho_grid.
+#' @keywords internal
 spur_i0_test <- function(Y, distmat, emat) {
   #--- Determine sizes ---
   q <- nrow(emat)

@@ -13,7 +13,11 @@ spur_i1_resid_test <- function(Y, X_in, distmat, emat) {
   n <- nrow(distmat)
   n_y <- ncol(Y)
 
-  M <- diag(n) - X_in %*% solve(t(X_in) %*% X_in) %*% t(X_in)
+  xtx <- crossprod(X_in)
+  if (qr(xtx)$rank < ncol(xtx)) {
+    stop("Design matrix is rank-deficient; residual tests require full column rank.")
+  }
+  M <- diag(n) - X_in %*% solve(xtx, t(X_in))
 
   rho_bm <- 0.999
   c_bm <- get_cbar(rho_bm, distmat)

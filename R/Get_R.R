@@ -4,8 +4,6 @@
 #' eigenvalues of \code{sig}. This follows the ordering in the Stata/Mata
 #' implementation (\code{order(d, -1)}).
 #'
-#' @name get_r
-#' @aliases get_r Get_R
 #' @param sig A numeric matrix.
 #' @param qmax An integer specifying the number of largest eigenvalues/eigenvectors to retain.
 #' @return A list with components:
@@ -13,8 +11,16 @@
 #'   \item{R}{A matrix whose columns are the eigenvectors corresponding to the largest \code{qmax} eigenvalues.}
 #'   \item{DS}{A numeric vector containing the largest \code{qmax} eigenvalues.}
 #' }
+#' @keywords internal
 get_r <- function(sig, qmax) {
   n <- nrow(sig)
+  if (length(qmax) != 1L || !is.finite(qmax) || qmax < 1 || qmax != as.integer(qmax)) {
+    stop("qmax must be a positive integer.")
+  }
+  qmax <- as.integer(qmax)
+  if (qmax > n) {
+    stop("qmax must be <= nrow(sig).")
+  }
 
   # Use iterative partial eigendecomposition only when matrix is large.
   # For small n, full eigen() is more stable for strict parity checks.
@@ -32,9 +38,4 @@ get_r <- function(sig, qmax) {
     R = vectors[, seq_len(qmax), drop = FALSE],
     DS = values[seq_len(qmax)]
   )
-}
-
-#' @rdname get_r
-Get_R <- function(sig, qmax) {
-  get_r(sig = sig, qmax = qmax)
 }

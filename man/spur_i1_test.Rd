@@ -14,8 +14,9 @@ spur_i1_test(Y, distmat, emat)
 \item{emat}{A numeric simulation matrix (q x number_of_simulations).}
 }
 \value{
-A list with elements: LR, pvalue, cvalue, ha_parm, cvalue_mat, pvalue_mat, and rho_grid.
+A list with elements: LR, pvalue, cv_vec, and ha_parm.
 }
 \description{
-This function implements the spatial I(1) test. It is called internally by \code{spur_i1()}.
+This function implements the spatial I(1) test. It is called internally by \code{spurtest_i1()}.
 }
+\keyword{internal}

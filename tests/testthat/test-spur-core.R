@@ -1,4 +1,4 @@
-testthat::test_that("spur_transform returns transformed columns", {
+testthat::test_that("spurtransform returns transformed columns", {
   set.seed(123)
   n <- 40L
   df <- data.frame(
@@ -8,12 +8,13 @@ testthat::test_that("spur_transform returns transformed columns", {
     lon = seq(-120, -80, length.out = n)
   )
 
-  out <- spur_transform(
+  out <- spurtransform(
+    formula = ~ y + x,
     data = df,
-    vars = c("y", "x"),
     prefix = "h_",
     transformation = "lbmgls",
-    latlong = TRUE
+    lon = "lon",
+    lat = "lat"
   )
 
   testthat::expect_true(all(c("h_y", "h_x") %in% names(out)))
@@ -22,7 +23,7 @@ testthat::test_that("spur_transform returns transformed columns", {
   testthat::expect_true(all(is.finite(out$h_x)))
 })
 
-testthat::test_that("spur_i0 and spur_i1 run on a simple fixture", {
+testthat::test_that("spurtest_i0 and spurtest_i1 run on a simple fixture", {
   n <- 100L
   idx <- seq_len(n)
   lat <- seq(from = 25, to = 49, length.out = n) + sin(idx / 3) * 0.1
@@ -32,9 +33,9 @@ testthat::test_that("spur_i0 and spur_i1 run on a simple fixture", {
   df <- data.frame(y = y, x = x, lat = lat, lon = lon)
 
   set.seed(123)
-  res_i0 <- spur_i0(var = "y", q = 8L, nrep = 500L, latlong = TRUE, data = df)
+  res_i0 <- spurtest_i0(y ~ 1, data = df, q = 8L, nrep = 500L, lon = "lon", lat = "lat")
   set.seed(123)
-  res_i1 <- spur_i1(var = "y", q = 8L, nrep = 500L, latlong = TRUE, data = df)
+  res_i1 <- spurtest_i1(y ~ 1, data = df, q = 8L, nrep = 500L, lon = "lon", lat = "lat")
 
   for (res in list(res_i0, res_i1)) {
     testthat::expect_true(is.list(res))

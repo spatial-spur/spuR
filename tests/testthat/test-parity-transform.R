@@ -27,17 +27,26 @@ testthat::test_that("SPUR transform parity across transformation types", {
       replace = TRUE
     )
 
-    r_out <- spur_transform(
-      data = df,
-      vars = vars,
-      prefix = "h_",
-      transformation = case$transformation,
-      radius = case$radius,
-      clustvar = case$clustvar,
-      latlong = case$latlong,
-      coord_cols = c("s_1", "s_2"),
-      replace = TRUE,
-      separately = FALSE
+    coord_args <- if (isTRUE(case$latlong)) {
+      list(lon = "lon", lat = "lat")
+    } else {
+      list(coords_euclidean = c("s_1", "s_2"))
+    }
+    r_out <- do.call(
+      spurtransform,
+      c(
+        list(
+          formula = ~ am + fracblack,
+          data = df,
+          prefix = "h_",
+          transformation = case$transformation,
+          radius = case$radius,
+          clustvar = case$clustvar,
+          replace = TRUE,
+          separately = FALSE
+        ),
+        coord_args
+      )
     )
 
     r_cmp <- r_out[order(r_out$row_id), c("row_id", "h_am", "h_fracblack")]
@@ -68,13 +77,13 @@ testthat::test_that("SPUR transform parity for separately option with missing va
       replace = TRUE
     )
 
-    r_out <- spur_transform(
+    r_out <- spurtransform(
+      formula = ~ fracblack + racseg,
       data = df,
-      vars = vars,
       prefix = "h_",
       transformation = "lbmgls",
-      latlong = TRUE,
-      coord_cols = c("s_1", "s_2"),
+      lon = "lon",
+      lat = "lat",
       separately = separately,
       replace = TRUE
     )
@@ -101,13 +110,13 @@ testthat::test_that("SPUR transform replace and option-validation parity", {
   testthat::expect_true(stata_rc_no_replace != 0L)
 
   testthat::expect_error(
-    spur_transform(
+    spurtransform(
+      formula = ~ am,
       data = df,
-      vars = "am",
       prefix = "h_",
       transformation = "lbmgls",
-      latlong = TRUE,
-      coord_cols = c("s_1", "s_2"),
+      lon = "lon",
+      lat = "lat",
       replace = FALSE
     )
   )
@@ -119,38 +128,38 @@ testthat::test_that("SPUR transform replace and option-validation parity", {
   testthat::expect_equal(stata_rc_replace, 0L)
 
   testthat::expect_no_error(
-    spur_transform(
+    spurtransform(
+      formula = ~ am,
       data = df,
-      vars = "am",
       prefix = "h_",
       transformation = "lbmgls",
-      latlong = TRUE,
-      coord_cols = c("s_1", "s_2"),
+      lon = "lon",
+      lat = "lat",
       replace = TRUE
     )
   )
 
   testthat::expect_error(
-    spur_transform(
+    spurtransform(
+      formula = ~ am,
       data = df,
-      vars = "am",
       prefix = "h_",
       transformation = "lbmgls",
       radius = 1,
-      latlong = TRUE,
-      coord_cols = c("s_1", "s_2")
+      lon = "lon",
+      lat = "lat"
     )
   )
   testthat::expect_error(
-    spur_transform(
+    spurtransform(
+      formula = ~ am,
       data = df,
-      vars = "am",
       prefix = "h_",
       transformation = "iso",
       clustvar = "state",
       radius = 1,
-      latlong = TRUE,
-      coord_cols = c("s_1", "s_2")
+      lon = "lon",
+      lat = "lat"
     )
   )
 })

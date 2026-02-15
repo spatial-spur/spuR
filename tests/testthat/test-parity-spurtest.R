@@ -23,23 +23,36 @@ testthat::test_that("SPUR test parity: i0 and i1 (latlong and euclidean)", {
     )
 
     set.seed(123)
+    coord_args <- if (isTRUE(case$latlong)) {
+      list(lon = "lon", lat = "lat")
+    } else {
+      list(coords_euclidean = c("s_1", "s_2"))
+    }
     r_out <- if (case$test_type == "i0") {
-      spur_i0(
-        var = "am",
-        q = q,
-        nrep = nrep,
-        latlong = case$latlong,
-        data = df,
-        coord_cols = c("s_1", "s_2")
+      do.call(
+        spurtest_i0,
+        c(
+          list(
+            formula = am ~ 1,
+            data = df,
+            q = q,
+            nrep = nrep
+          ),
+          coord_args
+        )
       )
     } else {
-      spur_i1(
-        var = "am",
-        q = q,
-        nrep = nrep,
-        latlong = case$latlong,
-        data = df,
-        coord_cols = c("s_1", "s_2")
+      do.call(
+        spurtest_i1,
+        c(
+          list(
+            formula = am ~ 1,
+            data = df,
+            q = q,
+            nrep = nrep
+          ),
+          coord_args
+        )
       )
     }
 
@@ -84,25 +97,36 @@ testthat::test_that("SPUR test parity: i0resid and i1resid (latlong and euclidea
     )
 
     set.seed(123)
+    coord_args <- if (isTRUE(case$latlong)) {
+      list(lon = "lon", lat = "lat")
+    } else {
+      list(coords_euclidean = c("s_1", "s_2"))
+    }
     r_out <- if (case$test_type == "i0resid") {
-      spur_i0_resid(
-        dep_var = "am",
-        indep_vars = indep,
-        q = q,
-        nrep = nrep,
-        latlong = case$latlong,
-        data = df,
-        coord_cols = c("s_1", "s_2")
+      do.call(
+        spurtest_i0resid,
+        c(
+          list(
+            formula = am ~ fracblack + racseg,
+            data = df,
+            q = q,
+            nrep = nrep
+          ),
+          coord_args
+        )
       )
     } else {
-      spur_i1_resid(
-        dep_var = "am",
-        indep_vars = indep,
-        q = q,
-        nrep = nrep,
-        latlong = case$latlong,
-        data = df,
-        coord_cols = c("s_1", "s_2")
+      do.call(
+        spurtest_i1resid,
+        c(
+          list(
+            formula = am ~ fracblack + racseg,
+            data = df,
+            q = q,
+            nrep = nrep
+          ),
+          coord_args
+        )
       )
     }
 

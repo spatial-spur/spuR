@@ -25,15 +25,24 @@ testthat::test_that("SPUR half-life parity across options", {
     )
 
     set.seed(123)
-    r_out <- spur_halflife(
-      var = "am",
-      q = q,
-      nrep = nrep,
-      level = level,
-      latlong = case$latlong,
-      normdist = case$normdist,
-      data = df,
-      coord_cols = c("s_1", "s_2")
+    coord_args <- if (isTRUE(case$latlong)) {
+      list(lon = "lon", lat = "lat")
+    } else {
+      list(coords_euclidean = c("s_1", "s_2"))
+    }
+    r_out <- do.call(
+      spurhalflife,
+      c(
+        list(
+          formula = am ~ 1,
+          data = df,
+          q = q,
+          nrep = nrep,
+          level = level,
+          normdist = case$normdist
+        ),
+        coord_args
+      )
     )
 
     testthat::expect_equal(
@@ -71,12 +80,6 @@ testthat::test_that("SPUR half-life level validation parity", {
   testthat::expect_true(any(grepl("Invalid level\\.", run$log_lines, fixed = FALSE)))
 
   testthat::expect_error(
-    spur_halflife(
-      var = "am",
-      level = 101,
-      latlong = TRUE,
-      data = df,
-      coord_cols = c("s_1", "s_2")
-    )
+    spurhalflife(am ~ 1, data = df, level = 101, lon = "lon", lat = "lat")
   )
 })

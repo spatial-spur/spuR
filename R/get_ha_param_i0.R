@@ -9,13 +9,16 @@
 #' @param om_bm A numeric matrix.
 #' @param e A numeric matrix (or vector) used in the computation of power.
 #' @return A numeric scalar representing the parameter \code{g}.
+#' @keywords internal
 get_ha_param_i0 <- function(om_ho, om_i0, om_bm, e) {
+  pow_eval <- .make_pow_qf_evaluator(om0 = om_ho, e = e)
+
   # First phase: find g1 such that power is below 50%
   pow <- 1
   gtry <- 1
   while (pow > 0.5) {
     g <- gtry
-    pow <- get_pow_qf(om_ho, om_i0 + g * om_bm, e)
+    pow <- pow_eval(om_i0 + g * om_bm)
     gtry <- g / 2
   }
   g1 <- g
@@ -25,7 +28,7 @@ get_ha_param_i0 <- function(om_ho, om_i0, om_bm, e) {
   gtry <- 30
   while (pow < 0.5) {
     g <- gtry
-    pow <- get_pow_qf(om_ho, om_i0 + g * om_bm, e)
+    pow <- pow_eval(om_i0 + g * om_bm)
     gtry <- g * 2
   }
   g2 <- g
@@ -34,7 +37,7 @@ get_ha_param_i0 <- function(om_ho, om_i0, om_bm, e) {
   ii <- 1
   while (abs(pow - 0.5) > 0.01) {
     g <- (g1 + g2) / 2
-    pow <- get_pow_qf(om_ho, om_i0 + g * om_bm, e)
+    pow <- pow_eval(om_i0 + g * om_bm)
     if (pow > 0.5) {
       g2 <- g
     } else if (pow < 0.5) {
@@ -45,9 +48,4 @@ get_ha_param_i0 <- function(om_ho, om_i0, om_bm, e) {
   }
   
   return(g)
-}
-
-#' @rdname get_ha_param_i0
-get_ha_parm_I0 <- function(om_ho, om_i0, om_bm, e) {
-  get_ha_param_i0(om_ho = om_ho, om_i0 = om_i0, om_bm = om_bm, e = e)
 }

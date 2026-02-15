@@ -2,12 +2,9 @@
 % Please edit documentation in R/get_ha_param_i1.R
 \name{get_ha_param_i1}
 \alias{get_ha_param_i1}
-\alias{get_ha_parm_I1}
 \title{Compute Ha Parameter for I1 Test}
 \usage{
 get_ha_param_i1(om_ho, distmat, R, e)
-
-get_ha_parm_I1(om_ho, distmat, R, e)
 }
 \arguments{
 \item{om_ho}{A numeric matrix.}
@@ -26,3 +23,4 @@ Determines the parameter \code{g} such that the power of the test is approximate
 The power is computed by the function \code{get_pow_qf()}, and \code{g} is determined
 through an iterative bisection procedure.
 }
+\keyword{internal}

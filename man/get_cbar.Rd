@@ -2,12 +2,9 @@
 % Please edit documentation in R/get_cbar.R
 \name{get_cbar}
 \alias{get_cbar}
-\alias{getcbar}
 \title{Compute cbar Value}
 \usage{
 get_cbar(rhobar, distmat)
-
-getcbar(rhobar, distmat)
 }
 \arguments{
 \item{rhobar}{A numeric scalar representing the target value.}
@@ -23,3 +20,4 @@ a given \code{rhobar}, where \code{vd} is the vectorized lower-triangular portio
 of the distance matrix \code{distmat}. This function uses iterative adjustments and bisection to find
 an appropriate value.
 }
+\keyword{internal}

@@ -2,12 +2,9 @@
 % Please edit documentation in R/get_r.R
 \name{get_r}
 \alias{get_r}
-\alias{Get_R}
 \title{Compute Eigenvectors for Low-Frequency Weights}
 \usage{
 get_r(sig, qmax)
-
-Get_R(sig, qmax)
 }
 \arguments{
 \item{sig}{A numeric matrix.}
@@ -26,3 +23,4 @@ Constructs the eigenvectors corresponding to the largest \code{qmax}
 eigenvalues of \code{sig}. This follows the ordering in the Stata/Mata
 implementation (\code{order(d, -1)}).
 }
+\keyword{internal}

@@ -1,13 +1,13 @@
 #' Core SPUR I(1) Test Function
 #'
-#' This function implements the spatial I(1) test. It is called internally by \code{spur_i1()}.
+#' This function implements the spatial I(1) test. It is called internally by \code{spurtest_i1()}.
 #'
 #' @param Y A numeric matrix (n x number_of_series).
 #' @param distmat A numeric distance matrix (n x n).
 #' @param emat A numeric simulation matrix (q x number_of_simulations).
 #'
-#' @return A list with elements: LR, pvalue, cvalue, ha_parm, cvalue_mat, pvalue_mat, and rho_grid.
-
+#' @return A list with elements: LR, pvalue, cv_vec, and ha_parm.
+#' @keywords internal
 spur_i1_test <- function(Y, distmat, emat) {
   q <- nrow(emat)
 

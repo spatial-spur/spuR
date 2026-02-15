@@ -11,6 +11,7 @@
 #' @keywords internal
 get_ha_param_i1_residual <- function(om_ho, distmat, R, e, M) {
   pow50 <- 0.5
+  pow_eval <- .make_pow_qf_evaluator(om0 = om_ho, e = e)
 
   pow <- 1
   ctry <- get_cbar(0.95, distmat)
@@ -18,7 +19,7 @@ get_ha_param_i1_residual <- function(om_ho, distmat, R, e, M) {
     c <- ctry
     sigdm_c <- get_sigma_residual(distmat, c, M)
     om_c <- t(R) %*% sigdm_c %*% R
-    pow <- get_pow_qf(om_ho, om_c, e)
+    pow <- pow_eval(om_c)
     ctry <- ctry / 2
   }
   c1 <- c
@@ -29,7 +30,7 @@ get_ha_param_i1_residual <- function(om_ho, distmat, R, e, M) {
     c <- ctry
     sigdm_c <- get_sigma_residual(distmat, c, M)
     om_c <- t(R) %*% sigdm_c %*% R
-    pow <- get_pow_qf(om_ho, om_c, e)
+    pow <- pow_eval(om_c)
     ctry <- 2 * ctry
   }
   c2 <- c
@@ -39,7 +40,7 @@ get_ha_param_i1_residual <- function(om_ho, distmat, R, e, M) {
     c <- (c1 + c2) / 2
     sigdm_c <- get_sigma_residual(distmat, c, M)
     om_c <- t(R) %*% sigdm_c %*% R
-    pow <- get_pow_qf(om_ho, om_c, e)
+    pow <- pow_eval(om_c)
 
     if (pow > pow50) {
       c2 <- c
@@ -54,16 +55,4 @@ get_ha_param_i1_residual <- function(om_ho, distmat, R, e, M) {
   }
 
   c
-}
-
-#' @rdname get_ha_param_i1_residual
-#' @keywords internal
-get_ha_parm_I1_residual <- function(om_ho, distmat, R, e, M) {
-  get_ha_param_i1_residual(
-    om_ho = om_ho,
-    distmat = distmat,
-    R = R,
-    e = e,
-    M = M
-  )
 }
