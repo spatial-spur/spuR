@@ -1,0 +1,24 @@
+#' Example Spatial Data
+#'
+#' A subset of 50 US commuting zones from Chetty et al. (2014), containing
+#' geographic coordinates and economic outcomes suitable for demonstrating
+#' spatial unit root tests and transformations.
+#'
+#' @format A data frame with 50 rows and 9 variables:
+#' \describe{
+#'   \item{cz}{Commuting zone identifier.}
+#'   \item{czname}{Commuting zone name.}
+#'   \item{state}{US state abbreviation.}
+#'   \item{lat}{Latitude of the commuting zone centroid.}
+#'   \item{lon}{Longitude of the commuting zone centroid.}
+#'   \item{am}{Absolute upward mobility measure.}
+#'   \item{rm}{Relative mobility measure.}
+#'   \item{gini}{Gini coefficient of income inequality.}
+#'   \item{fracblack}{Fraction of Black residents.}
+#' }
+#'
+#' @source Chetty, R., Hendren, N., Kline, P. and Saez, E. (2014).
+#'   Where is the Land of Opportunity? The Geography of Intergenerational
+#'   Mobility in the United States.
+#'   \emph{Quarterly Journal of Economics}, 129(4), 1553--1623.
+"spur_example"

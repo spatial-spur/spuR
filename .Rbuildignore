@@ -1,0 +1,6 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^ReplicationPackage_MS21654_MuellerWatson_r2$
+^\.DS_Store$
+^\.claude$
+^data-raw$

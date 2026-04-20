@@ -1,0 +1,14 @@
+bibentry(
+  bibtype  = "Article",
+  title    = "Spatial Unit-Root Testing",
+  author   = c(
+    person("Ulrich K.", "Mueller"),
+    person("Mark W.", "Watson")
+  ),
+  journal  = "Econometrica",
+  year     = "2024",
+  volume   = "92",
+  number   = "6",
+  pages    = "2121--2152",
+  doi      = "10.3982/ECTA20682"
+)
