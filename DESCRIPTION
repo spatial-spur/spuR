@@ -1,6 +1,6 @@
 Package: spuR
 Title: Spatial Unit Root Tests and Transformations
-Version: 0.1.0
+Version: 0.1.1
 Authors@R: c(
     person("Paul", "Boll", email = "paul@example.com",
            role = c("aut", "cre")),
@@ -21,8 +21,8 @@ Description: Implements low-frequency spatial unit root tests and
     Boll, and Voth (2025) for a practical guide to these methods.
 License: GPL-3
 Encoding: UTF-8
-URL: https://github.com/pauldavidboll/spuR
-BugReports: https://github.com/pauldavidboll/spuR/issues
+URL: https://github.com/spatial-spur/spuR
+BugReports: https://github.com/spatial-spur/spuR/issues
 Depends:
     R (>= 4.2.0)
 Imports:
