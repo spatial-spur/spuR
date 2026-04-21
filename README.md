@@ -14,7 +14,7 @@ Install from GitHub:
 
 ```r
 # install.packages("remotes")
-remotes::install_github("pauldavidboll/spuR")
+remotes::install_github("spatial-spur/spuR")
 ```
 
 ## Usage
