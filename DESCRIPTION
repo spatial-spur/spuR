@@ -27,7 +27,10 @@ Depends:
     R (>= 4.2.0)
 Imports:
     stats,
-    RSpectra
+    RSpectra,
+    scpcR
+Remotes:
+    spatial-spur/scpcR@v0.1.0b1
 Suggests:
     testthat (>= 3.0.0)
 Config/testthat/edition: 3
