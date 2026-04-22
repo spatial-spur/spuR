@@ -9,7 +9,7 @@ models, see `scpcR`.
 
 ```r
 # install.packages("remotes")
-remotes::install_github("spatial-spur/spuR@v0.1.1")
+remotes::install_github("spatial-spur/spuR@v0.1.2")
 ```
 
 ## Example: Chetty Dataset
