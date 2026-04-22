@@ -1,8 +1,10 @@
 name: Trigger Project Docs Rebuild
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
 
 permissions:
   contents: read
@@ -15,7 +17,6 @@ jobs:
       - name: Trigger spatial-spur.github.io rebuild
         env:
           PAGES_TRIGGER_TOKEN: ${{ secrets.PAGES_TRIGGER_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           if [ -z "$PAGES_TRIGGER_TOKEN" ]; then
             echo "Missing PAGES_TRIGGER_TOKEN secret."
@@ -28,12 +29,4 @@ jobs:
             -H "Authorization: Bearer ${PAGES_TRIGGER_TOKEN}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/repos/spatial-spur/spatial-spur.github.io/actions/workflows/deploy.yml/dispatches \
-            -d @- <<EOF
-          {
-            "ref": "main",
-            "inputs": {
-              "source_repo": "spatial-spur/spuR",
-              "source_ref": "${RELEASE_TAG}"
-            }
-          }
-          EOF
+            -d '{"ref":"main"}'
