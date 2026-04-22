@@ -1,8 +1,8 @@
 Package: spuR
 Title: Spatial Unit Root Tests and Transformations
-Version: 0.1.1
+Version: 0.1.2
 Authors@R: c(
-    person("Paul", "Boll", email = "paul@example.com",
+    person("Paul", "Boll", email = "david.boll@warwick.ac.uk",
            role = c("aut", "cre")),
     person("Sascha O.", "Becker", role = "aut"),
     person("Hans-Joachim", "Voth", role = "aut"),
@@ -28,9 +28,9 @@ Depends:
 Imports:
     stats,
     RSpectra,
-    scpcR
+    scpcR (>= 0.1.3)
 Remotes:
-    spatial-spur/scpcR@v0.1.0b1
+    spatial-spur/scpcR@v0.1.3
 Suggests:
     testthat (>= 3.0.0)
 Config/testthat/edition: 3
