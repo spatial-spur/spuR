@@ -33,8 +33,7 @@ jobs:
             "ref": "main",
             "inputs": {
               "source_repo": "spatial-spur/spuR",
-              "source_ref": "${RELEASE_TAG}",
-              "source_slug": "spuR"
+              "source_ref": "${RELEASE_TAG}"
             }
           }
           EOF
