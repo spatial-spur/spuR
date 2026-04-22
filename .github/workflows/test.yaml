@@ -25,7 +25,8 @@ jobs:
       - name: Install R dependencies
         uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          extra-packages: any::testthat
+          # TODO: consider moving geodist from scpcR Suggests to Imports, since geographic scpc() calls require it at runtime.
+          extra-packages: any::testthat, any::geodist
 
       - name: Run tests
         run: Rscript -e 'testthat::test_local(stop_on_failure = TRUE)'
