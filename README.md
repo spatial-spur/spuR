@@ -14,8 +14,13 @@ Install from GitHub:
 
 ```r
 # install.packages("remotes")
+remotes::install_github("spatial-spur/scpcR@v0.1.3")
 remotes::install_github("spatial-spur/spuR@v0.1.2")
 ```
+
+GitHub installation does not guarantee the declared `scpcR` version is
+updated, so make sure both versions are up to date by installing the tagged
+version explicitly.
 
 ## Usage
 

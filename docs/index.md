@@ -9,8 +9,12 @@ models, see `scpcR`.
 
 ```r
 # install.packages("remotes")
+remotes::install_github("spatial-spur/scpcR@v0.1.3")
 remotes::install_github("spatial-spur/spuR@v0.1.2")
 ```
+
+We recommend installing the latest tagged version of both packages by 
+pointing to the latest tagged version of each.
 
 ## Example: Chetty Dataset
 
