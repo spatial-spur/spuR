@@ -32,7 +32,7 @@ The SPUR tests and half-life interval are simulation-based.
 
 - `q`: number of low-frequency weighted averages; default `15`
 - `nrep`: number of Monte Carlo draws; default `100000`
-- `seed`: optional integer seed for reproducibility
+- `seed`: integer seed for reproducibility; default `42L`
 
 ### Formula Inputs
 
@@ -110,7 +110,7 @@ spurtest_i0(
   lon = NULL,
   lat = NULL,
   coords_euclidean = NULL,
-  seed = NULL,
+  seed = 42L,
   verbose = FALSE
 )
 ```
@@ -150,7 +150,7 @@ spurtest_i1(
   lon = NULL,
   lat = NULL,
   coords_euclidean = NULL,
-  seed = NULL,
+  seed = 42L,
   verbose = FALSE
 )
 ```
@@ -182,7 +182,7 @@ spurtest_i0resid(
   lon = NULL,
   lat = NULL,
   coords_euclidean = NULL,
-  seed = NULL,
+  seed = 42L,
   verbose = FALSE
 )
 ```
@@ -213,7 +213,7 @@ spurtest_i1resid(
   lon = NULL,
   lat = NULL,
   coords_euclidean = NULL,
-  seed = NULL,
+  seed = 42L,
   verbose = FALSE
 )
 ```
@@ -302,7 +302,7 @@ spurhalflife(
   lon = NULL,
   lat = NULL,
   coords_euclidean = NULL,
-  seed = NULL,
+  seed = 42L,
   verbose = FALSE
 )
 ```

@@ -12,7 +12,7 @@ spurtest_i0(
   lon = NULL,
   lat = NULL,
   coords_euclidean = NULL,
-  seed = NULL,
+  seed = 42L,
   verbose = FALSE
 )
 }

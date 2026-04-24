@@ -224,7 +224,7 @@ spurtest_i0 <- function(formula,
                         lon = NULL,
                         lat = NULL,
                         coords_euclidean = NULL,
-                        seed = NULL,
+                        seed = 42L,
                         verbose = FALSE) {
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_single_var_formula(formula = formula, data = data, fn_name = "spurtest_i0()")
@@ -299,7 +299,7 @@ spurtest_i1 <- function(formula,
                         lon = NULL,
                         lat = NULL,
                         coords_euclidean = NULL,
-                        seed = NULL,
+                        seed = 42L,
                         verbose = FALSE) {
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_single_var_formula(formula = formula, data = data, fn_name = "spurtest_i1()")
@@ -374,7 +374,7 @@ spurtest_i0resid <- function(formula,
                              lon = NULL,
                              lat = NULL,
                              coords_euclidean = NULL,
-                             seed = NULL,
+                             seed = 42L,
                              verbose = FALSE) {
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_residual_formula(formula = formula, data = data, fn_name = "spurtest_i0resid()")
@@ -448,7 +448,7 @@ spurtest_i1resid <- function(formula,
                              lon = NULL,
                              lat = NULL,
                              coords_euclidean = NULL,
-                             seed = NULL,
+                             seed = 42L,
                              verbose = FALSE) {
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_residual_formula(formula = formula, data = data, fn_name = "spurtest_i1resid()")
@@ -526,7 +526,7 @@ spurhalflife <- function(formula,
                          lon = NULL,
                          lat = NULL,
                          coords_euclidean = NULL,
-                         seed = NULL,
+                         seed = 42L,
                          verbose = FALSE) {
   .validate_common_args(data = data, q = q, nrep = nrep)
   if (length(level) != 1L || !is.finite(level)) {
