@@ -108,28 +108,6 @@ scpc_transformed <- scpcR::scpc(
 summary(scpc_transformed)
 ```
 
-### Sanity check
-
-As a sanity check, we recommend validating that your regression residuals do not
-have a spatial unit root. You can do that using the `I(0) residual` and `I(1)
-residual` tests:
-
-```r
-i0resid <- spurtest_i0resid(
-  am ~ gini + fracblack,
-  df,
-  lon = "lon",
-  lat = "lat"
-)
-
-i1resid <- spurtest_i1resid(
-  am ~ gini + fracblack,
-  df,
-  lon = "lon",
-  lat = "lat"
-)
-```
-
 ### Pipeline wrapper
 
 As a shortcut to implementing all of those steps individually, we also provide a
@@ -145,6 +123,27 @@ pipeline <- spur(
 )
 
 summary(pipeline)
+```
+
+### Residual tests
+
+We also provide tests for spatial unit roots in regression residuals
+rather than the dependent variable itself:
+
+```r
+i0resid <- spurtest_i0resid(
+  am ~ gini + fracblack,
+  df,
+  lon = "lon",
+  lat = "lat"
+)
+
+i1resid <- spurtest_i1resid(
+  am ~ gini + fracblack,
+  df,
+  lon = "lon",
+  lat = "lat"
+)
 ```
 
 ## Next Step
