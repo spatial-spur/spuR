@@ -18,14 +18,16 @@ pointing to the latest tagged version of each.
 
 ## Example: Chetty Dataset
 
-This walkthrough follows the practitioner guide in Becker, Boll, and Voth
-(2026). The branch decision is based on the dependent-variable `I(0)` and
-`I(1)` tests, using a 10% significance level.
+In this example, we walk you through the workflow we recommend with the
+packages step-by-step. We also provide a one-stop [pipeline wrapper](#pipeline-wrapper)
+implementing the entire workflow in one step.
 
-## 1. Prepare the sample
+### Data preparation
 
-Construct the estimation sample and retain the variables used in the
-diagnostics and regression.
+For illustration, we load the Chetty dataset we ship as part of the package. Of
+course, the analysis in principle follows the same logic on any other dataset.
+In this specific case, we first omit the non-contiguous US states. We also drop
+rows with missing values.
 
 ```r
 library(spuR)
@@ -41,40 +43,35 @@ df <- subset(
 df <- stats::na.omit(df)
 ```
 
-## 2. Test the dependent variable against the I(0) alternative
+### Testing for a spatial unit root
 
-The first diagnostic tests the dependent variable under the spatial `I(0)`
-null.
+Based on MW 2024, we suggest first testing for a spatial unit root setting
+using the `I(0)` and `I(1)` tests on the dependent variable.
+
+One way to do this is to use the `spurtest_i0()` and `spurtest_i1()` functions
+directly:
 
 ```r
+# am is the dependent variable
 i0 <- spurtest_i0(am ~ 1, df, lon = "lon", lat = "lat")
-
-print(i0)
-```
-
-## 3. Test the dependent variable against the I(1) alternative
-
-The second diagnostic tests the same variable under the spatial `I(1)` null.
-
-```r
 i1 <- spurtest_i1(am ~ 1, df, lon = "lon", lat = "lat")
 
+print(i0)
 print(i1)
 ```
 
-## 4. Apply the decision rule
+### Interpreting the test statistics
 
-Using a 10% significance threshold:
+Using a 10% significance threshold, we suggest interpreting the results with the following heuristic:
 
-- If you do **not** reject `I(0)` and you **do** reject `I(1)`, proceed in
-  levels.
-- In every other case, treat the specification as requiring spatial
-  differencing and transform the dependent and independent variables together.
+- If you do **not** reject `I(0)` and you **do** reject `I(1)`, there is **likely no spatial unit root** and you can proceed in levels
+- every other case implies a **possible spatial unit root** - in that case, we suggest transforming all dependent and independent variables before running regressions
 
-## 5. Levels branch
+We suggest always applying SCPC inference.
 
-Use this branch only when the decision rule implies that the dependent variable
-is consistent with `I(0)` and inconsistent with `I(1)`.
+### Case 1: likely no spatial unit root
+
+If the heuristic implies your scenario is unlikely to be a spatial unit root, we suggest proceeding in levels but applying SCPC inference:
 
 ```r
 fit_levels <- stats::lm(am ~ gini + fracblack, data = df)
@@ -83,14 +80,9 @@ scpc_levels <- scpcR::scpc(fit_levels, df, lon = "lon", lat = "lat")
 summary(scpc_levels)
 ```
 
-In this branch there is no SPUR transformation step; the regression is
-estimated in levels and SCPC is used for inference.
+### Case 2: likely spatial unit root
 
-## 6. Transformed branch
-
-In every other case, transform the dependent and independent variables
-together, re-estimate the regression on the transformed data, and use SCPC for
-inference there.
+If you do have a likely spatial unit root according to the heuristic above, we suggest applying the transformation and running the regression on transformed variables with SCPC inference:
 
 ```r
 transformed <- spurtransform(
@@ -116,11 +108,11 @@ scpc_transformed <- scpcR::scpc(
 summary(scpc_transformed)
 ```
 
-The default empirical branch is the `lbmgls` transformation.
+### Sanity check
 
-## 7. Residual diagnostics
-
-`spuR` also provides residual-based `I(0)` and `I(1)` tests:
+As a sanity check, we recommend validating that your regression residuals do not
+have a spatial unit root. You can do that using the `I(0) residual` and `I(1)
+residual` tests:
 
 ```r
 i0resid <- spurtest_i0resid(
@@ -138,10 +130,11 @@ i1resid <- spurtest_i1resid(
 )
 ```
 
-## 8. Packaged shortcut
+### Pipeline wrapper
 
-If you want the package’s default end-to-end implementation rather than the
-manual branch logic, use `spur()`.
+As a shortcut to implementing all of those steps individually, we also provide a
+`spur()` wrapper that implements the entire pipeline in one step. It simply runs
+all tests and returns all results.
 
 ```r
 pipeline <- spur(
@@ -153,9 +146,6 @@ pipeline <- spur(
 
 summary(pipeline)
 ```
-
-`spur()` returns all four SPUR diagnostics together with the levels and
-transformed fits.
 
 ## Next Step
 
