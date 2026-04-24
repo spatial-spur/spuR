@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="SPUR logo">
+</p>
+
 # spuR
 
 Spatial Unit Root Tests and Transformations for R.
