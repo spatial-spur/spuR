@@ -4,13 +4,21 @@
 
 # spuR
 
-Spatial Unit Root Tests and Transformations for R.
+`spuR` implements diagnostics and correction methods for spatial unit roots developed by Müller and Watson (2024) in R.
 
-This package implements low-frequency spatial unit root tests and spatial
-transformations for cross-sectional data as developed by
-[Mueller and Watson (2024)](https://doi.org/10.3982/ECTA20682). A practical
-guide to these methods can be found in
-[Becker, Boll and Voth (2025)](https://warwick.ac.uk/fac/soc/economics/research/workingpapers/2025/twerp_1541-_becker.pdf).
+**When using this code, please cite [Becker, Boll and Voth (2026)](https://pauldavidboll.com/SPUR_Stata_Journal_website.pdf):**
+
+```bibtex
+@Article{becker2026,
+  author    = {Becker, Sascha O. and Boll, P. David and Voth, Hans-Joachim},
+  title     = {Testing and Correcting for Spatial Unit Roots in Regression Analysis},
+  journal   = {Stata Journal},
+  year      = {forthcoming},
+  note      = {Forthcoming}
+}
+```
+
+If you encounter any issues or have any questions, please open an issue on GitHub or contact the authors.
 
 ## Installation
 
@@ -50,24 +58,12 @@ out <- spurtransform(am ~ gini + fracblack, data = spur_example,
 head(out[, c("h_am", "h_gini", "h_fracblack")])
 ```
 
-## Citation
+## Documentation
 
-When using this package, please cite:
-
-```bibtex
-@TechReport{becker2025,
-  author    = {Becker, Sascha O. and Boll, P. David and Voth, Hans-Joachim},
-  title     = {Spatial Unit Roots in Regressions: A Practitioner's Guide and a Stata Package},
-  year      = {2025},
-  institution = {University of Warwick, Department of Economics},
-  type      = {The Warwick Economics Research Paper Series (TWERPS)},
-  number    = {1541},
-  url       = {https://warwick.ac.uk/fac/soc/economics/research/workingpapers/2025/twerp_1541-_becker.pdf}
-}
-```
+Please refer to [the package documentation](https://spatial-spur.github.io/scpcR/) for detailed information and other (R, Python, Stata) packages.
 
 ## References
 
-Mueller, U. K. and Watson, M. W. (2024). Spatial Unit-Root Testing.
-*Econometrica*, 92(6), 2121-2152. doi:
-[10.3982/ECTA20682](https://doi.org/10.3982/ECTA20682)
+Becker, Sascha O., P. David Boll and Hans-Joachim Voth "Testing and Correcting for Spatial Unit Roots in Regression Analysis", Forthcoming at the Stata Journal.
+
+Müller, Ulrich K. and Mark W. Watson "Spatial Unit Roots and Spurious Regression", Econometrica 92(5) (2024), 1661–1695. https://www.princeton.edu/~umueller/SPUR.pdf.
