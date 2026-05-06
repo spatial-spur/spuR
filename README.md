@@ -10,7 +10,7 @@ This package implements low-frequency spatial unit root tests and spatial
 transformations for cross-sectional data as developed by
 [Müller & Watson 2024](https://doi.org/10.3982/ECTA21654). A practical
 guide to these methods can be found in
-[Becker et al. 2026](https://pauldavidboll.com/SPUR_Stata_Journal_website.pdf).
+[Becker, Boll and Voth 2026](https://pauldavidboll.com/SPUR_Stata_Journal_website.pdf).
 
 ## Installation
 
@@ -56,7 +56,7 @@ Please refer to [the package documentation](https://spatial-spur.github.io/spuR/
 
 ## Citation
 
-If you use this package, please cite Becker et al. 2026 and Müller & Watson 2024. See [CITATION.bib](CITATION.bib) for the BibTeX entries.
+If you use this package, please cite Becker, Boll and Voth 2026 and Müller & Watson 2024. See [CITATION.bib](CITATION.bib) for the BibTeX entries.
 
 ## References
 
