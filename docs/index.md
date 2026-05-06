@@ -1,4 +1,10 @@
+<div class="package-overview-header" markdown="1">
+
 # spuR
+
+[GitHub repository](https://github.com/spatial-spur/spuR){ .md-button }
+
+</div>
 
 `spuR` implements the SPUR workflow for diagnosing and correcting spatial unit
 roots in cross-sectional regressions. It covers the diagnostic and
