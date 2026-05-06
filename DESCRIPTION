@@ -13,12 +13,12 @@ Authors@R: c(
     )
 Description: Implements low-frequency spatial unit root tests and
     spatial transformations for cross-sectional data as developed by
-    Mueller and Watson (2024) <doi:10.3982/ECTA20682>. Provides I(0) and
+    Mueller and Watson (2024) <doi:10.3982/ECTA21654>. Provides I(0) and
     I(1) tests for detecting spatial unit roots, residual-based variants
     for regression settings, half-life confidence intervals for spatial
     persistence, and spatial transformations (LBM-GLS, nearest-neighbor,
     isotropic, cluster) for correcting spatial dependence. See Becker,
-    Boll, and Voth (2025) for a practical guide to these methods.
+    Boll, and Voth (2026) for a practical guide to these methods.
 License: GPL-3
 Encoding: UTF-8
 URL: https://github.com/spatial-spur/spuR

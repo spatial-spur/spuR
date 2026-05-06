@@ -6,19 +6,11 @@
 
 `spuR` implements diagnostics and correction methods for spatial unit roots developed by Müller and Watson (2024) in R.
 
-**When using this code, please cite [Becker, Boll and Voth (2026)](https://pauldavidboll.com/SPUR_Stata_Journal_website.pdf):**
-
-```bibtex
-@Article{becker2026,
-  author    = {Becker, Sascha O. and Boll, P. David and Voth, Hans-Joachim},
-  title     = {Testing and Correcting for Spatial Unit Roots in Regression Analysis},
-  journal   = {Stata Journal},
-  year      = {forthcoming},
-  note      = {Forthcoming}
-}
-```
-
-If you encounter any issues or have any questions, please open an issue on GitHub or contact the authors.
+This package implements low-frequency spatial unit root tests and spatial
+transformations for cross-sectional data as developed by
+[Mueller and Watson (2024)](https://doi.org/10.3982/ECTA21654). A practical
+guide to these methods can be found in
+[Becker, Boll and Voth (2026)](https://wrap.warwick.ac.uk/id/eprint/194576/).
 
 ## Installation
 
@@ -60,10 +52,25 @@ head(out[, c("h_am", "h_gini", "h_fracblack")])
 
 ## Documentation
 
-Please refer to [the package documentation](https://spatial-spur.github.io/scpcR/) for detailed information and other (R, Python, Stata) packages.
+Please refer to [the package documentation](https://spatial-spur.github.io/spuR/) for detailed information and other (R, Python, Stata) packages.
+
+## Citation
+
+When using this package, please cite:
+
+```bibtex
+@Article{becker2026,
+  author  = {Becker, Sascha O. and Boll, P. David and Voth, Hans-Joachim},
+  title   = {Testing and Correcting for Spatial Unit Roots in Regression Analysis},
+  journal = {The Stata Journal},
+  year    = {2026},
+  note    = {In press},
+  url     = {https://wrap.warwick.ac.uk/id/eprint/194576/}
+}
+```
 
 ## References
 
-Becker, Sascha O., P. David Boll and Hans-Joachim Voth "Testing and Correcting for Spatial Unit Roots in Regression Analysis", Forthcoming at the Stata Journal.
-
-Müller, Ulrich K. and Mark W. Watson "Spatial Unit Roots and Spurious Regression", Econometrica 92(5) (2024), 1661–1695. https://www.princeton.edu/~umueller/SPUR.pdf.
+Mueller, U. K. and Watson, M. W. (2024). Spatial Unit Roots and Spurious Regression.
+*Econometrica*, 92(5), 1661-1695. doi:
+[10.3982/ECTA21654](https://doi.org/10.3982/ECTA21654)
