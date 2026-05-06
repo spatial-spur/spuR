@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use spuR, please cite Becker, Boll, and Voth (2026) and Mueller and Watson (2024)."
+message: "If you use spuR, please cite bbv2026 and mw2024."
 title: "spuR: Spatial Unit Root Tests and Transformations"
 version: "0.1.2"
 license: GPL-3.0-only
@@ -26,7 +26,7 @@ preferred-citation:
   journal: "The Stata Journal"
   year: 2026
   notes: "Forthcoming"
-  url: "https://wrap.warwick.ac.uk/id/eprint/194576/"
+  url: "https://pauldavidboll.com/SPUR_Stata_Journal_website.pdf"
 references:
   - type: article
     authors:
