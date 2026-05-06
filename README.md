@@ -4,13 +4,13 @@
 
 # spuR
 
-`spuR` implements diagnostics and correction methods for spatial unit roots developed by Müller and Watson (2024) in R.
+`spuR` implements diagnostics and correction methods for spatial unit roots developed by Müller & Watson 2024 in R.
 
 This package implements low-frequency spatial unit root tests and spatial
 transformations for cross-sectional data as developed by
-[Mueller and Watson (2024)](https://doi.org/10.3982/ECTA21654). A practical
+[Müller & Watson 2024](https://doi.org/10.3982/ECTA21654). A practical
 guide to these methods can be found in
-[Becker, Boll and Voth (2026)](https://pauldavidboll.com/SPUR_Stata_Journal_website.pdf).
+[Becker et al. 2026](https://pauldavidboll.com/SPUR_Stata_Journal_website.pdf).
 
 ## Installation
 
@@ -56,7 +56,7 @@ Please refer to [the package documentation](https://spatial-spur.github.io/spuR/
 
 ## Citation
 
-If you use this package, please cite `bbv2026` and `mw2024`. See [CITATION.cff](CITATION.cff) for copyable citation metadata.
+If you use this package, please cite Becker et al. 2026 and Müller & Watson 2024. See [CITATION.bib](CITATION.bib) for the BibTeX entries.
 
 ## References
 
