@@ -10,7 +10,7 @@ This package implements low-frequency spatial unit root tests and spatial
 transformations for cross-sectional data as developed by
 [Müller & Watson 2024](https://doi.org/10.3982/ECTA21654). A practical
 guide to these methods can be found in
-[Becker, Boll and Voth 2026](https://pauldavidboll.com/SPUR_Stata_Journal_website.pdf).
+[Becker, Boll and Voth 2026](https://journals.sagepub.com/doi/10.1177/1536867X261449932).
 
 ## Installation
 

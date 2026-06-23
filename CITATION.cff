@@ -25,8 +25,12 @@ preferred-citation:
   title: "Testing and Correcting for Spatial Unit Roots in Regression Analysis"
   journal: "The Stata Journal"
   year: 2026
-  notes: "Forthcoming"
-  url: "https://pauldavidboll.com/SPUR_Stata_Journal_website.pdf"
+  volume: 26
+  issue: 2
+  start: 177
+  end: 202
+  doi: "10.1177/1536867X261449932"
+  url: "https://journals.sagepub.com/doi/10.1177/1536867X261449932"
 references:
   - type: article
     authors:

@@ -8,8 +8,11 @@ bibentry(
   ),
   journal  = "The Stata Journal",
   year     = "2026",
-  note     = "Forthcoming",
-  url      = "https://pauldavidboll.com/SPUR_Stata_Journal_website.pdf"
+  volume   = "26",
+  number   = "2",
+  pages    = "177--202",
+  doi      = "10.1177/1536867X261449932",
+  url      = "https://journals.sagepub.com/doi/10.1177/1536867X261449932"
 )
 
 bibentry(
