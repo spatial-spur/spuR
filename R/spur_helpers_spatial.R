@@ -9,10 +9,13 @@
 #' @return The validated coordinates matrix.
 #' @keywords internal
 get_s_matrix <- function(coords, latlong = FALSE, verbose = FALSE) {
-  if (any(is.na(coords))) {
+  if (!is.matrix(coords)) {
+    coords <- as.matrix(coords)
+  }
+  if (anyNA(coords)) {
     stop("Missing value(s) in coordinate variables; aborting")
   }
-  if (any(!is.finite(as.matrix(coords)))) {
+  if (!all(is.finite(coords))) {
     stop("Non-finite value(s) in coordinate variables; aborting")
   }
 
@@ -49,7 +52,9 @@ get_s_matrix <- function(coords, latlong = FALSE, verbose = FALSE) {
 #' @return A numeric matrix of pairwise Euclidean distances between locations.
 #' @keywords internal
 get_distmat_euclidean <- function(s) {
-  as.matrix(stats::dist(s, method = "euclidean"))
+  s <- as.matrix(s)
+  storage.mode(s) <- "double"
+  .Call(cpp_distmat_euclidean, s)
 }
 
 #' Calculate Distance Matrix for Latitude/Longitude Points
@@ -63,21 +68,9 @@ get_distmat_euclidean <- function(s) {
 #'   units, matching the SPUR Mata `getdistmat()` implementation.
 #' @keywords internal
 get_distmat_lat_lon <- function(s) {
-  n <- nrow(s)
-  distmat <- matrix(0, nrow = n, ncol = n)
-
-  # Degrees-to-radians conversion
-  c <- pi / 180
   s <- as.matrix(s)
-
-  for (i in 1:n) {
-    d <- 0.5 * c * (sweep(s, 2, s[i, ], "-"))
-    distmat[, i] <- asin(sqrt(sin(d[, 1])^2 +
-      cos(c * s[i, 1]) *
-        (cos(c * s[, 1]) * sin(d[, 2])^2))) / pi
-  }
-
-  distmat
+  storage.mode(s) <- "double"
+  .Call(cpp_distmat_lat_lon, s)
 }
 
 #' Cluster Vector as Matrix
@@ -107,7 +100,9 @@ get_cluster_matrix <- function(cluster_values, use_rows = NULL) {
   if (!is.finite(max_dist) || max_dist <= 0) {
     stop("Distance matrix must contain positive finite distances.")
   }
-  distmat / max_dist
+  out <- distmat / max_dist
+  attr(out, "max_dist") <- max_dist
+  out
 }
 
 #' @keywords internal

@@ -1,0 +1,7 @@
+PKG_CXXFLAGS = -O3
+UNAME_S := $(shell uname -s 2>/dev/null)
+ifeq ($(UNAME_S),Darwin)
+  PKG_LIBS = -framework Accelerate
+else
+  PKG_LIBS = $(LAPACK_LIBS) $(BLAS_LIBS) $(FLIBS)
+endif

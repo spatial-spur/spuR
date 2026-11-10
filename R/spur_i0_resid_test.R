@@ -8,28 +8,35 @@
 #' @param emat Numeric simulation matrix (q x nrep).
 #' @return List with test outputs.
 #' @keywords internal
-spur_i0_resid_test <- function(Y, X_in, distmat, emat) {
+spur_i0_resid_test <- function(Y, X_in, distmat, emat, sigdm_bm = NULL, R = NULL, R_M = NULL) {
   q <- nrow(emat)
-  n <- nrow(distmat)
+  storage.mode(distmat) <- "double"
+  storage.mode(emat) <- "double"
 
-  xtx <- crossprod(X_in)
-  if (qr(xtx)$rank < ncol(xtx)) {
-    stop("Design matrix is rank-deficient; residual tests require full column rank.")
+  if (is.null(sigdm_bm) || is.null(R) || is.null(R_M)) {
+    xtx <- crossprod(X_in)
+    if (qr(xtx)$rank < ncol(xtx)) {
+      stop("Design matrix is rank-deficient; residual tests require full column rank.")
+    }
+    storage.mode(X_in) <- "double"
+    P_X <- X_in %*% solve(xtx)
+    storage.mode(P_X) <- "double"
+
+    rho_bm <- 0.999
+    c_bm <- get_cbar(rho_bm, distmat)
+    sigdm_bm <- .Call(cpp_get_sigma_residual_proj, distmat, as.numeric(c_bm), X_in, P_X)
+    R <- get_r(sigdm_bm, q)$R
+    R_M <- R - P_X %*% crossprod(X_in, R)
   }
-  M <- diag(n) - X_in %*% solve(xtx, t(X_in))
-
-  rho_bm <- 0.999
-  c_bm <- get_cbar(rho_bm, distmat)
-  sigdm_bm <- get_sigma_residual(distmat, c_bm, M)
-
-  R <- get_r(sigdm_bm, q)$R
+  storage.mode(R_M) <- "double"
 
   rho <- 0.001
-  c_val <- get_cbar(rho, distmat)
-  sigdm_rho <- get_sigma_residual(distmat, c_val, M)
+  rho_grid <- seq(from = 0.0001, to = 0.03, length.out = 30)
+  c_all <- get_cbar(c(rho, rho_grid), distmat)
+  om_all <- .Call(cpp_om_grid, distmat, R_M, c_all)
 
-  om_rho <- t(R) %*% sigdm_rho %*% R
-  om_bm <- t(R) %*% sigdm_bm %*% R
+  om_rho <- om_all[, , 1L]
+  om_bm <- crossprod(R, sigdm_bm %*% R)
 
   om_i0 <- om_rho
   om_ho <- om_rho
@@ -43,7 +50,7 @@ spur_i0_resid_test <- function(Y, X_in, distmat, emat) {
   LR <- numeric(n_y)
   for (i in seq_len(n_y)) {
     X <- Y[, i] - mean(Y[, i])
-    P <- t(R) %*% X
+    P <- crossprod(R, X)
     y_P_ho <- ch_omi_ho %*% P
     y_P_ha <- ch_omi_ha %*% P
     q_P_ho <- sum(y_P_ho^2)
@@ -51,37 +58,24 @@ spur_i0_resid_test <- function(Y, X_in, distmat, emat) {
     LR[i] <- q_P_ho / q_P_ha
   }
 
-  rho_grid <- seq(from = 0.0001, to = 0.03, length.out = 30)
   ch_om_ho_mat <- array(NA_real_, dim = c(q, q, length(rho_grid)))
   for (i in seq_along(rho_grid)) {
-    om_ho_i <- diag(q)
-    rho_i <- rho_grid[i]
-    if (rho_i > 0) {
-      c_i <- get_cbar(rho_i, distmat)
-      sigdm_ho_i <- get_sigma_residual(distmat, c_i, M)
-      om_ho_i <- t(R) %*% sigdm_ho_i %*% R
-    }
+    om_ho_i <- if (rho_grid[i] > 0) om_all[, , i + 1L] else diag(q)
     ch_om_ho_mat[, , i] <- chol(om_ho_i)
   }
 
-  pvalue_mat <- matrix(NA_real_, nrow = length(rho_grid), ncol = n_y)
   sz_vec <- c(0.01, 0.05, 0.10)
-  cvalue_mat <- matrix(NA_real_, nrow = length(rho_grid), ncol = length(sz_vec))
-
-  for (ir in seq_along(rho_grid)) {
-    ch_om_ho <- ch_om_ho_mat[, , ir]
-    y_ho <- t(ch_om_ho) %*% emat
-    y_ho_ho <- ch_omi_ho %*% y_ho
-    y_ho_ha <- ch_omi_ha %*% y_ho
-    q_ho_ho <- colSums(y_ho_ho^2)
-    q_ho_ha <- colSums(y_ho_ha^2)
-    lr_ho <- q_ho_ho / q_ho_ha
-
-    cvalue_mat[ir, ] <- as.numeric(stats::quantile(lr_ho, probs = 1 - sz_vec))
-    for (j in seq_len(n_y)) {
-      pvalue_mat[ir, j] <- mean(lr_ho > LR[j])
-    }
-  }
+  mc_out <- .Call(
+    cpp_mc_lr_grid,
+    ch_om_ho_mat,
+    ch_omi_ho,
+    ch_omi_ha,
+    emat,
+    LR,
+    1 - sz_vec
+  )
+  cvalue_mat <- mc_out[[1L]]
+  pvalue_mat <- mc_out[[2L]]
 
   list(
     LR = LR,
