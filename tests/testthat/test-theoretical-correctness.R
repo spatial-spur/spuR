@@ -27,6 +27,17 @@ testthat::test_that("I(1) calibration cannot hang on an uninformative experiment
   testthat::expect_error(spuR:::get_r(diag(c(3, 2, 0)), 3L), "positive rank")
 })
 
+testthat::test_that("I(0) calibration terminates on uninformative covariance shapes", {
+  set.seed(724)
+  E <- matrix(rnorm(3L * 1000L), 3L)
+  testthat::expect_error(get_ha_param_i0(diag(3), diag(3), diag(3), E),
+    "Cannot bracket 50% power")
+  alternative <- diag(c(1e-4, 1, 1e4))
+  g <- get_ha_param_i0(diag(3), diag(3), alternative, E)
+  power <- get_pow_qf(diag(3), diag(3) + g * alternative, E)
+  testthat::expect_lte(abs(power - 0.5), 0.01)
+})
+
 testthat::test_that("great-circle distances remain finite at antipodes", {
   S <- rbind(c(35.123, 45.987), c(-35.123, -134.013))
   D <- spuR:::get_distmat_lat_lon(S)
