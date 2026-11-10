@@ -6,6 +6,7 @@
 #' @param coords A matrix or data frame containing coordinates.
 #' @param latlong Logical; if `TRUE`, coordinates are latitude/longitude.
 #' @param verbose Logical; if `TRUE`, print diagnostic messages.
+#' @param nthreads Optional positive worker-thread count; NULL uses package settings and applies core limits.
 #' @return The validated coordinates matrix.
 #' @keywords internal
 get_s_matrix <- function(coords, latlong = FALSE, verbose = FALSE) {

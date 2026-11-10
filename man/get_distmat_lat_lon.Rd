@@ -4,9 +4,11 @@
 \alias{get_distmat_lat_lon}
 \title{Calculate Distance Matrix for Latitude/Longitude Points}
 \usage{
-get_distmat_lat_lon(s, nthreads = .get_spur_threads())
+get_distmat_lat_lon(s, nthreads = NULL)
 }
 \arguments{
+\item{nthreads}{Optional positive worker-thread count; NULL uses package settings and applies core limits.}
+
 \item{s}{A numeric matrix where rows represent locations and columns are
 \code{lat} and \code{lon}.}
 }

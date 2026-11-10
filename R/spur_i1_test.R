@@ -6,6 +6,9 @@
 #' @param distmat A numeric distance matrix (n x n).
 #' @param emat A numeric simulation matrix (q x number_of_simulations).
 #'
+#' @param sigdm_bm Optional precomputed low-frequency covariance matrix.
+#' @param R Optional precomputed low-frequency eigenvector basis.
+#' @param nthreads Optional positive worker-thread count; NULL uses package settings and applies core limits.
 #' @return A list with elements: LR, pvalue, cv_vec, and ha_parm.
 #' @keywords internal
 spur_i1_test <- function(Y, distmat, emat, sigdm_bm = NULL, R = NULL, nthreads = NULL) {

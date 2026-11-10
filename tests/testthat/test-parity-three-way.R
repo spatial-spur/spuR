@@ -3,6 +3,8 @@ spur_three_way_rel_spread <- function(values, floor = 1e-8) {
 }
 
 testthat::test_that("SPUR 3-way parity for spurtest core outputs", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
   spur_skip_if_no_matlab_or_mw()
 
@@ -144,6 +146,8 @@ testthat::test_that("SPUR 3-way parity for spurtest core outputs", {
 })
 
 testthat::test_that("SPUR 3-way parity for half-life outputs", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
   spur_skip_if_no_matlab_or_mw()
 

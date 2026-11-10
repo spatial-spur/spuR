@@ -4,18 +4,14 @@
 \alias{spur_i0_resid_test}
 \title{Core SPUR I(0) Residual Test}
 \usage{
-spur_i0_resid_test(
-  Y,
-  X_in,
-  distmat,
-  emat,
-  sigdm_bm = NULL,
-  R = NULL,
-  R_M = NULL,
-  nthreads = .get_spur_threads()
-)
+spur_i0_resid_test(Y, X_in, distmat, emat, sigdm_bm = NULL, R = NULL, R_M = NULL, nthreads = NULL)
 }
 \arguments{
+\item{sigdm_bm}{Optional precomputed low-frequency covariance matrix.}
+\item{R}{Optional precomputed low-frequency eigenvector basis.}
+\item{R_M}{Optional basis after projecting out the regression design.}
+\item{nthreads}{Optional positive worker-thread count; NULL uses package settings and applies core limits.}
+
 \item{Y}{Numeric matrix (n x n_series).}
 
 \item{X_in}{Numeric design matrix including constant.}

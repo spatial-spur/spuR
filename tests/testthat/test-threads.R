@@ -76,3 +76,24 @@ test_that("full spur() wrapper respects nthreads argument", {
   expect_equal(fit_t1$fits$levels$scpc$scpcstats, fit_auto$fits$levels$scpc$scpcstats, tolerance = 1e-14)
   expect_equal(fit_t1$fits$transformed$scpc$scpcstats, fit_auto$fits$transformed$scpc$scpcstats, tolerance = 1e-14)
 })
+
+
+test_that("CRAN cap applies to explicit, option, and environment thread settings", {
+  withr::local_envvar(c("_R_CHECK_LIMIT_CORES_" = "TRUE", "SPUR_NUM_THREADS" = "8"))
+  withr::local_options(list(spuR.threads = 8L))
+  expect_equal(.get_spur_threads(8L), 2L)
+  expect_equal(spur_get_num_threads(), 2L)
+  options(spuR.threads = NULL)
+  expect_equal(spur_get_num_threads(), 2L)
+  Sys.setenv("_R_CHECK_LIMIT_CORES_" = "FALSE")
+  expect_equal(spur_get_num_threads(), 8L)
+  expect_error(.get_spur_threads(2^40), "positive integer")
+})
+
+test_that("thread setter restores automatic detection without pinning a count", {
+  withr::local_options(list(spuR.threads = NULL))
+  old <- spur_set_num_threads(1L)
+  expect_null(old)
+  spur_set_num_threads(old)
+  expect_null(getOption("spuR.threads"))
+})

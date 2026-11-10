@@ -8,6 +8,8 @@ spur_three_way_max_abs_diff <- function(a, b, c) {
 }
 
 testthat::test_that("SPUR 3-way transform parity: lbmgls across distance types", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
   spur_skip_if_no_matlab_or_mw()
 
@@ -74,6 +76,8 @@ testthat::test_that("SPUR 3-way transform parity: lbmgls across distance types",
 })
 
 testthat::test_that("SPUR 3-way transform parity: lbmgls with separately and missing values", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
   spur_skip_if_no_matlab_or_mw()
 

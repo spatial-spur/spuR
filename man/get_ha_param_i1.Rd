@@ -4,9 +4,11 @@
 \alias{get_ha_param_i1}
 \title{Compute Ha Parameter for I1 Test}
 \usage{
-get_ha_param_i1(om_ho, distmat, R, e, nthreads = .get_spur_threads())
+get_ha_param_i1(om_ho, distmat, R, e, nthreads = NULL)
 }
 \arguments{
+\item{nthreads}{Optional positive worker-thread count; NULL uses package settings and applies core limits.}
+
 \item{om_ho}{A numeric matrix.}
 
 \item{distmat}{A numeric distance matrix.}

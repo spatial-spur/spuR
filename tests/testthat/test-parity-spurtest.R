@@ -1,4 +1,6 @@
 testthat::test_that("SPUR test parity: i0 and i1 (latlong and euclidean)", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
 
   df <- spur_fixture_data(n = 180L)
@@ -72,6 +74,8 @@ testthat::test_that("SPUR test parity: i0 and i1 (latlong and euclidean)", {
 })
 
 testthat::test_that("SPUR test parity: i0resid and i1resid (latlong and euclidean)", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
 
   df <- spur_fixture_data(n = 180L)

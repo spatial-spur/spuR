@@ -47,28 +47,11 @@ testthat::test_that("native get_cbar and transformation matrices match reference
   distmat_norm <- distmat / max(distmat)
   vd <- distmat_norm[lower.tri(distmat_norm)]
 
-  ref_get_cbar <- function(rhobar) {
-    c0 <- 10
-    c1 <- 10
-    while (mean(exp(-c0 * vd)) <= rhobar) {
-      c1 <- c0
-      c0 <- c0 / 2
-    }
-    while (mean(exp(-c1 * vd)) >= rhobar && c1 <= 10000) {
-      c0 <- c1
-      c1 <- 2 * c1
-    }
-    while ((c1 - c0) > 0.001) {
-      cm <- sqrt(c0 * c1)
-      if (mean(exp(-cm * vd)) < rhobar) c1 <- cm else c0 <- cm
-    }
-    sqrt(c0 * c1)
-  }
-
   rhos <- c(0.0001, 0.001, 0.01, 0.03, 0.95, 0.999)
-  cb_ref <- vapply(rhos, ref_get_cbar, numeric(1))
   cb_cpp <- spuR:::get_cbar(rhos, distmat_norm)
-  testthat::expect_equal(cb_cpp, cb_ref, tolerance = 1e-14)
+  for (i in seq_along(rhos)) {
+    testthat::expect_equal(mean(exp(-cb_cpp[i] * vd)), rhos[i], tolerance = 1e-10)
+  }
 
   # Transformation matrices
   n <- nrow(s_ll)

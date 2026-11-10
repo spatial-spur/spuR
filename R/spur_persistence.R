@@ -6,6 +6,7 @@
 #' @param distmat Normalized distance matrix.
 #' @param emat Monte Carlo draw matrix.
 #' @param level Confidence level between 0 and 1.
+#' @param nthreads Optional positive worker-thread count; NULL uses package settings and applies core limits.
 #' @return List with lower/upper half-life confidence bounds.
 #' @keywords internal
 spur_persistence <- function(Z, distmat, emat, level, nthreads = NULL) {
@@ -81,7 +82,10 @@ c_ci <- function(Y, distmat, emat, c_grid_ho, c_grid_ha, nthreads = NULL) {
     const_den_mat_ha[i] <- sqrt(det(omi)) * const_scale
   }
 
-  X <- crossprod(R, Y)
+  Y <- sweep(as.matrix(Y), 2L, colMeans(Y), "-")
+  y_scale <- max(abs(Y))
+  if (!is.finite(y_scale) || y_scale == 0) stop("Half-life inference requires a finite, nonconstant outcome.")
+  X <- crossprod(R, Y / y_scale)
   storage.mode(X) <- "double"
 
   rcpp_c_ci_mc(

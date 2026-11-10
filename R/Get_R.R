@@ -26,7 +26,7 @@ get_r <- function(sig, qmax) {
   # For small n, full eigen() is more stable for strict parity checks.
   use_rspectra <- qmax < n && n >= 500L
   eig_out <- if (use_rspectra) {
-    RSpectra::eigs_sym(sig, k = qmax, which = "LM")
+    RSpectra::eigs_sym(sig, k = qmax, which = "LA")
   } else {
     eigen(sig, symmetric = TRUE)
   }
@@ -34,6 +34,9 @@ get_r <- function(sig, qmax) {
   values <- eig_out$values[idx]
   vectors <- eig_out$vectors[, idx, drop = FALSE]
 
+  if (values[qmax] <= max(abs(values)) * 1e-10) {
+    stop("q exceeds the positive rank of the spatial covariance; use fewer directions.")
+  }
   list(
     R = vectors[, seq_len(qmax), drop = FALSE],
     DS = values[seq_len(qmax)]

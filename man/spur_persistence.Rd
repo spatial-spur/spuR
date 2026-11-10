@@ -4,9 +4,11 @@
 \alias{spur_persistence}
 \title{Spatial Persistence Core Routine}
 \usage{
-spur_persistence(Z, distmat, emat, level, nthreads = .get_spur_threads())
+spur_persistence(Z, distmat, emat, level, nthreads = NULL)
 }
 \arguments{
+\item{nthreads}{Optional positive worker-thread count; NULL uses package settings and applies core limits.}
+
 \item{Z}{Outcome matrix.}
 
 \item{distmat}{Normalized distance matrix.}

@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cctype>
+#include <string>
 #include <limits>
 #include <unordered_map>
 #include <vector>
@@ -22,22 +24,24 @@ using Rcpp::NumericVector;
 namespace {
 
 inline int resolve_spur_threads(int requested = -1) {
-  if (requested > 0) return requested;
   const char* cran = std::getenv("_R_CHECK_LIMIT_CORES_");
-  if (cran != nullptr && *cran != '\0') return 2;
-  const char* env = std::getenv("SPUR_NUM_THREADS");
-  if (env != nullptr && *env != '\0') {
-    char* end;
-    long val = std::strtol(env, &end, 10);
-    if (end != env && *end == '\0' && val > 0) return static_cast<int>(val);
+  std::string limit = cran == nullptr ? "" : cran;
+  std::transform(limit.begin(), limit.end(), limit.begin(), [](unsigned char c) { return std::tolower(c); });
+  const bool limited = !limit.empty() && limit != "false" && limit != "no" && limit != "0";
+  int count = requested;
+  if (count <= 0) {
+    for (const char* key : {"SPUR_NUM_THREADS", "RCPP_PARALLEL_NUM_THREADS"}) {
+      const char* value = std::getenv(key);
+      if (value == nullptr || *value == '\0') continue;
+      char* end;
+      long parsed = std::strtol(value, &end, 10);
+      if (end != value && *end == '\0' && parsed > 0 && parsed <= std::numeric_limits<int>::max()) {
+        count = static_cast<int>(parsed);
+        break;
+      }
+    }
   }
-  env = std::getenv("RCPP_PARALLEL_NUM_THREADS");
-  if (env != nullptr && *env != '\0') {
-    char* end;
-    long val = std::strtol(env, &end, 10);
-    if (end != env && *end == '\0' && val > 0) return static_cast<int>(val);
-  }
-  return -1;
+  return limited ? (count > 0 ? std::min(count, 2) : 2) : count;
 }
 
 template <typename WorkerType>
@@ -239,7 +243,7 @@ struct DistLatLonWorker : public RcppParallel::Worker {
         const double sd1 = std::sin(d1);
         const double sd2 = std::sin(d2);
         const double inside = sd1 * sd1 + cos_i * (cos_lat[j] * (sd2 * sd2));
-        out_col[j] = std::asin(std::sqrt(inside)) * inv_pi;
+        out_col[j] = std::asin(std::sqrt(std::max(0.0, std::min(1.0, inside)))) * inv_pi;
       }
     }
   }
@@ -885,6 +889,9 @@ NumericVector rcpp_get_cbar_vec(NumericVector rhobar_vec, NumericMatrix distmat)
   }
 
   const double* vd = cached_vd_raw.data();
+  if (m == 0) Rcpp::stop("At least two distinct locations are required.");
+  const double correlation_floor = static_cast<double>(std::count(cached_vd_raw.begin(), cached_vd_raw.end(), 0.0)) /
+      static_cast<double>(m);
   const double inv_m = 1.0 / static_cast<double>(m);
 
   constexpr int CHUNK = 2048;
@@ -989,6 +996,7 @@ NumericVector rcpp_get_cbar_vec(NumericVector rhobar_vec, NumericMatrix distmat)
   NumericVector out(n_rho);
   for (int r = 0; r < n_rho; ++r) {
     const double rhobar = rhobar_vec[r];
+    if (!std::isfinite(rhobar) || rhobar <= correlation_floor || rhobar >= 1.0) Rcpp::stop("Target correlation must exceed the co-located-pair fraction and be below one.");
     uint64_t rho_bits;
     std::memcpy(&rho_bits, &rhobar, sizeof(double));
     auto c_it = cbar_cache.find(rho_bits);
@@ -1020,12 +1028,12 @@ NumericVector rcpp_get_cbar_vec(NumericVector rhobar_vec, NumericMatrix distmat)
         c1 = 2.0 * c1;
         jj++;
       }
-      if (c1 > 10000.0) i1 = true;
+      if (!std::isfinite(c1)) Rcpp::stop("Spatial scale is not representable.");
       if (jj > 500) Rcpp::stop("rhobar too small");
     }
 
-    while ((c1 - c0) > 0.001) {
-      double cm = std::sqrt(c0 * c1);
+    while ((c1 - c0) > 1e-12 * c1) {
+      double cm = std::sqrt(c0) * std::sqrt(c1);
       if (is_below_rhobar(cm, rhobar)) {
         c1 = cm;
       } else {
@@ -1033,7 +1041,7 @@ NumericVector rcpp_get_cbar_vec(NumericVector rhobar_vec, NumericMatrix distmat)
       }
     }
 
-    const double cbar_val = std::sqrt(c0 * c1);
+    const double cbar_val = std::sqrt(c0) * std::sqrt(c1);
     cbar_cache.emplace(rho_bits, cbar_val);
     out[r] = cbar_val;
   }

@@ -4,7 +4,7 @@
 \alias{get_pow_qf}
 \title{Compute Power Using Quadratic Forms}
 \usage{
-get_pow_qf(om0, om1, e, nthreads = .get_spur_threads())
+get_pow_qf(om0, om1, e, nthreads = NULL)
 }
 \arguments{
 \item{om0}{A numeric matrix representing the null covariance matrix.}

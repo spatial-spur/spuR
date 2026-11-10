@@ -4,16 +4,13 @@
 \alias{spur_i0_test}
 \title{Core SPUR I(0) Test Function}
 \usage{
-spur_i0_test(
-  Y,
-  distmat,
-  emat,
-  sigdm_bm = NULL,
-  R = NULL,
-  nthreads = .get_spur_threads()
-)
+spur_i0_test(Y, distmat, emat, sigdm_bm = NULL, R = NULL, nthreads = NULL)
 }
 \arguments{
+\item{sigdm_bm}{Optional precomputed low-frequency covariance matrix.}
+\item{R}{Optional precomputed low-frequency eigenvector basis.}
+\item{nthreads}{Optional positive worker-thread count; NULL uses package settings and applies core limits.}
+
 \item{Y}{A numeric matrix (n x number_of_series).}
 
 \item{distmat}{A numeric distance matrix (n x n).}

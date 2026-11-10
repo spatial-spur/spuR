@@ -230,9 +230,9 @@
 #' Run the SPUR diagnostics, fit the levels and transformed regressions,
 #' and compute SCPC inference for both branches.
 #'
-#' @param formula Two-sided regression formula.
+#' @param formula Two-sided additive formula of numeric columns. Construct nonlinear terms in data first.
 #' @param data Data frame containing model and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages; at least two and no greater than the positive covariance rank.
 #' @param nrep Number of Monte Carlo draws.
 #' @param lon Optional longitude column name.
 #' @param lat Optional latitude column name.
@@ -265,6 +265,11 @@ spur <- function(formula,
     on.exit(options(spuR.threads = old_nth), add = TRUE)
   }
 
+  if (!is.null(nthreads)) {
+    old_scpc_threads <- options(scpcR.threads = .get_spur_threads(nthreads))
+    on.exit(options(old_scpc_threads), add = TRUE)
+  }
+
   .validate_common_args(data = data, q = q, nrep = nrep)
 
   if (!inherits(formula, "formula") || length(formula) != 3L) {
@@ -274,6 +279,18 @@ spur <- function(formula,
   depvar <- all.vars(formula[[2L]])
   if (length(depvar) != 1L) {
     stop("`formula` for spur() must have exactly one dependent variable.")
+  }
+
+  # H f(x) is generally different from f(H x), so the pipeline must
+  # receive already constructed numeric regressors rather than rewrite calls.
+  terms_obj <- stats::terms(formula, data = data)
+  labels <- attr(terms_obj, "term.labels")
+  additive_columns <- vapply(labels, function(label) {
+    expr <- str2lang(label)
+    is.symbol(expr) && as.character(expr) %in% names(data)
+  }, logical(1))
+  if (!is.symbol(formula[[2L]]) || !all(additive_columns)) {
+    stop("spur() requires an untransformed outcome and additive numeric columns; create nonlinear terms in data first.")
   }
 
   depvar_formula <- stats::reformulate("1", response = depvar)
@@ -351,12 +368,13 @@ spur <- function(formula,
   }
 
   X_in <- parsed_resid$X_in
-  xtx <- crossprod(X_in)
-  if (qr(xtx)$rank < ncol(xtx)) {
+  qr_x <- qr(X_in)
+  if (qr_x$rank < ncol(X_in)) {
     stop("Design matrix is rank-deficient; residual tests require full column rank.")
   }
   storage.mode(X_in) <- "double"
-  P_X <- X_in %*% solve(xtx)
+  X_in <- qr.Q(qr_x)
+  P_X <- X_in
   storage.mode(P_X) <- "double"
   c_bm_resid <- get_cbar(0.999, distmat_resid)
   sigdm_bm_resid <- rcpp_get_sigma_residual_proj(distmat_resid, as.numeric(c_bm_resid), X_in, P_X)
@@ -416,8 +434,7 @@ spur <- function(formula,
     coords_euclidean = coords_euclidean,
     avc = avc,
     uncond = uncond,
-    cvs = cvs,
-    nthreads = nthreads
+    cvs = cvs
   )
 
   vars_trans <- .parse_transform_formula(formula = formula, data = data)
@@ -467,8 +484,7 @@ spur <- function(formula,
     coords_euclidean = coords_euclidean,
     avc = avc,
     uncond = uncond,
-    cvs = cvs,
-    nthreads = nthreads
+    cvs = cvs
   )
 
   structure(
