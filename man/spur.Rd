@@ -19,11 +19,11 @@ spur(
 )
 }
 \arguments{
-\item{formula}{Two-sided regression formula.}
+\item{formula}{Two-sided additive formula of numeric columns. Construct nonlinear terms in the data before calling the full pipeline.}
 
 \item{data}{Data frame containing model and coordinate variables.}
 
-\item{q}{Number of low-frequency weighted averages.}
+\item{q}{Number of low-frequency weighted averages; at least two and no greater than the positive covariance rank.}
 
 \item{nrep}{Number of Monte Carlo draws.}
 

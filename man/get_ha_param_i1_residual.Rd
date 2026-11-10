@@ -4,9 +4,11 @@
 \alias{get_ha_param_i1_residual}
 \title{Compute Ha Parameter for I(1) Residual Test}
 \usage{
-get_ha_param_i1_residual(om_ho, distmat, R, e, M)
+get_ha_param_i1_residual(om_ho, distmat, R, e, M = NULL, R_M = NULL)
 }
 \arguments{
+\item{R_M}{Optional basis after projecting out the regression design.}
+
 \item{om_ho}{Null covariance matrix in low-frequency space.}
 
 \item{distmat}{Distance matrix.}

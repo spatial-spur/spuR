@@ -4,9 +4,12 @@
 \alias{lbm_gls_matrix}
 \title{LBM-GLS Transformation Matrix}
 \usage{
-lbm_gls_matrix(s, latlong = FALSE)
+lbm_gls_matrix(s, latlong = FALSE, distmat = NULL, sigma_lbm_dm = NULL)
 }
 \arguments{
+\item{distmat}{Optional precomputed normalized distance matrix.}
+\item{sigma_lbm_dm}{Optional precomputed demeaned LBM covariance matrix.}
+
 \item{s}{A numeric matrix of spatial coordinates.}
 
 \item{latlong}{Logical; if \code{TRUE}, coordinates are latitude/longitude.}

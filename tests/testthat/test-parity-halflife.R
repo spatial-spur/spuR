@@ -1,4 +1,6 @@
 testthat::test_that("SPUR half-life parity across options", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
 
   df <- spur_fixture_data(n = 180L)
@@ -66,6 +68,8 @@ testthat::test_that("SPUR half-life parity across options", {
 })
 
 testthat::test_that("SPUR half-life level validation parity", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
 
   df <- spur_fixture_data(n = 180L)

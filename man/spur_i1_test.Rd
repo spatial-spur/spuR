@@ -4,9 +4,12 @@
 \alias{spur_i1_test}
 \title{Core SPUR I(1) Test Function}
 \usage{
-spur_i1_test(Y, distmat, emat)
+spur_i1_test(Y, distmat, emat, sigdm_bm = NULL, R = NULL)
 }
 \arguments{
+\item{sigdm_bm}{Optional precomputed low-frequency covariance matrix.}
+\item{R}{Optional precomputed low-frequency eigenvector basis.}
+
 \item{Y}{A numeric matrix (n x number_of_series).}
 
 \item{distmat}{A numeric distance matrix (n x n).}

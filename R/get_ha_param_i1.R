@@ -11,52 +11,40 @@
 #' @return A numeric scalar representing the parameter \code{g}.
 #' @keywords internal
 get_ha_param_i1 <- function(om_ho, distmat, R, e) {
+  if (nrow(e) < 2L) stop("I(1) tests require at least two low-frequency directions.")
   pow_eval <- .make_pow_qf_evaluator(om0 = om_ho, e = e)
-  R_dm <- sweep(R, 2L, colMeans(R), "-")
+  basis <- sweep(R, 2L, colMeans(R), "-")
   storage.mode(distmat) <- "double"
-  storage.mode(R_dm) <- "double"
+  storage.mode(basis) <- "double"
   cbars <- get_cbar(c(0.95, 0.01), distmat)
-
-  ## Goal: choose c so that the quadratic‑form test has ≈ 50 % power
-
-  ## ---- lower bracket: power just under 0.5 ------------------
-  pow  <- 1
-  ctry <- cbars[1L]
-  while (pow > 0.5) {
-    c        <- ctry
-    om_c     <- .Call(cpp_om_grid, distmat, R_dm, as.numeric(c))
-    pow      <- pow_eval(om_c)
-    ctry     <- ctry / 2
-  }
-  c1 <- c        # store lower bound
-
-  ## ---- upper bracket: power just over 0.5 -------------------
-  pow  <- 0
-  ctry <- cbars[2L]
-  while (pow < 0.5) {
-    c        <- ctry
-    om_c     <- .Call(cpp_om_grid, distmat, R_dm, as.numeric(c))
-    pow      <- pow_eval(om_c)
-    ctry     <- 2 * ctry
-  }
-  c2 <- c        # store upper bound
-
-  ## ---- binary search for 50 % power -------------------------
-  ii  <- 1
-  while (abs(pow - 0.5) > 0.01) {
-    c        <- (c1 + c2) / 2
-    om_c     <- .Call(cpp_om_grid, distmat, R_dm, as.numeric(c))
-    pow      <- pow_eval(om_c)
-
-    if (pow > 0.5) {
-      c2 <- c
-    } else {          # pow < 0.5
-      c1 <- c
+  evaluate <- function(c) pow_eval(.Call(cpp_om_grid, distmat, basis, as.numeric(c)))
+  .calibrate_i1_power(evaluate, cbars[1L], cbars[2L])
+}
+# Calibrate against simulated power, with finite brackets and an explicit failure
+# when the selected low-frequency experiment cannot achieve the target power.
+.calibrate_i1_power <- function(evaluate, lower, upper) {
+  bracket <- function(c, direction) {
+    for (attempt in seq_len(40L)) {
+      power <- evaluate(c)
+      if (!is.finite(power)) stop("I(1) power calibration produced a non-finite probability.")
+      if ((direction < 1 && power <= 0.5) || (direction > 1 && power >= 0.5)) {
+        return(list(c = c, power = power))
+      }
+      c <- c * direction
     }
-    ii <- ii + 1
-    if (ii > 20) break
+    stop("Cannot bracket 50% power for the I(1) alternative; increase q or nrep.")
   }
-
-  ## return parameter that achieves ≈50 % power
-  c
+  lo <- bracket(lower, 0.5)
+  hi <- bracket(upper, 2)
+  best <- if (abs(lo$power - 0.5) < abs(hi$power - 0.5)) lo else hi
+  for (iteration in seq_len(60L)) {
+    c <- (lo$c + hi$c) / 2
+    power <- evaluate(c)
+    if (!is.finite(power)) stop("I(1) power calibration produced a non-finite probability.")
+    if (abs(power - 0.5) < abs(best$power - 0.5)) best <- list(c = c, power = power)
+    if (abs(power - 0.5) <= 0.01) return(c)
+    if (power > 0.5) hi <- list(c = c, power = power) else lo <- list(c = c, power = power)
+    if (hi$c - lo$c <= 1e-10 * hi$c) break
+  }
+  best$c
 }

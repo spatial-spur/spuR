@@ -2,6 +2,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
+#include <string>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -191,6 +194,8 @@ void exp_lower_triangle_inplace(const double* distmat, double* S, int n, double 
 extern "C" {
 
 SEXP cpp_distmat_lat_lon(SEXP s_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_nrows(s_sexp);
   const double* s = REAL(s_sexp);
   const double* lat = s;
@@ -218,16 +223,27 @@ SEXP cpp_distmat_lat_lon(SEXP s_sexp) {
       const double sd1 = std::sin(d1);
       const double sd2 = std::sin(d2);
       const double inside = sd1 * sd1 + cos_i * (cos_lat[j] * (sd2 * sd2));
-      out_col[j] = std::asin(std::sqrt(inside)) * inv_pi;
+      out_col[j] = std::asin(std::sqrt(std::max(0.0, std::min(1.0, inside)))) * inv_pi;
     }
   }
   symmetrize_lower_to_upper_blocked(out, n);
 
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 SEXP cpp_distmat_euclidean(SEXP s_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_nrows(s_sexp);
   const int d = Rf_ncols(s_sexp);
   const double* s = REAL(s_sexp);
@@ -267,18 +283,40 @@ SEXP cpp_distmat_euclidean(SEXP s_sexp) {
 
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 SEXP cpp_demean_sigma(SEXP sigma_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_nrows(sigma_sexp);
   SEXP out_sexp = PROTECT(Rf_allocMatrix(REALSXP, n, n));
   std::memcpy(REAL(out_sexp), REAL(sigma_sexp), static_cast<size_t>(n) * n * sizeof(double));
   demean_matrix_inplace(REAL(out_sexp), n);
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 SEXP cpp_get_sigma_dm(SEXP distmat_sexp, SEXP c_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_nrows(distmat_sexp);
   const double* distmat = REAL(distmat_sexp);
   const double c = Rf_asReal(c_sexp);
@@ -292,9 +330,20 @@ SEXP cpp_get_sigma_dm(SEXP distmat_sexp, SEXP c_sexp) {
   demean_matrix_inplace(out, n);
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 SEXP cpp_get_sigma_lbm(SEXP distmat_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_nrows(distmat_sexp);
   const double* distmat = REAL(distmat_sexp);
 
@@ -312,16 +361,38 @@ SEXP cpp_get_sigma_lbm(SEXP distmat_sexp) {
 
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 SEXP cpp_get_sigma_lbm_dm(SEXP distmat_sexp) {
+  const char* error_message = nullptr;
+  try {
   SEXP out_sexp = PROTECT(cpp_get_sigma_lbm(distmat_sexp));
   demean_matrix_inplace(REAL(out_sexp), Rf_nrows(distmat_sexp));
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 SEXP cpp_get_cbar_vec(SEXP rhobar_sexp, SEXP distmat_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n_rho = Rf_length(rhobar_sexp);
   const double* rhobar_vec = REAL(rhobar_sexp);
   const int n = Rf_nrows(distmat_sexp);
@@ -429,6 +500,9 @@ SEXP cpp_get_cbar_vec(SEXP rhobar_sexp, SEXP distmat_sexp) {
   }
 
   const double* vd = cached_vd_raw.data();
+  if (m == 0) throw std::runtime_error("At least two distinct locations are required.");
+  const double correlation_floor = static_cast<double>(std::count(cached_vd_raw.begin(), cached_vd_raw.end(), 0.0)) /
+      static_cast<double>(m);
   const double inv_m = 1.0 / static_cast<double>(m);
 
   constexpr int CHUNK = 2048;
@@ -577,6 +651,7 @@ SEXP cpp_get_cbar_vec(SEXP rhobar_sexp, SEXP distmat_sexp) {
 
   for (int r = 0; r < n_rho; ++r) {
     const double rhobar = rhobar_vec[r];
+    if (!std::isfinite(rhobar) || rhobar <= correlation_floor || rhobar >= 1.0) throw std::runtime_error("Target correlation must exceed the co-located-pair fraction and be below one.");
     uint64_t rho_bits;
     std::memcpy(&rho_bits, &rhobar, sizeof(double));
     auto c_it = cbar_cache.find(rho_bits);
@@ -598,7 +673,7 @@ SEXP cpp_get_cbar_vec(SEXP rhobar_sexp, SEXP distmat_sexp) {
       }
       if (jj > 500) {
         UNPROTECT(1);
-        Rf_error("rhobar too large");
+        throw std::runtime_error("rhobar too large");
       }
     }
 
@@ -611,17 +686,15 @@ SEXP cpp_get_cbar_vec(SEXP rhobar_sexp, SEXP distmat_sexp) {
         c1 = 2.0 * c1;
         jj++;
       }
-      if (c1 > 10000.0) {
-        i1 = true;
-      }
+      if (!std::isfinite(c1)) throw std::runtime_error("Spatial scale is not representable.");
       if (jj > 500) {
         UNPROTECT(1);
-        Rf_error("rhobar too small");
+        throw std::runtime_error("rhobar too small");
       }
     }
 
-    while ((c1 - c0) > 0.001) {
-      double cm = std::sqrt(c0 * c1);
+    while ((c1 - c0) > 1e-12 * c1) {
+      double cm = std::sqrt(c0) * std::sqrt(c1);
       if (is_below_rhobar(cm, rhobar)) {
         c1 = cm;
       } else {
@@ -629,17 +702,28 @@ SEXP cpp_get_cbar_vec(SEXP rhobar_sexp, SEXP distmat_sexp) {
       }
     }
 
-    const double cbar_val = std::sqrt(c0 * c1);
+    const double cbar_val = std::sqrt(c0) * std::sqrt(c1);
     cbar_cache.emplace(rho_bits, cbar_val);
     out[r] = cbar_val;
   }
 
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 // Compute R_proj^T * exp(-c * distmat) * R_proj for each c in c_vec
 SEXP cpp_om_grid(SEXP distmat_sexp, SEXP r_proj_sexp, SEXP c_vec_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_nrows(distmat_sexp);
   const int q = Rf_ncols(r_proj_sexp);
   const int n_c = Rf_length(c_vec_sexp);
@@ -794,10 +878,21 @@ SEXP cpp_om_grid(SEXP distmat_sexp, SEXP r_proj_sexp, SEXP c_vec_sexp) {
 
   UNPROTECT(n_c == 1 ? 1 : 2);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 // Evaluate power of quadratic form given ho (q x q), ha (q x q), e (q x nrep), qe (nrep)
 SEXP cpp_pow_qf_eval(SEXP ho_sexp, SEXP ha_sexp, SEXP e_sexp, SEXP qe_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int q = Rf_nrows(e_sexp);
   const int nrep = Rf_ncols(e_sexp);
   const double* ho = REAL(ho_sexp);
@@ -850,6 +945,15 @@ SEXP cpp_pow_qf_eval(SEXP ho_sexp, SEXP ha_sexp, SEXP e_sexp, SEXP qe_sexp) {
   }
 
   return Rf_ScalarReal(static_cast<double>(count_gt) / static_cast<double>(nrep));
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 // Evaluate Monte Carlo LR grid for spur_i0_test / spur_i0_resid_test / spur_i1_test / spur_i1_resid_test
@@ -859,6 +963,8 @@ SEXP cpp_mc_lr_grid(SEXP ch_om_ho_sexp,
                     SEXP emat_sexp,
                     SEXP lr_stat_sexp,
                     SEXP probs_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int q = Rf_nrows(emat_sexp);
   const int nrep = Rf_ncols(emat_sexp);
   const int n_y = Rf_length(lr_stat_sexp);
@@ -943,6 +1049,15 @@ SEXP cpp_mc_lr_grid(SEXP ch_om_ho_sexp,
   SET_VECTOR_ELT(out_sexp, 1, pvalue_mat_sexp);
   UNPROTECT(3);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 // Fast Monte Carlo evaluation for c_ci (spur_persistence)
@@ -954,6 +1069,8 @@ SEXP cpp_c_ci_mc(SEXP ch_om_ho_sexp,
                  SEXP const_den_ha_sexp,
                  SEXP emat_sexp,
                  SEXP X_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int q = Rf_nrows(emat_sexp);
   const int nrep = Rf_ncols(emat_sexp);
   const int n_c_ho = Rf_length(const_den_ho_sexp);
@@ -1104,10 +1221,21 @@ SEXP cpp_c_ci_mc(SEXP ch_om_ho_sexp,
 
   UNPROTECT(1);
   return pv_mat_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 // Fast LBM-GLS matrix from demeaned LBM covariance matrix via dsyevd + dsyrk
 SEXP cpp_lbm_gls_from_sigma(SEXP sigma_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_nrows(sigma_sexp);
   std::vector<double> vecs(static_cast<size_t>(n) * n);
   std::vector<double> vals(n);
@@ -1124,7 +1252,7 @@ SEXP cpp_lbm_gls_from_sigma(SEXP sigma_sexp) {
   F77_CALL(dsyevd)(&jobz, &uplo, &n, vecs.data(), &n, vals.data(),
                    &work_query, &lwork, &iwork_query, &liwork, &info FCONE FCONE);
   if (info != 0) {
-    Rf_error("LAPACK dsyevd workspace query failed with info = %d", info);
+    throw std::runtime_error(std::string("LAPACK dsyevd workspace query failed with info = ") + std::to_string(info));
   }
   lwork = static_cast<int>(work_query);
   liwork = iwork_query;
@@ -1134,7 +1262,7 @@ SEXP cpp_lbm_gls_from_sigma(SEXP sigma_sexp) {
   F77_CALL(dsyevd)(&jobz, &uplo, &n, vecs.data(), &n, vals.data(),
                    work.data(), &lwork, iwork.data(), &liwork, &info FCONE FCONE);
   if (info != 0) {
-    Rf_error("LAPACK dsyevd failed with info = %d", info);
+    throw std::runtime_error(std::string("LAPACK dsyevd failed with info = ") + std::to_string(info));
   }
 
   // dsyevd returns eigenvalues in ascending order; keep values > 1e-10
@@ -1181,6 +1309,15 @@ SEXP cpp_lbm_gls_from_sigma(SEXP sigma_sexp) {
 
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 // Compute M * exp(-c * distmat) * M^T in O(n^2 k) using P_X = X * (X^T X)^(-1)
@@ -1188,6 +1325,8 @@ SEXP cpp_get_sigma_residual_proj(SEXP distmat_sexp,
                                  SEXP c_sexp,
                                  SEXP x_in_sexp,
                                  SEXP p_x_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_nrows(distmat_sexp);
   const int k = Rf_ncols(x_in_sexp);
   const double* distmat = REAL(distmat_sexp);
@@ -1225,9 +1364,20 @@ SEXP cpp_get_sigma_residual_proj(SEXP distmat_sexp,
 
   UNPROTECT(1);
   return s_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 SEXP cpp_nn_matrix(SEXP distmat_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_nrows(distmat_sexp);
   const double* distmat = REAL(distmat_sexp);
 
@@ -1260,9 +1410,20 @@ SEXP cpp_nn_matrix(SEXP distmat_sexp) {
 
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 SEXP cpp_iso_matrix(SEXP distmat_sexp, SEXP radius_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_nrows(distmat_sexp);
   const double* distmat = REAL(distmat_sexp);
   const double radius = Rf_asReal(radius_sexp);
@@ -1292,9 +1453,20 @@ SEXP cpp_iso_matrix(SEXP distmat_sexp, SEXP radius_sexp) {
 
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 SEXP cpp_cluster_matrix(SEXP cluster_sexp) {
+  const char* error_message = nullptr;
+  try {
   const int n = Rf_length(cluster_sexp);
   const double* cluster = REAL(cluster_sexp);
 
@@ -1325,6 +1497,15 @@ SEXP cpp_cluster_matrix(SEXP cluster_sexp) {
 
   UNPROTECT(1);
   return out_sexp;
+  } catch (const std::exception& error) {
+    const size_t length = std::strlen(error.what()) + 1;
+    char* message = static_cast<char*>(R_alloc(length, sizeof(char)));
+    std::memcpy(message, error.what(), length);
+    error_message = message;
+  }
+  // Leave the C++ exception handler before R performs its non-local jump.
+  Rf_error("Native calculation failed: %s", error_message);
+  return R_NilValue;
 }
 
 static const R_CallMethodDef CallEntries[] = {

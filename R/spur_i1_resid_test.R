@@ -6,21 +6,28 @@
 #' @param X_in Numeric design matrix including constant.
 #' @param distmat Numeric normalized distance matrix (n x n).
 #' @param emat Numeric simulation matrix (q x nrep).
+#' @param sigdm_bm Optional precomputed low-frequency covariance matrix.
+#' @param R Optional precomputed low-frequency eigenvector basis.
+#' @param R_M Optional basis after projecting out the regression design.
 #' @return List with test outputs.
 #' @keywords internal
 spur_i1_resid_test <- function(Y, X_in, distmat, emat, sigdm_bm = NULL, R = NULL, R_M = NULL) {
   q <- nrow(emat)
+  if (q > nrow(X_in) - ncol(X_in)) {
+    stop("q exceeds the residual degrees of freedom.")
+  }
   n_y <- ncol(Y)
   storage.mode(distmat) <- "double"
   storage.mode(emat) <- "double"
 
   if (is.null(sigdm_bm) || is.null(R) || is.null(R_M)) {
-    xtx <- crossprod(X_in)
-    if (qr(xtx)$rank < ncol(xtx)) {
+    qr_x <- qr(X_in)
+    if (qr_x$rank < ncol(X_in)) {
       stop("Design matrix is rank-deficient; residual tests require full column rank.")
     }
     storage.mode(X_in) <- "double"
-    P_X <- X_in %*% solve(xtx)
+    X_in <- qr.Q(qr_x)
+    P_X <- X_in
     storage.mode(P_X) <- "double"
 
     rho_bm <- 0.999

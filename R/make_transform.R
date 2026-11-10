@@ -7,6 +7,8 @@
 #' @param radius Numeric radius for the isotropic transformation.
 #' @param cluster Numeric cluster ids for the cluster transformation.
 #' @param latlong Logical; if `TRUE`, treat coordinates as latitude/longitude.
+#' @param distmat Optional precomputed normalized distance matrix.
+#' @param sigma_lbm_dm Optional precomputed demeaned LBM covariance matrix.
 #' @return A numeric transformation matrix.
 #' @keywords internal
 make_transform <- function(s,

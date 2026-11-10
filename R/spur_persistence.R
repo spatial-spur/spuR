@@ -78,7 +78,10 @@ c_ci <- function(Y, distmat, emat, c_grid_ho, c_grid_ha) {
     const_den_mat_ha[i] <- sqrt(det(omi)) * const_scale
   }
 
-  X <- crossprod(R, Y)
+  Y <- sweep(as.matrix(Y), 2L, colMeans(Y), "-")
+  y_scale <- max(abs(Y))
+  if (!is.finite(y_scale) || y_scale == 0) stop("Half-life inference requires a finite, nonconstant outcome.")
+  X <- crossprod(R, Y / y_scale)
   storage.mode(X) <- "double"
 
   .Call(

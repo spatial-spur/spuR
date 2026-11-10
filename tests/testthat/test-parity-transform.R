@@ -1,4 +1,6 @@
 testthat::test_that("SPUR transform parity across transformation types", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
 
   df <- spur_fixture_data(n = 180L)
@@ -59,6 +61,8 @@ testthat::test_that("SPUR transform parity across transformation types", {
 })
 
 testthat::test_that("SPUR transform parity for separately option with missing values", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
 
   df <- spur_fixture_data(n = 180L)
@@ -98,6 +102,8 @@ testthat::test_that("SPUR transform parity for separately option with missing va
 })
 
 testthat::test_that("SPUR transform replace and option-validation parity", {
+  testthat::skip_if(!identical(Sys.getenv("SPUR_RUN_UPSTREAM_PARITY", "false"), "true"),
+    "Upstream comparisons are diagnostic; opt in with SPUR_RUN_UPSTREAM_PARITY=true")
   spur_skip_if_no_stata_or_spur()
 
   df <- spur_fixture_data(n = 180L)

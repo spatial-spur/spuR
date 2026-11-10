@@ -6,6 +6,8 @@
 #' @param distmat A numeric distance matrix (n x n).
 #' @param emat A numeric simulation matrix (q x number_of_simulations).
 #'
+#' @param sigdm_bm Optional precomputed low-frequency covariance matrix.
+#' @param R Optional precomputed low-frequency eigenvector basis.
 #' @return A list with elements: LR, pvalue, cvalue, ha_parm, cvalue_mat, pvalue_mat, and rho_grid.
 #' @keywords internal
 spur_i0_test <- function(Y, distmat, emat, sigdm_bm = NULL, R = NULL) {

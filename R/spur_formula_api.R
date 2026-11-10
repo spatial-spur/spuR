@@ -103,6 +103,7 @@
   if (length(q) != 1L || !is.finite(q) || q < 1 || q != as.integer(q)) {
     stop("`q` must be a positive integer.")
   }
+  if (q < 2L) stop("q must be at least two for scale-invariant inference.")
   if (length(nrep) != 1L || !is.finite(nrep) || nrep < 1 || nrep != as.integer(nrep)) {
     stop("`nrep` must be a positive integer.")
   }
@@ -204,7 +205,7 @@
 #'
 #' @param formula Formula identifying a single variable (`y ~ 1` or `~ y`).
 #' @param data Data frame containing test and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages; at least two and no greater than the positive covariance rank.
 #' @param nrep Number of Monte Carlo draws.
 #' @param lon Optional longitude column name (must be supplied with `lat`).
 #' @param lat Optional latitude column name (must be supplied with `lon`).
@@ -279,7 +280,7 @@ spurtest_i0 <- function(formula,
 #'
 #' @param formula Formula identifying a single variable (`y ~ 1` or `~ y`).
 #' @param data Data frame containing test and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages; at least two and no greater than the positive covariance rank.
 #' @param nrep Number of Monte Carlo draws.
 #' @param lon Optional longitude column name (must be supplied with `lat`).
 #' @param lat Optional latitude column name (must be supplied with `lon`).
@@ -354,7 +355,7 @@ spurtest_i1 <- function(formula,
 #'
 #' @param formula Two-sided model formula (`y ~ x1 + x2`).
 #' @param data Data frame containing model and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages; at least two and no greater than the positive covariance rank.
 #' @param nrep Number of Monte Carlo draws.
 #' @param lon Optional longitude column name (must be supplied with `lat`).
 #' @param lat Optional latitude column name (must be supplied with `lon`).
@@ -428,7 +429,7 @@ spurtest_i0resid <- function(formula,
 #'
 #' @param formula Two-sided model formula (`y ~ x1 + x2`).
 #' @param data Data frame containing model and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages; at least two and no greater than the positive covariance rank.
 #' @param nrep Number of Monte Carlo draws.
 #' @param lon Optional longitude column name (must be supplied with `lat`).
 #' @param lat Optional latitude column name (must be supplied with `lon`).
@@ -502,7 +503,7 @@ spurtest_i1resid <- function(formula,
 #'
 #' @param formula Formula identifying a single variable (`y ~ 1` or `~ y`).
 #' @param data Data frame containing test and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages; at least two and no greater than the positive covariance rank.
 #' @param nrep Number of Monte Carlo draws.
 #' @param level Confidence level in percent.
 #' @param normdist Logical; return CI as fractions of maximum distance.
@@ -570,7 +571,9 @@ spurhalflife <- function(formula,
       max(get_distmat_euclidean(coord_info$coords))
     }
   }
-  max_dist <- max_dist * pi * 6371000.009 * 2
+  if (isTRUE(coord_info$latlong)) {
+    max_dist <- max_dist * pi * 6371000.009 * 2
+  }
 
   if (!isTRUE(normdist)) {
     ci_l <- ci_l * max_dist

@@ -21,7 +21,7 @@ spurtest_i0(
 
 \item{data}{Data frame containing test and coordinate variables.}
 
-\item{q}{Number of low-frequency weighted averages.}
+\item{q}{Number of low-frequency weighted averages; at least two and no greater than the positive covariance rank.}
 
 \item{nrep}{Number of Monte Carlo draws.}
 

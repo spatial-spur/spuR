@@ -4,9 +4,13 @@
 \alias{spur_i0_resid_test}
 \title{Core SPUR I(0) Residual Test}
 \usage{
-spur_i0_resid_test(Y, X_in, distmat, emat)
+spur_i0_resid_test(Y, X_in, distmat, emat, sigdm_bm = NULL, R = NULL, R_M = NULL)
 }
 \arguments{
+\item{sigdm_bm}{Optional precomputed low-frequency covariance matrix.}
+\item{R}{Optional precomputed low-frequency eigenvector basis.}
+\item{R_M}{Optional basis after projecting out the regression design.}
+
 \item{Y}{Numeric matrix (n x n_series).}
 
 \item{X_in}{Numeric design matrix including constant.}
