@@ -8,16 +8,24 @@
 #'
 #' @return A list with elements: LR, pvalue, cv_vec, and ha_parm.
 #' @keywords internal
-spur_i1_test <- function(Y, distmat, emat) {
+spur_i1_test <- function(Y, distmat, emat, sigdm_bm = NULL, R = NULL, nthreads = NULL) {
+  nthreads <- .get_spur_threads(nthreads)
   q <- nrow(emat)
+  storage.mode(distmat) <- "double"
+  storage.mode(emat) <- "double"
 
-  sigdm_bm <- get_sigma_lbm_dm(distmat)
-  R <- get_r(sigdm_bm, q)$R
+  if (is.null(sigdm_bm)) {
+    sigdm_bm <- get_sigma_lbm_dm(distmat)
+  }
+  if (is.null(R)) {
+    R <- get_r(sigdm_bm, q)$R
+  }
+  R_dm <- sweep(R, 2L, colMeans(R), "-")
+  storage.mode(R_dm) <- "double"
 
-  om_ho <- t(R) %*% sigdm_bm %*% R
-  ha_parm <- get_ha_param_i1(om_ho, distmat, R, emat)
-  sigdm_ha <- get_sigma_dm(distmat, ha_parm)
-  om_ha <- t(R) %*% sigdm_ha %*% R
+  om_ho <- crossprod(R, sigdm_bm %*% R)
+  ha_parm <- get_ha_param_i1(om_ho, distmat, R, emat, nthreads = nthreads)
+  om_ha <- rcpp_om_grid(distmat, R_dm, as.numeric(ha_parm), as.integer(nthreads))
 
   ch_om_ho <- chol(om_ho)
   omi_ho <- solve(om_ho)
@@ -25,26 +33,27 @@ spur_i1_test <- function(Y, distmat, emat) {
   ch_omi_ho <- chol(omi_ho)
   ch_omi_ha <- chol(omi_ha)
 
-  y_ho <- t(ch_om_ho) %*% emat
-  y_ho_ho <- ch_omi_ho %*% y_ho
-  y_ho_ha <- ch_omi_ha %*% y_ho
-  q_ho_ho <- colSums(y_ho_ho^2)
-  q_ho_ha <- colSums(y_ho_ha^2)
-  lr_ho <- q_ho_ho / q_ho_ha
-
-  sz_vec <- c(0.01, 0.05, 0.10)
-  cv_vec <- stats::quantile(lr_ho, probs = 1 - sz_vec, names = FALSE)
-
   n_y <- ncol(Y)
   LR <- numeric(n_y)
-  pval <- numeric(n_y)
 
   for (i in seq_len(n_y)) {
     X <- Y[, i] - mean(Y[, i])
-    P <- t(R) %*% X
+    P <- crossprod(R, X)
     LR[i] <- (t(P) %*% omi_ho %*% P) / (t(P) %*% omi_ha %*% P)
-    pval[i] <- mean(lr_ho > LR[i])
   }
+
+  sz_vec <- c(0.01, 0.05, 0.10)
+  mc_out <- rcpp_mc_lr_grid(
+    ch_om_ho,
+    ch_omi_ho,
+    ch_omi_ha,
+    emat,
+    LR,
+    1 - sz_vec,
+    as.integer(nthreads)
+  )
+  cv_vec <- mc_out[[1L]][1L, ]
+  pval <- mc_out[[2L]][1L, ]
 
   list(
     LR = as.vector(LR),

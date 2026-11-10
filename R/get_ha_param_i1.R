@@ -10,18 +10,22 @@
 #' @param e A numeric matrix (or vector) used in the computation of power.
 #' @return A numeric scalar representing the parameter \code{g}.
 #' @keywords internal
-get_ha_param_i1 <- function(om_ho, distmat, R, e) {
-  pow_eval <- .make_pow_qf_evaluator(om0 = om_ho, e = e)
+get_ha_param_i1 <- function(om_ho, distmat, R, e, nthreads = NULL) {
+  nthreads <- .get_spur_threads(nthreads)
+  pow_eval <- .make_pow_qf_evaluator(om0 = om_ho, e = e, nthreads = nthreads)
+  R_dm <- sweep(R, 2L, colMeans(R), "-")
+  storage.mode(distmat) <- "double"
+  storage.mode(R_dm) <- "double"
+  cbars <- get_cbar(c(0.95, 0.01), distmat)
 
   ## Goal: choose c so that the quadratic‑form test has ≈ 50 % power
 
   ## ---- lower bracket: power just under 0.5 ------------------
   pow  <- 1
-  ctry <- get_cbar(0.95, distmat)
+  ctry <- cbars[1L]
   while (pow > 0.5) {
     c        <- ctry
-    sigdm_c  <- get_sigma_dm(distmat, c)
-    om_c     <- t(R) %*% sigdm_c %*% R
+    om_c     <- rcpp_om_grid(distmat, R_dm, as.numeric(c), as.integer(nthreads))
     pow      <- pow_eval(om_c)
     ctry     <- ctry / 2
   }
@@ -29,11 +33,10 @@ get_ha_param_i1 <- function(om_ho, distmat, R, e) {
 
   ## ---- upper bracket: power just over 0.5 -------------------
   pow  <- 0
-  ctry <- get_cbar(0.01, distmat)
+  ctry <- cbars[2L]
   while (pow < 0.5) {
     c        <- ctry
-    sigdm_c  <- get_sigma_dm(distmat, c)
-    om_c     <- t(R) %*% sigdm_c %*% R
+    om_c     <- rcpp_om_grid(distmat, R_dm, as.numeric(c), as.integer(nthreads))
     pow      <- pow_eval(om_c)
     ctry     <- 2 * ctry
   }
@@ -43,8 +46,7 @@ get_ha_param_i1 <- function(om_ho, distmat, R, e) {
   ii  <- 1
   while (abs(pow - 0.5) > 0.01) {
     c        <- (c1 + c2) / 2
-    sigdm_c  <- get_sigma_dm(distmat, c)
-    om_c     <- t(R) %*% sigdm_c %*% R
+    om_c     <- rcpp_om_grid(distmat, R_dm, as.numeric(c), as.integer(nthreads))
     pow      <- pow_eval(om_c)
 
     if (pow > 0.5) {

@@ -15,7 +15,8 @@ spur(
   seed = 42L,
   avc = 0.03,
   uncond = FALSE,
-  cvs = FALSE
+  cvs = FALSE,
+  nthreads = NULL
 )
 }
 \arguments{
@@ -40,6 +41,10 @@ spur(
 \item{uncond}{Passed through to \code{scpcR::scpc()}.}
 
 \item{cvs}{Passed through to \code{scpcR::scpc()}.}
+
+\item{nthreads}{Optional integer; number of threads to use for parallel
+computations. Defaults to \code{NULL}, which respects package options,
+environment variables, or automatic detection.}
 }
 \value{
 A list of class \code{"spur_result"} with \code{tests} and \code{fits}.

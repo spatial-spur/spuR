@@ -1,9 +1,12 @@
 #' @keywords internal
 #' @noRd
-.make_pow_qf_evaluator <- function(om0, e) {
+.make_pow_qf_evaluator <- function(om0, e, nthreads = NULL) {
+  nthreads <- .get_spur_threads(nthreads)
   om0i <- solve(om0)
-  ch_om0 <- chol(om0)
+  ch_om0_t <- t(chol(om0))
   ch_om0i <- chol(om0i)
+  e <- as.matrix(e)
+  storage.mode(e) <- "double"
   qe <- colSums(e^2)
 
   function(om1) {
@@ -16,24 +19,10 @@
     ch_om1i <- chol(om1i)
 
     # Compute transformation matrices
-    ho <- ch_om1i %*% t(ch_om0)
+    ho <- ch_om1i %*% ch_om0_t
     ha <- ch_om0i %*% t(ch_om1)
 
-    # Compute quadratic forms
-    ya_o <- ho %*% e
-    yo_a <- ha %*% e
-    qa_o <- colSums(ya_o^2)
-    qo_a <- colSums(yo_a^2)
-
-    # Likelihood ratios
-    lr_o <- qe / qa_o
-    lr_a <- qo_a / qe
-
-    # Determine the 95th percentile critical value of lr_o
-    cv <- as.numeric(stats::quantile(lr_o, probs = 0.95))
-
-    # Compute power as the proportion of lr_a values exceeding the critical value
-    mean(lr_a > cv)
+    rcpp_pow_qf_eval(ho, ha, e, qe, as.integer(nthreads))
   }
 }
 
@@ -50,8 +39,10 @@
 #' @param om0 A numeric matrix representing the null covariance matrix.
 #' @param om1 A numeric matrix representing the alternative covariance matrix.
 #' @param e A numeric matrix of test statistics or error terms.
+#' @param nthreads Optional integer thread count.
 #' @return A numeric scalar representing the computed power.
 #' @keywords internal
-get_pow_qf <- function(om0, om1, e) {
-  .make_pow_qf_evaluator(om0 = om0, e = e)(om1 = om1)
+get_pow_qf <- function(om0, om1, e, nthreads = NULL) {
+  nthreads <- .get_spur_threads(nthreads)
+  .make_pow_qf_evaluator(om0 = om0, e = e, nthreads = nthreads)(om1 = om1)
 }

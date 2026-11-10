@@ -4,7 +4,7 @@
 \alias{lbm_gls_matrix}
 \title{LBM-GLS Transformation Matrix}
 \usage{
-lbm_gls_matrix(s, latlong = FALSE)
+lbm_gls_matrix(s, latlong = FALSE, distmat = NULL, sigma_lbm_dm = NULL)
 }
 \arguments{
 \item{s}{A numeric matrix of spatial coordinates.}

@@ -13,7 +13,8 @@ spurtest_i0resid(
   lat = NULL,
   coords_euclidean = NULL,
   seed = 42L,
-  verbose = FALSE
+  verbose = FALSE,
+  nthreads = NULL
 )
 }
 \arguments{
@@ -34,6 +35,10 @@ spurtest_i0resid(
 \item{seed}{Optional integer seed for reproducibility of Monte Carlo draws.}
 
 \item{verbose}{Logical; if \code{TRUE}, print test summary and diagnostics.}
+
+\item{nthreads}{Optional integer; number of threads to use for parallel
+computations. Defaults to \code{NULL}, which respects package options,
+environment variables, or automatic detection.}
 }
 \value{
 A list of class \code{"spur_test"} with \code{pvalue}, \code{teststat}, \code{ha_param},

@@ -4,7 +4,14 @@
 \alias{spur_i0_test}
 \title{Core SPUR I(0) Test Function}
 \usage{
-spur_i0_test(Y, distmat, emat)
+spur_i0_test(
+  Y,
+  distmat,
+  emat,
+  sigdm_bm = NULL,
+  R = NULL,
+  nthreads = .get_spur_threads()
+)
 }
 \arguments{
 \item{Y}{A numeric matrix (n x number_of_series).}

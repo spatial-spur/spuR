@@ -8,10 +8,9 @@
 #' @return A numeric matrix that has been demeaned.
 #' @keywords internal
 demean_sigma <- function(sigma) {
-  n <- nrow(sigma)
-  sigma_dm <- sigma - matrix(colMeans(sigma), n, n, byrow = TRUE)
-  sigma_dm <- sigma_dm - matrix(rowMeans(sigma_dm), n, n)
-  sigma_dm
+  sigma <- as.matrix(sigma)
+  storage.mode(sigma) <- "double"
+  rcpp_demean_sigma(sigma)
 }
 
 #' Lower Triangular Vectorization

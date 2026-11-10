@@ -4,7 +4,7 @@
 \alias{get_pow_qf}
 \title{Compute Power Using Quadratic Forms}
 \usage{
-get_pow_qf(om0, om1, e)
+get_pow_qf(om0, om1, e, nthreads = .get_spur_threads())
 }
 \arguments{
 \item{om0}{A numeric matrix representing the null covariance matrix.}
@@ -12,6 +12,8 @@ get_pow_qf(om0, om1, e)
 \item{om1}{A numeric matrix representing the alternative covariance matrix.}
 
 \item{e}{A numeric matrix of test statistics or error terms.}
+
+\item{nthreads}{Optional integer thread count.}
 }
 \value{
 A numeric scalar representing the computed power.

@@ -8,7 +8,8 @@
 #' @param level Confidence level between 0 and 1.
 #' @return List with lower/upper half-life confidence bounds.
 #' @keywords internal
-spur_persistence <- function(Z, distmat, emat, level) {
+spur_persistence <- function(Z, distmat, emat, level, nthreads = NULL) {
+  nthreads <- .get_spur_threads(nthreads)
   n_hl <- 100
   hl_grid_ho <- c(
     seq(from = 0.001, to = 1, length.out = n_hl),
@@ -26,7 +27,8 @@ spur_persistence <- function(Z, distmat, emat, level) {
     distmat = distmat,
     emat = emat,
     c_grid_ho = c_grid_ho,
-    c_grid_ha = c_grid_ha
+    c_grid_ha = c_grid_ha,
+    nthreads = nthreads
   )
 
   ii <- as.vector(pv_mat > (1 - level))
@@ -39,74 +41,58 @@ spur_persistence <- function(Z, distmat, emat, level) {
 }
 
 #' @keywords internal
-c_ci <- function(Y, distmat, emat, c_grid_ho, c_grid_ha) {
+c_ci <- function(Y, distmat, emat, c_grid_ho, c_grid_ha, nthreads = NULL) {
+  nthreads <- .get_spur_threads(nthreads)
   q <- nrow(emat)
   n_c_ho <- length(c_grid_ho)
   n_c_ha <- length(c_grid_ha)
+  storage.mode(distmat) <- "double"
+  storage.mode(emat) <- "double"
 
   rho_bm <- 0.999
   c_bm <- get_cbar(rho_bm, distmat)
   sigdm_bm <- get_sigma_dm(distmat, c_bm)
   R <- get_r(sigdm_bm, q)$R
+  R_dm <- sweep(R, 2L, colMeans(R), "-")
+  storage.mode(R_dm) <- "double"
 
-  ch_om_mat <- vector("list", n_c_ho)
-  ch_omi_mat <- vector("list", n_c_ho)
+  om_all <- rcpp_om_grid(distmat, R_dm, as.numeric(c(c_grid_ho, c_grid_ha)), as.integer(nthreads))
+  const_scale <- 0.5 * gamma(q / 2) / (pi^(q / 2))
+
+  ch_om_ho_arr <- array(NA_real_, dim = c(q, q, n_c_ho))
+  ch_omi_ho_arr <- array(NA_real_, dim = c(q, q, n_c_ho))
   const_den_mat <- numeric(n_c_ho)
   for (i in seq_len(n_c_ho)) {
-    sigdm <- get_sigma_dm(distmat, c_grid_ho[i])
-    om <- t(R) %*% sigdm %*% R
-    ch_om_mat[[i]] <- chol(om)
+    om <- om_all[, , i]
+    ch_om_ho_arr[, , i] <- chol(om)
     omi <- solve(om)
-    ch_omi_mat[[i]] <- chol(omi)
-    const_den_mat[i] <- sqrt(det(omi)) * 0.5 * gamma(q / 2) / (pi^(q / 2))
+    ch_omi_ho_arr[, , i] <- chol(omi)
+    const_den_mat[i] <- sqrt(det(omi)) * const_scale
   }
 
-  ch_omi_mat_ha <- vector("list", n_c_ha)
+  ch_omi_ha_arr <- array(NA_real_, dim = c(q, q, n_c_ha))
+  omi_ha_arr <- array(NA_real_, dim = c(q, q, n_c_ha))
   const_den_mat_ha <- numeric(n_c_ha)
   for (i in seq_len(n_c_ha)) {
-    sigdm <- get_sigma_dm(distmat, c_grid_ha[i])
-    om <- t(R) %*% sigdm %*% R
+    om <- om_all[, , n_c_ho + i]
     omi <- solve(om)
-    ch_omi_mat_ha[[i]] <- chol(omi)
-    const_den_mat_ha[i] <- sqrt(det(omi)) * 0.5 * gamma(q / 2) / (pi^(q / 2))
+    omi_ha_arr[, , i] <- omi
+    ch_omi_ha_arr[, , i] <- chol(omi)
+    const_den_mat_ha[i] <- sqrt(det(omi)) * const_scale
   }
 
-  pv_mat <- matrix(NA_real_, nrow = n_c_ho, ncol = 1)
-  X <- t(R) %*% Y
+  X <- crossprod(R, Y)
+  storage.mode(X) <- "double"
 
-  for (i in seq_len(n_c_ho)) {
-    ch_null <- ch_om_mat[[i]]
-    e <- t(ch_null) %*% emat
-
-    ch_omi <- ch_omi_mat[[i]]
-    const_den <- const_den_mat[i]
-    xc <- ch_omi %*% e
-    den_ho <- const_den * (colSums(xc^2)^(-q / 2))
-
-    Xc <- ch_omi %*% X
-    den_ho_X <- as.numeric(const_den * (colSums(Xc^2)^(-q / 2)))
-
-    den_ha_mat <- matrix(NA_real_, nrow = ncol(emat), ncol = n_c_ha)
-    den_ha_mat_X <- numeric(n_c_ha)
-
-    for (j in seq_len(n_c_ha)) {
-      ch_omi_ha <- ch_omi_mat_ha[[j]]
-      const_den_ha <- const_den_mat_ha[j]
-
-      xc <- ch_omi_ha %*% e
-      den_ha_mat[, j] <- const_den_ha * (colSums(xc^2)^(-q / 2))
-
-      Xc <- ch_omi_ha %*% X
-      den_ha_mat_X[j] <- as.numeric(const_den_ha * (colSums(Xc^2)^(-q / 2)))
-    }
-
-    den_ha_avg <- rowMeans(den_ha_mat)
-    lr <- den_ha_avg / den_ho
-
-    den_ha_avg_X <- mean(den_ha_mat_X)
-    lr_X <- den_ha_avg_X / den_ho_X
-    pv_mat[i, 1] <- mean(lr > lr_X)
-  }
-
-  pv_mat
+  rcpp_c_ci_mc(
+    ch_om_ho_arr,
+    ch_omi_ho_arr,
+    const_den_mat,
+    ch_omi_ha_arr,
+    omi_ha_arr,
+    const_den_mat_ha,
+    emat,
+    X,
+    as.integer(nthreads)
+  )
 }

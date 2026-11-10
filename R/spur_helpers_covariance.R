@@ -8,11 +8,8 @@
 #' @return A numeric matrix representing the demeaned sigma.
 #' @keywords internal
 get_sigma_dm <- function(distmat, c) {
-  n <- nrow(distmat)
-  sigma <- exp(-c * distmat)
-  sigma_dm <- sigma - matrix(colMeans(sigma), n, n, byrow = TRUE)
-  sigma_dm <- sigma_dm - matrix(rowMeans(sigma_dm), n, n)
-  sigma_dm
+  storage.mode(distmat) <- "double"
+  rcpp_get_sigma_dm(distmat, as.numeric(c))
 }
 
 #' Compute LBM Covariance Matrix
@@ -24,10 +21,8 @@ get_sigma_dm <- function(distmat, c) {
 #' @return A numeric matrix representing the LBM covariance matrix.
 #' @keywords internal
 get_sigma_lbm <- function(distmat) {
-  n <- nrow(distmat)
-  first_col <- matrix(distmat[, 1], n, n)
-  first_row <- matrix(distmat[1, ], n, n, byrow = TRUE)
-  0.5 * (first_col + first_row - distmat)
+  storage.mode(distmat) <- "double"
+  rcpp_get_sigma_lbm(distmat)
 }
 
 #' Compute Demeaned Sigma LBM
@@ -39,7 +34,8 @@ get_sigma_lbm <- function(distmat) {
 #' @return A numeric matrix representing the demeaned sigma_lbm.
 #' @keywords internal
 get_sigma_lbm_dm <- function(distmat) {
-  demean_sigma(get_sigma_lbm(distmat))
+  storage.mode(distmat) <- "double"
+  rcpp_get_sigma_lbm_dm(distmat)
 }
 
 #' Residual Covariance Matrix

@@ -4,7 +4,7 @@
 \alias{get_distmat_lat_lon}
 \title{Calculate Distance Matrix for Latitude/Longitude Points}
 \usage{
-get_distmat_lat_lon(s)
+get_distmat_lat_lon(s, nthreads = .get_spur_threads())
 }
 \arguments{
 \item{s}{A numeric matrix where rows represent locations and columns are

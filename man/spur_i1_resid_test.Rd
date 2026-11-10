@@ -4,7 +4,16 @@
 \alias{spur_i1_resid_test}
 \title{Core SPUR I(1) Residual Test}
 \usage{
-spur_i1_resid_test(Y, X_in, distmat, emat)
+spur_i1_resid_test(
+  Y,
+  X_in,
+  distmat,
+  emat,
+  sigdm_bm = NULL,
+  R = NULL,
+  R_M = NULL,
+  nthreads = .get_spur_threads()
+)
 }
 \arguments{
 \item{Y}{Numeric matrix (n x n_series).}

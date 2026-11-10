@@ -4,7 +4,7 @@
 \alias{get_ha_param_i1}
 \title{Compute Ha Parameter for I1 Test}
 \usage{
-get_ha_param_i1(om_ho, distmat, R, e)
+get_ha_param_i1(om_ho, distmat, R, e, nthreads = .get_spur_threads())
 }
 \arguments{
 \item{om_ho}{A numeric matrix.}

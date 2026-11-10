@@ -241,6 +241,9 @@
 #' @param avc SCPC tuning parameter passed to \code{scpcR::scpc()}.
 #' @param uncond Passed through to \code{scpcR::scpc()}.
 #' @param cvs Passed through to \code{scpcR::scpc()}.
+#' @param nthreads Optional integer; number of threads to use for parallel
+#'   computations. Defaults to \code{NULL}, which respects package options,
+#'   environment variables, or automatic detection.
 #' @return A list of class \code{"spur_result"} with \code{tests} and \code{fits}.
 #' @export
 spur <- function(formula,
@@ -253,7 +256,15 @@ spur <- function(formula,
                  seed = 42L,
                  avc = 0.03,
                  uncond = FALSE,
-                 cvs = FALSE) {
+                 cvs = FALSE,
+                 nthreads = NULL) {
+  if (!is.null(nthreads)) {
+    nth <- .get_spur_threads(nthreads)
+    old_nth <- getOption("spuR.threads")
+    options(spuR.threads = nth)
+    on.exit(options(spuR.threads = old_nth), add = TRUE)
+  }
+
   .validate_common_args(data = data, q = q, nrep = nrep)
 
   if (!inherits(formula, "formula") || length(formula) != 3L) {
@@ -266,46 +277,134 @@ spur <- function(formula,
   }
 
   depvar_formula <- stats::reformulate("1", response = depvar)
+  parsed_dep <- .parse_single_var_formula(formula = depvar_formula, data = data, fn_name = "spurtest_i0()")
+  coord_dep <- .resolve_spur_coords(
+    data = data,
+    use_rows = parsed_dep$use_rows,
+    lon = lon,
+    lat = lat,
+    coords_euclidean = coords_euclidean,
+    verbose = FALSE
+  )
+  y_dep <- as.matrix(data[[parsed_dep$var]][parsed_dep$use_rows])
+  distmat_dep <- .normalized_distmat(coords = coord_dep$coords, latlong = coord_dep$latlong)
+  sigdm_bm_dep <- get_sigma_lbm_dm(distmat_dep)
+  R_dep <- get_r(sigdm_bm_dep, q)$R
 
-  i0 <- spurtest_i0(
-    depvar_formula,
-    data = data,
-    q = q,
-    nrep = nrep,
-    lon = lon,
-    lat = lat,
-    coords_euclidean = coords_euclidean,
-    seed = seed
+  if (!is.null(seed)) set.seed(seed)
+  emat_shared <- .draw_emat(q = q, nrep = nrep)
+
+  res_i0 <- spur_i0_test(
+    Y = y_dep,
+    distmat = distmat_dep,
+    emat = emat_shared,
+    sigdm_bm = sigdm_bm_dep,
+    R = R_dep
   )
-  i1 <- spurtest_i1(
-    depvar_formula,
-    data = data,
-    q = q,
-    nrep = nrep,
-    lon = lon,
-    lat = lat,
-    coords_euclidean = coords_euclidean,
-    seed = seed
+  i0 <- structure(
+    list(
+      pvalue = res_i0$pvalue[1],
+      teststat = res_i0$LR[1],
+      ha_param = res_i0$ha_parm,
+      cv = res_i0$cvalue,
+      full = res_i0
+    ),
+    class = "spur_test",
+    test_type = "I(0)"
   )
-  i0resid <- spurtest_i0resid(
-    formula,
-    data = data,
-    q = q,
-    nrep = nrep,
-    lon = lon,
-    lat = lat,
-    coords_euclidean = coords_euclidean,
-    seed = seed
+
+  emat_i1 <- if (!is.null(seed)) emat_shared else .draw_emat(q = q, nrep = nrep)
+  res_i1 <- spur_i1_test(
+    Y = y_dep,
+    distmat = distmat_dep,
+    emat = emat_i1,
+    sigdm_bm = sigdm_bm_dep,
+    R = R_dep
   )
-  i1resid <- spurtest_i1resid(
-    formula,
-    data = data,
-    q = q,
-    nrep = nrep,
-    lon = lon,
-    lat = lat,
-    coords_euclidean = coords_euclidean,
-    seed = seed
+  i1 <- structure(
+    list(
+      pvalue = res_i1$pvalue[1],
+      teststat = res_i1$LR[1],
+      ha_param = res_i1$ha_parm,
+      cv = res_i1$cv_vec,
+      full = res_i1
+    ),
+    class = "spur_test",
+    test_type = "I(1)"
+  )
+
+  parsed_resid <- .parse_residual_formula(formula = formula, data = data, fn_name = "spurtest_i0resid()")
+  same_rows <- identical(parsed_resid$use_rows, parsed_dep$use_rows)
+  if (same_rows) {
+    coord_resid <- coord_dep
+    distmat_resid <- distmat_dep
+  } else {
+    coord_resid <- .resolve_spur_coords(
+      data = data,
+      use_rows = parsed_resid$use_rows,
+      lon = lon,
+      lat = lat,
+      coords_euclidean = coords_euclidean,
+      verbose = FALSE
+    )
+    distmat_resid <- .normalized_distmat(coords = coord_resid$coords, latlong = coord_resid$latlong)
+  }
+
+  X_in <- parsed_resid$X_in
+  xtx <- crossprod(X_in)
+  if (qr(xtx)$rank < ncol(xtx)) {
+    stop("Design matrix is rank-deficient; residual tests require full column rank.")
+  }
+  storage.mode(X_in) <- "double"
+  P_X <- X_in %*% solve(xtx)
+  storage.mode(P_X) <- "double"
+  c_bm_resid <- get_cbar(0.999, distmat_resid)
+  sigdm_bm_resid <- rcpp_get_sigma_residual_proj(distmat_resid, as.numeric(c_bm_resid), X_in, P_X)
+  R_resid <- get_r(sigdm_bm_resid, q)$R
+  R_M_resid <- R_resid - P_X %*% crossprod(X_in, R_resid)
+
+  emat_i0r <- if (!is.null(seed)) emat_shared else .draw_emat(q = q, nrep = nrep)
+  res_i0r <- spur_i0_resid_test(
+    Y = parsed_resid$Y,
+    X_in = X_in,
+    distmat = distmat_resid,
+    emat = emat_i0r,
+    sigdm_bm = sigdm_bm_resid,
+    R = R_resid,
+    R_M = R_M_resid
+  )
+  i0resid <- structure(
+    list(
+      pvalue = res_i0r$pvalue[1],
+      teststat = res_i0r$LR[1],
+      ha_param = res_i0r$ha_parm,
+      cv = res_i0r$cvalue,
+      full = res_i0r
+    ),
+    class = "spur_test",
+    test_type = "I(0) Residual"
+  )
+
+  emat_i1r <- if (!is.null(seed)) emat_shared else .draw_emat(q = q, nrep = nrep)
+  res_i1r <- spur_i1_resid_test(
+    Y = parsed_resid$Y,
+    X_in = X_in,
+    distmat = distmat_resid,
+    emat = emat_i1r,
+    sigdm_bm = sigdm_bm_resid,
+    R = R_resid,
+    R_M = R_M_resid
+  )
+  i1resid <- structure(
+    list(
+      pvalue = res_i1r$pvalue[1],
+      teststat = res_i1r$LR[1],
+      ha_param = res_i1r$ha_parm,
+      cv = res_i1r$cv_vec,
+      full = res_i1r
+    ),
+    class = "spur_test",
+    test_type = "I(1) Residual"
   )
 
   levels_model <- stats::lm(formula = formula, data = data)
@@ -317,18 +416,47 @@ spur <- function(formula,
     coords_euclidean = coords_euclidean,
     avc = avc,
     uncond = uncond,
-    cvs = cvs
+    cvs = cvs,
+    nthreads = nthreads
   )
 
-  transformed_data <- spurtransform(
-    formula,
-    data = data,
-    prefix = "h_",
-    transformation = "lbmgls",
-    lon = lon,
-    lat = lat,
-    coords_euclidean = coords_euclidean
-  )
+  vars_trans <- .parse_transform_formula(formula = formula, data = data)
+  use_rows_trans <- stats::complete.cases(data[vars_trans])
+  if (identical(use_rows_trans, parsed_dep$use_rows)) {
+    H_lbm <- lbm_gls_matrix(
+      s = coord_dep$coords,
+      latlong = coord_dep$latlong,
+      distmat = distmat_dep,
+      sigma_lbm_dm = sigdm_bm_dep
+    )
+    transformed_data <- data
+    for (var in vars_trans) {
+      out_var <- paste0("h_", var)
+      if (out_var %in% names(transformed_data)) {
+        stop(sprintf("%s already defined or invalid name", out_var))
+      }
+      transformed_vec <- rep(NA_real_, nrow(data))
+      transformed_vec[use_rows_trans] <- spur_transform_vector(
+        data = data,
+        varname = var,
+        H = H_lbm,
+        transformation = "lbmgls",
+        use_rows = use_rows_trans
+      )
+      transformed_data[[out_var]] <- transformed_vec
+    }
+  } else {
+    transformed_data <- spurtransform(
+      formula,
+      data = data,
+      prefix = "h_",
+      transformation = "lbmgls",
+      lon = lon,
+      lat = lat,
+      coords_euclidean = coords_euclidean,
+      nthreads = nthreads
+    )
+  }
   transformed_formula <- .rewrite_formula_with_prefix(formula, "h_")
   transformed_model <- stats::lm(formula = transformed_formula, data = transformed_data)
   transformed_scpc <- scpcR::scpc(
@@ -339,7 +467,8 @@ spur <- function(formula,
     coords_euclidean = coords_euclidean,
     avc = avc,
     uncond = uncond,
-    cvs = cvs
+    cvs = cvs,
+    nthreads = nthreads
   )
 
   structure(

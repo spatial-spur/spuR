@@ -1,0 +1,8 @@
+PKG_CPPFLAGS = -O3 -DARMA_USE_CURRENT -DARMA_NO_DEBUG -DARMA_DONT_USE_OPENMP
+RCPP_PARALLEL_LIBS = $(shell "${R_HOME}/bin/Rscript" -e "RcppParallel::RcppParallelLibs()")
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+  PKG_LIBS = -framework Accelerate $(RCPP_PARALLEL_LIBS)
+else
+  PKG_LIBS = $(LAPACK_LIBS) $(BLAS_LIBS) $(FLIBS) $(RCPP_PARALLEL_LIBS)
+endif

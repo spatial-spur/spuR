@@ -32,18 +32,21 @@
     if (!all(vapply(coords_lon_lat, is.numeric, logical(1)))) {
       stop("`lon` and `lat` must reference numeric columns.")
     }
-    if (any(!is.finite(as.matrix(coords_lon_lat)))) {
+    lon_vec <- coords_lon_lat[[lon]]
+    lat_vec <- coords_lon_lat[[lat]]
+    if (!all(is.finite(lon_vec)) || !all(is.finite(lat_vec))) {
       stop("Geodesic coordinates must be finite.")
     }
-    if (any(coords_lon_lat[[lon]] < -180 | coords_lon_lat[[lon]] > 180)) {
+    if (any(lon_vec < -180 | lon_vec > 180)) {
       stop("Longitude values must be in [-180, 180].")
     }
-    if (any(coords_lon_lat[[lat]] < -90 | coords_lon_lat[[lat]] > 90)) {
+    if (any(lat_vec < -90 | lat_vec > 90)) {
       stop("Latitude values must be in [-90, 90].")
     }
 
     # Internal SPUR distance code expects columns ordered as (lat, lon).
-    coords <- as.matrix(coords_lon_lat[, c(lat, lon), drop = FALSE])
+    coords <- cbind(lat_vec, lon_vec)
+    colnames(coords) <- c(lat, lon)
     return(list(coords = coords, latlong = TRUE))
   }
 
@@ -60,11 +63,12 @@
   if (!all(vapply(coords, is.numeric, logical(1)))) {
     stop("`coords_euclidean` columns must be numeric.")
   }
-  if (any(!is.finite(as.matrix(coords)))) {
+  coords_mat <- as.matrix(coords)
+  if (!all(is.finite(coords_mat))) {
     stop("Euclidean coordinates must be finite.")
   }
 
-  list(coords = as.matrix(coords), latlong = FALSE)
+  list(coords = coords_mat, latlong = FALSE)
 }
 
 #' @keywords internal
@@ -207,6 +211,9 @@
 #' @param coords_euclidean Optional Euclidean coordinate column names.
 #' @param seed Optional integer seed for reproducibility of Monte Carlo draws.
 #' @param verbose Logical; if `TRUE`, print test summary and diagnostics.
+#' @param nthreads Optional integer; number of threads to use for parallel
+#'   computations. Defaults to \code{NULL}, which respects package options,
+#'   environment variables, or automatic detection.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
 #'   `cv`, and `full`.
 #' @examples
@@ -225,7 +232,15 @@ spurtest_i0 <- function(formula,
                         lat = NULL,
                         coords_euclidean = NULL,
                         seed = 42L,
-                        verbose = FALSE) {
+                        verbose = FALSE,
+                        nthreads = NULL) {
+  if (!is.null(nthreads)) {
+    nth <- .get_spur_threads(nthreads)
+    old_nth <- getOption("spuR.threads")
+    options(spuR.threads = nth)
+    on.exit(options(spuR.threads = old_nth), add = TRUE)
+  }
+
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_single_var_formula(formula = formula, data = data, fn_name = "spurtest_i0()")
   coord_info <- .resolve_spur_coords(
@@ -241,7 +256,7 @@ spurtest_i0 <- function(formula,
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
-  res <- spur_i0_test(Y = y, distmat = distmat, emat = emat)
+  res <- spur_i0_test(Y = y, distmat = distmat, emat = emat, nthreads = nthreads)
 
   teststat <- res$LR[1]
   pvalue <- res$pvalue[1]
@@ -282,6 +297,9 @@ spurtest_i0 <- function(formula,
 #' @param coords_euclidean Optional Euclidean coordinate column names.
 #' @param seed Optional integer seed for reproducibility of Monte Carlo draws.
 #' @param verbose Logical; if `TRUE`, print test summary and diagnostics.
+#' @param nthreads Optional integer; number of threads to use for parallel
+#'   computations. Defaults to \code{NULL}, which respects package options,
+#'   environment variables, or automatic detection.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
 #'   `cv`, and `full`.
 #' @examples
@@ -300,7 +318,15 @@ spurtest_i1 <- function(formula,
                         lat = NULL,
                         coords_euclidean = NULL,
                         seed = 42L,
-                        verbose = FALSE) {
+                        verbose = FALSE,
+                        nthreads = NULL) {
+  if (!is.null(nthreads)) {
+    nth <- .get_spur_threads(nthreads)
+    old_nth <- getOption("spuR.threads")
+    options(spuR.threads = nth)
+    on.exit(options(spuR.threads = old_nth), add = TRUE)
+  }
+
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_single_var_formula(formula = formula, data = data, fn_name = "spurtest_i1()")
   coord_info <- .resolve_spur_coords(
@@ -316,7 +342,7 @@ spurtest_i1 <- function(formula,
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
-  res <- spur_i1_test(Y = y, distmat = distmat, emat = emat)
+  res <- spur_i1_test(Y = y, distmat = distmat, emat = emat, nthreads = nthreads)
 
   teststat <- res$LR[1]
   pvalue <- res$pvalue[1]
@@ -357,6 +383,9 @@ spurtest_i1 <- function(formula,
 #' @param coords_euclidean Optional Euclidean coordinate column names.
 #' @param seed Optional integer seed for reproducibility of Monte Carlo draws.
 #' @param verbose Logical; if `TRUE`, print test summary and diagnostics.
+#' @param nthreads Optional integer; number of threads to use for parallel
+#'   computations. Defaults to \code{NULL}, which respects package options,
+#'   environment variables, or automatic detection.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
 #'   `cv`, and `full`.
 #' @examples
@@ -375,7 +404,15 @@ spurtest_i0resid <- function(formula,
                              lat = NULL,
                              coords_euclidean = NULL,
                              seed = 42L,
-                             verbose = FALSE) {
+                             verbose = FALSE,
+                             nthreads = NULL) {
+  if (!is.null(nthreads)) {
+    nth <- .get_spur_threads(nthreads)
+    old_nth <- getOption("spuR.threads")
+    options(spuR.threads = nth)
+    on.exit(options(spuR.threads = old_nth), add = TRUE)
+  }
+
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_residual_formula(formula = formula, data = data, fn_name = "spurtest_i0resid()")
   coord_info <- .resolve_spur_coords(
@@ -390,7 +427,7 @@ spurtest_i0resid <- function(formula,
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
-  res <- spur_i0_resid_test(Y = parsed$Y, X_in = parsed$X_in, distmat = distmat, emat = emat)
+  res <- spur_i0_resid_test(Y = parsed$Y, X_in = parsed$X_in, distmat = distmat, emat = emat, nthreads = nthreads)
 
   teststat <- res$LR[1]
   pvalue <- res$pvalue[1]
@@ -431,6 +468,9 @@ spurtest_i0resid <- function(formula,
 #' @param coords_euclidean Optional Euclidean coordinate column names.
 #' @param seed Optional integer seed for reproducibility of Monte Carlo draws.
 #' @param verbose Logical; if `TRUE`, print test summary and diagnostics.
+#' @param nthreads Optional integer; number of threads to use for parallel
+#'   computations. Defaults to \code{NULL}, which respects package options,
+#'   environment variables, or automatic detection.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
 #'   `cv`, and `full`.
 #' @examples
@@ -449,7 +489,15 @@ spurtest_i1resid <- function(formula,
                              lat = NULL,
                              coords_euclidean = NULL,
                              seed = 42L,
-                             verbose = FALSE) {
+                             verbose = FALSE,
+                             nthreads = NULL) {
+  if (!is.null(nthreads)) {
+    nth <- .get_spur_threads(nthreads)
+    old_nth <- getOption("spuR.threads")
+    options(spuR.threads = nth)
+    on.exit(options(spuR.threads = old_nth), add = TRUE)
+  }
+
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_residual_formula(formula = formula, data = data, fn_name = "spurtest_i1resid()")
   coord_info <- .resolve_spur_coords(
@@ -464,7 +512,7 @@ spurtest_i1resid <- function(formula,
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
-  res <- spur_i1_resid_test(Y = parsed$Y, X_in = parsed$X_in, distmat = distmat, emat = emat)
+  res <- spur_i1_resid_test(Y = parsed$Y, X_in = parsed$X_in, distmat = distmat, emat = emat, nthreads = nthreads)
 
   teststat <- res$LR[1]
   pvalue <- res$pvalue[1]
@@ -507,6 +555,9 @@ spurtest_i1resid <- function(formula,
 #' @param coords_euclidean Optional Euclidean coordinate column names.
 #' @param seed Optional integer seed for reproducibility of Monte Carlo draws.
 #' @param verbose Logical; if `TRUE`, print CI summary and diagnostics.
+#' @param nthreads Optional integer; number of threads to use for parallel
+#'   computations. Defaults to \code{NULL}, which respects package options,
+#'   environment variables, or automatic detection.
 #' @return A list of class `"spur_halflife"` with `ci_l`, `ci_u`, `max_dist`,
 #'   and `full`.
 #' @examples
@@ -527,7 +578,15 @@ spurhalflife <- function(formula,
                          lat = NULL,
                          coords_euclidean = NULL,
                          seed = 42L,
-                         verbose = FALSE) {
+                         verbose = FALSE,
+                         nthreads = NULL) {
+  if (!is.null(nthreads)) {
+    nth <- .get_spur_threads(nthreads)
+    old_nth <- getOption("spuR.threads")
+    options(spuR.threads = nth)
+    on.exit(options(spuR.threads = old_nth), add = TRUE)
+  }
+
   .validate_common_args(data = data, q = q, nrep = nrep)
   if (length(level) != 1L || !is.finite(level)) {
     stop("`level` must be a finite scalar.")
@@ -550,7 +609,7 @@ spurhalflife <- function(formula,
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
-  ci <- spur_persistence(Z = z, distmat = distmat, emat = emat, level = level / 100)
+  ci <- spur_persistence(Z = z, distmat = distmat, emat = emat, level = level / 100, nthreads = nthreads)
 
   ci_l <- ci$hl_ci_lower
   ci_u <- ci$hl_ci_upper
@@ -558,10 +617,13 @@ spurhalflife <- function(formula,
     ci_u <- NA_real_
   }
 
-  max_dist <- if (isTRUE(coord_info$latlong)) {
-    max(get_distmat_lat_lon(coord_info$coords))
-  } else {
-    max(get_distmat_euclidean(coord_info$coords))
+  max_dist <- attr(distmat, "max_dist")
+  if (is.null(max_dist)) {
+    max_dist <- if (isTRUE(coord_info$latlong)) {
+      max(get_distmat_lat_lon(coord_info$coords))
+    } else {
+      max(get_distmat_euclidean(coord_info$coords))
+    }
   }
   max_dist <- max_dist * pi * 6371000.009 * 2
 
@@ -621,6 +683,9 @@ spurhalflife <- function(formula,
 #' @param separately Logical; handle missingness separately by variable.
 #' @param replace Logical; allow overwriting existing output columns.
 #' @param verbose Logical; if `TRUE`, print coordinate diagnostics.
+#' @param nthreads Optional integer; number of threads to use for parallel
+#'   computations. Defaults to \code{NULL}, which respects package options,
+#'   environment variables, or automatic detection.
 #' @return A data frame with transformed variables appended.
 #' @examples
 #' data(spur_example)
@@ -646,7 +711,15 @@ spurtransform <- function(formula,
                           coords_euclidean = NULL,
                           separately = FALSE,
                           replace = FALSE,
-                          verbose = FALSE) {
+                          verbose = FALSE,
+                          nthreads = NULL) {
+  if (!is.null(nthreads)) {
+    nth <- .get_spur_threads(nthreads)
+    old_nth <- getOption("spuR.threads")
+    options(spuR.threads = nth)
+    on.exit(options(spuR.threads = old_nth), add = TRUE)
+  }
+
   if (!is.data.frame(data)) {
     stop("`data` must be a data frame.")
   }

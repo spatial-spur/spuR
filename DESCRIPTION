@@ -28,7 +28,13 @@ Depends:
 Imports:
     stats,
     RSpectra,
-    scpcR (>= 0.1.3)
+    scpcR (>= 0.1.3),
+    Rcpp (>= 1.0.0),
+    RcppParallel
+LinkingTo:
+    Rcpp,
+    RcppArmadillo,
+    RcppParallel
 Remotes:
     spatial-spur/scpcR@v0.1.3
 Suggests:

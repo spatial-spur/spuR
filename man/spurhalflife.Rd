@@ -15,7 +15,8 @@ spurhalflife(
   lat = NULL,
   coords_euclidean = NULL,
   seed = 42L,
-  verbose = FALSE
+  verbose = FALSE,
+  nthreads = NULL
 )
 }
 \arguments{
@@ -40,6 +41,10 @@ spurhalflife(
 \item{seed}{Optional integer seed for reproducibility of Monte Carlo draws.}
 
 \item{verbose}{Logical; if \code{TRUE}, print CI summary and diagnostics.}
+
+\item{nthreads}{Optional integer; number of threads to use for parallel
+computations. Defaults to \code{NULL}, which respects package options,
+environment variables, or automatic detection.}
 }
 \value{
 A list of class \code{"spur_halflife"} with \code{ci_l}, \code{ci_u}, \code{max_dist},

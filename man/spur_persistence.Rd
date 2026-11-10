@@ -4,7 +4,7 @@
 \alias{spur_persistence}
 \title{Spatial Persistence Core Routine}
 \usage{
-spur_persistence(Z, distmat, emat, level)
+spur_persistence(Z, distmat, emat, level, nthreads = .get_spur_threads())
 }
 \arguments{
 \item{Z}{Outcome matrix.}

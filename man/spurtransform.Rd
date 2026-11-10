@@ -16,7 +16,8 @@ spurtransform(
   coords_euclidean = NULL,
   separately = FALSE,
   replace = FALSE,
-  verbose = FALSE
+  verbose = FALSE,
+  nthreads = NULL
 )
 }
 \arguments{
@@ -46,6 +47,10 @@ analysis formula directly.}
 \item{replace}{Logical; allow overwriting existing output columns.}
 
 \item{verbose}{Logical; if \code{TRUE}, print coordinate diagnostics.}
+
+\item{nthreads}{Optional integer; number of threads to use for parallel
+computations. Defaults to \code{NULL}, which respects package options,
+environment variables, or automatic detection.}
 }
 \value{
 A data frame with transformed variables appended.

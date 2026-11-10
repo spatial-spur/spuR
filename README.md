@@ -50,6 +50,31 @@ out <- spurtransform(am ~ gini + fracblack, data = spur_example,
 head(out[, c("h_am", "h_gini", "h_fracblack")])
 ```
 
+## Multithreading and Performance
+
+`spuR` uses `RcppParallel` for multi-core acceleration in computationally intensive steps (Omega grid evaluation, Monte Carlo persistence intervals, and distance calculations). By default, it automatically uses available cores.
+
+You can configure or restrict multithreading using:
+
+```r
+# Restrict to a specific thread count via helper function:
+spur_set_num_threads(2)
+
+# Or set via standard R package option:
+options(spuR.threads = 1)
+
+# Or set via environment variable:
+Sys.setenv(SPUR_NUM_THREADS = "1")
+
+# Check currently active thread count:
+spur_get_num_threads()
+
+# Restore automatic multi-core threading:
+spur_set_num_threads("auto")
+```
+
+> **Tip for cluster & batch workflows:** If you are running `spur()` or `spurtest_*()` inside parallel loops (e.g. `parallel::mclapply`, `future`, or a shared cluster node), set `spur_set_num_threads(1)` or `options(spuR.threads = 1)` to prevent CPU oversubscription. Setting thread count to `1` completely bypasses background task submission, ensuring pure single-threaded execution without overhead or thread creation issues.
+
 ## Documentation
 
 Please refer to [the package documentation](https://spatial-spur.github.io/spuR/) for detailed information and other (R, Python, Stata) packages.
