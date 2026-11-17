@@ -250,7 +250,6 @@ spurtest_i0 <- function(formula,
   if (q >= nrow(y)) {
     stop("`q` must be less than the number of observations.")
   }
-  .validate_spur_y(y, name = parsed$var)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
@@ -349,7 +348,6 @@ spurtest_i1 <- function(formula,
   if (q >= nrow(y)) {
     stop("`q` must be less than the number of observations.")
   }
-  .validate_spur_y(y, name = parsed$var)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
@@ -444,9 +442,8 @@ spurtest_i0resid <- function(formula,
     verbose = verbose
   )
 
-  .validate_spur_y(parsed$Y, name = "Y")
-  q_x <- .orthonormal_design_basis(parsed$X_in)
-  resid_dof <- nrow(parsed$Y) - ncol(q_x)
+  # Numerical rank and response checks belong to the selected operation.
+  resid_dof <- nrow(parsed$Y) - ncol(parsed$X_in)
   if (q > resid_dof) {
     stop(sprintf(
       "`q` (%d) cannot exceed residual degrees of freedom (n - ncol(X) = %d).",
@@ -548,9 +545,8 @@ spurtest_i1resid <- function(formula,
     verbose = verbose
   )
 
-  .validate_spur_y(parsed$Y, name = "Y")
-  q_x <- .orthonormal_design_basis(parsed$X_in)
-  resid_dof <- nrow(parsed$Y) - ncol(q_x)
+  # Numerical rank and response checks belong to the selected operation.
+  resid_dof <- nrow(parsed$Y) - ncol(parsed$X_in)
   if (q > resid_dof) {
     stop(sprintf(
       "`q` (%d) cannot exceed residual degrees of freedom (n - ncol(X) = %d).",
@@ -670,7 +666,6 @@ spurhalflife <- function(formula,
   if (q >= nrow(z)) {
     stop("`q` must be less than the number of observations.")
   }
-  .validate_spur_y(z, name = parsed$var)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 

@@ -276,9 +276,8 @@ spur <- function(formula,
 
   depvar_formula <- stats::reformulate("1", response = depvar)
   parsed <- .parse_residual_formula(formula = formula, data = data, fn_name = "spur()")
-  .validate_spur_y(parsed$Y, name = depvar)
-  q_x <- .orthonormal_design_basis(parsed$X_in)
-  resid_dof <- nrow(parsed$Y) - ncol(q_x)
+  # Numerical rank and response checks belong to the selected operation.
+  resid_dof <- nrow(parsed$Y) - ncol(parsed$X_in)
   if (q > resid_dof) {
     stop(sprintf(
       "`q` (%d) cannot exceed residual degrees of freedom (n - ncol(X) = %d).",
