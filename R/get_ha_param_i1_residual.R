@@ -15,7 +15,12 @@ get_ha_param_i1_residual <- function(om_ho, distmat, R, e, M) {
 
   pow <- 1
   ctry <- get_cbar(0.95, distmat)
+  bracket_steps <- 0L
   while (pow > pow50) {
+    bracket_steps <- bracket_steps + 1L
+    if (bracket_steps > 200L) {
+      stop("get_ha_param_i1_residual step-1 bracketing did not converge.")
+    }
     c <- ctry
     sigdm_c <- get_sigma_residual(distmat, c, M)
     om_c <- t(R) %*% sigdm_c %*% R
@@ -26,7 +31,12 @@ get_ha_param_i1_residual <- function(om_ho, distmat, R, e, M) {
 
   pow <- 0
   ctry <- get_cbar(0.01, distmat)
+  bracket_steps <- 0L
   while (pow < pow50) {
+    bracket_steps <- bracket_steps + 1L
+    if (bracket_steps > 200L) {
+      stop("get_ha_param_i1_residual step-2 bracketing did not converge.")
+    }
     c <- ctry
     sigdm_c <- get_sigma_residual(distmat, c, M)
     om_c <- t(R) %*% sigdm_c %*% R

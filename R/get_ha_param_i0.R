@@ -16,7 +16,12 @@ get_ha_param_i0 <- function(om_ho, om_i0, om_bm, e) {
   # First phase: find g1 such that power is below 50%
   pow <- 1
   gtry <- 1
+  bracket_steps <- 0L
   while (pow > 0.5) {
+    bracket_steps <- bracket_steps + 1L
+    if (bracket_steps > 200L) {
+      stop("get_ha_param_i0 step-1 bracketing did not converge.")
+    }
     g <- gtry
     pow <- pow_eval(om_i0 + g * om_bm)
     gtry <- g / 2
@@ -26,7 +31,12 @@ get_ha_param_i0 <- function(om_ho, om_i0, om_bm, e) {
   # Second phase: find g2 such that power is above 50%
   pow <- 0
   gtry <- 30
+  bracket_steps <- 0L
   while (pow < 0.5) {
+    bracket_steps <- bracket_steps + 1L
+    if (bracket_steps > 200L) {
+      stop("get_ha_param_i0 step-2 bracketing did not converge.")
+    }
     g <- gtry
     pow <- pow_eval(om_i0 + g * om_bm)
     gtry <- g * 2

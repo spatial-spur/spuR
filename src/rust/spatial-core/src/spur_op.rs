@@ -436,14 +436,32 @@ fn orthonormal_design_basis(x_in: &[f64], n: usize, k_x: usize) -> Result<Vec<f6
         ));
     }
     let mut q_mat = vec![0.0_f64; n * k_x];
+    // Scale each column to unit L2 norm first so rank detection and projection are
+    // invariant to regressor units across arbitrarily small or large column scales.
     for j in 0..k_x {
+        let max_abs = (0..n)
+            .map(|i| x_in[i * k_x + j].abs())
+            .fold(0.0_f64, f64::max);
+        if !max_abs.is_finite() || max_abs == 0.0 {
+            return Err(CoreError::invalid_input(
+                "design matrix is rank-deficient; residual tests require full column rank",
+            ));
+        }
+        let scaled_norm = (0..n)
+            .map(|i| (x_in[i * k_x + j] / max_abs).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        if !scaled_norm.is_finite() || scaled_norm == 0.0 {
+            return Err(CoreError::invalid_input(
+                "design matrix is rank-deficient; residual tests require full column rank",
+            ));
+        }
+        let inv = scaled_norm.recip();
         for i in 0..n {
-            q_mat[i * k_x + j] = x_in[i * k_x + j];
+            q_mat[i * k_x + j] = (x_in[i * k_x + j] / max_abs) * inv;
         }
     }
     for j in 0..k_x {
-        let col_norm_sq: f64 = (0..n).map(|i| q_mat[i * k_x + j].powi(2)).sum();
-        let orig_norm = col_norm_sq.sqrt();
         for _ in 0..2 {
             for prev in 0..j {
                 let dot: f64 = (0..n)
@@ -458,7 +476,7 @@ fn orthonormal_design_basis(x_in: &[f64], n: usize, k_x: usize) -> Result<Vec<f6
             .map(|i| q_mat[i * k_x + j].powi(2))
             .sum::<f64>()
             .sqrt();
-        if !norm.is_finite() || norm <= 1e-10 * orig_norm.max(1.0) {
+        if !norm.is_finite() || norm <= 1e-10 {
             return Err(CoreError::invalid_input(
                 "design matrix is rank-deficient; residual tests require full column rank",
             ));
@@ -550,6 +568,16 @@ fn factor_omega(om: &[f64], q: usize) -> Result<OmegaPairFactor, CoreError> {
         om_inv,
         ch_omi,
     })
+}
+
+// Covariance scale is a nuisance: only trace-normalized shapes are informative.
+fn covariance_shapes_differ(a: &[f64], b: &[f64], q: usize) -> Result<bool, CoreError> {
+    let ta: f64 = (0..q).map(|i| a[i * q + i]).sum();
+    let tb: f64 = (0..q).map(|i| b[i * q + i]).sum();
+    if !ta.is_finite() || ta <= 0.0 || !tb.is_finite() || tb <= 0.0 {
+        return Err(CoreError::degenerate("SPUR covariance has non-positive trace"));
+    }
+    Ok(a.iter().zip(b).any(|(&x, &y)| (x / ta - y / tb).abs() > 1e-12))
 }
 
 fn quantile_type7_inplace(vals: &mut [f64], prob: f64) -> f64 {
@@ -676,6 +704,13 @@ fn select_leading_basis(
     q: usize,
 ) -> Result<(Vec<f64>, bool), CoreError> {
     let eigen = basis::symmetric_eigenpairs(sigdm, n, q)?;
+    let lead = eigen.values.first().copied().unwrap_or(0.0);
+    let tail = eigen.values.get(q - 1).copied().unwrap_or(0.0);
+    if !lead.is_finite() || lead <= 0.0 || !tail.is_finite() || tail <= 1e-12 * lead {
+        return Err(CoreError::invalid_input(
+            "SPUR covariance basis has insufficient positive rank for requested q",
+        ));
+    }
     let mut r_mat = vec![0.0_f64; n * q];
     for j in 0..q {
         let src = &eigen.vectors[j * n..(j + 1) * n];
@@ -711,15 +746,70 @@ fn prepare_y_projections(
     if y.iter().any(|v| !v.is_finite()) {
         return Err(CoreError::invalid_input("response Y values must be finite"));
     }
-    let y_dm = col_demean_matrix(y, n, n_y);
+    let mut y_min = vec![f64::INFINITY; n_y];
+    let mut y_max = vec![f64::NEG_INFINITY; n_y];
+    for row in y.chunks_exact(n_y) {
+        for j in 0..n_y {
+            let v = row[j];
+            y_min[j] = y_min[j].min(v);
+            y_max[j] = y_max[j].max(v);
+        }
+    }
+    for j in 0..n_y {
+        if y_max[j] - y_min[j] == 0.0 {
+            return Err(CoreError::degenerate(
+                "response Y has zero variation; SPUR inference requires non-constant Y",
+            ));
+        }
+    }
+    let mut y_dm = col_demean_matrix(y, n, n_y);
+    let mut y_dm_max = vec![0.0_f64; n_y];
+    for row in y_dm.chunks_exact(n_y) {
+        for j in 0..n_y {
+            y_dm_max[j] = y_dm_max[j].max(row[j].abs());
+        }
+    }
+    let mut y_dm_norm = vec![0.0_f64; n_y];
+    for j in 0..n_y {
+        let max_d = y_dm_max[j];
+        if !max_d.is_finite() || max_d == 0.0 {
+            return Err(CoreError::degenerate(
+                "response Y has zero variation; SPUR inference requires non-constant Y",
+            ));
+        }
+        for i in 0..n {
+            y_dm[i * n_y + j] /= max_d;
+        }
+        y_dm_norm[j] = (0..n).map(|i| y_dm[i * n_y + j].powi(2)).sum::<f64>().sqrt();
+    }
     let mut p_mat = vec![0.0_f64; q * n_y];
     linalg::multiply(basis_r, &y_dm, &mut p_mat, q, n, n_y, true);
+    for j in 0..n_y {
+        let p_max = (0..q).map(|r| p_mat[r * n_y + j].abs()).fold(0.0_f64, f64::max);
+        if !p_max.is_finite() || p_max == 0.0 {
+            return Err(CoreError::degenerate(
+                "projected SPUR vector has zero norm",
+            ));
+        }
+        let p_norm = p_max
+            * (0..q)
+                .map(|r| (p_mat[r * n_y + j] / p_max).powi(2))
+                .sum::<f64>()
+                .sqrt();
+        if !p_norm.is_finite() || p_norm <= 1e-12 * y_dm_norm[j] {
+            return Err(CoreError::degenerate(
+                "projected SPUR vector has zero norm",
+            ));
+        }
+    }
     Ok(p_mat)
 }
 
 fn validate_emat(emat: &[f64], n: usize, q: usize, nrep: usize) -> Result<(), CoreError> {
-    if q == 0 || q >= n {
-        return Err(CoreError::invalid_input("q must satisfy 1 <= q < n"));
+    if q < 2 || q >= n {
+        return Err(CoreError::invalid_input(
+            "SPUR inference requires 2 <= q < n; q = 1 has no covariance-shape information",
+        ));
     }
     if nrep == 0 || emat.len() != checked_len(&[q, nrep])? {
         return Err(CoreError::invalid_input(
@@ -758,7 +848,7 @@ fn calibrate_ha_i0(
         pow = base.eval(&mix(g))?;
         gtry = g * 0.5;
         it += 1;
-        if it >= MAX_HA_BRACKET_STEPS {
+        if it >= MAX_HA_BRACKET_STEPS && pow > 0.5 {
             return Err(CoreError::calibration(
                 "get_ha_param_i0 step-1 bracketing did not converge",
             ));
@@ -774,7 +864,7 @@ fn calibrate_ha_i0(
         pow = base.eval(&mix(g))?;
         gtry = g * 2.0;
         it += 1;
-        if it >= MAX_HA_BRACKET_STEPS {
+        if it >= MAX_HA_BRACKET_STEPS && pow < 0.5 {
             return Err(CoreError::calibration(
                 "get_ha_param_i0 step-2 bracketing did not converge",
             ));
@@ -818,7 +908,7 @@ fn calibrate_ha_i1(
         pow = base.eval(&om_c)?;
         ctry = c * 0.5;
         it += 1;
-        if it >= MAX_HA_BRACKET_STEPS {
+        if it >= MAX_HA_BRACKET_STEPS && pow > 0.5 {
             return Err(CoreError::calibration(
                 "get_ha_param_i1 step-1 bracketing did not converge",
             ));
@@ -835,7 +925,7 @@ fn calibrate_ha_i1(
         pow = base.eval(&om_c)?;
         ctry = 2.0 * c;
         it += 1;
-        if it >= MAX_HA_BRACKET_STEPS {
+        if it >= MAX_HA_BRACKET_STEPS && pow < 0.5 {
             return Err(CoreError::calibration(
                 "get_ha_param_i1 step-2 bracketing did not converge",
             ));
@@ -969,8 +1059,14 @@ fn run_spur_i0_from_basis(
     nrep: usize,
 ) -> Result<SpurI0Output, CoreError> {
     let n = geom.n;
+    let p_mat = prepare_y_projections(y, n, n_y, basis_r, q)?;
     let c_rho = geom.get_cbar(RHO_I0_ALT)?;
     let om_rho = geom.projected_omega_from_mr(c_rho, mr, q);
+    if !covariance_shapes_differ(&om_rho, om_bm, q)? {
+        return Err(CoreError::degenerate(
+            "SPUR experiment is uninformative: null and alternative covariance shapes are proportional",
+        ));
+    }
 
     let ha_param = calibrate_ha_i0(&om_rho, &om_rho, om_bm, emat, q, nrep)?;
     let om_ha: Vec<f64> = om_rho
@@ -981,7 +1077,6 @@ fn run_spur_i0_from_basis(
 
     let ho_f = factor_omega(&om_rho, q)?;
     let ha_f = factor_omega(&om_ha, q)?;
-    let p_mat = prepare_y_projections(y, n, n_y, basis_r, q)?;
     let lr = eval_observed_lr(
         &ho_f.om_inv,
         &ha_f.om_inv,
@@ -1085,6 +1180,20 @@ fn run_spur_i1_from_basis(
     nrep: usize,
 ) -> Result<SpurI1Output, CoreError> {
     let n = geom.n;
+    let p_mat = prepare_y_projections(y, n, n_y, basis_r, q)?;
+    let c_lo = geom.get_cbar(0.01)?;
+    let c_mid = geom.get_cbar(0.5)?;
+    let c_hi = geom.get_cbar(0.95)?;
+    let om_lo = geom.projected_omega_from_mr(c_lo, mr, q);
+    let om_mid = geom.projected_omega_from_mr(c_mid, mr, q);
+    let om_hi = geom.projected_omega_from_mr(c_hi, mr, q);
+    if !covariance_shapes_differ(&om_lo, &om_mid, q)?
+        && !covariance_shapes_differ(&om_lo, &om_hi, q)?
+    {
+        return Err(CoreError::degenerate(
+            "SPUR experiment is uninformative: covariance shapes are proportional",
+        ));
+    }
     let ha_param = calibrate_ha_i1(geom, om_ho, mr, emat, q, nrep)?;
     let om_ha = geom.projected_omega_from_mr(ha_param, mr, q);
 
@@ -1099,7 +1208,6 @@ fn run_spur_i1_from_basis(
         nrep,
     );
 
-    let p_mat = prepare_y_projections(y, n, n_y, basis_r, q)?;
     let lr = eval_observed_lr(
         &ho_f.om_inv,
         &ha_f.om_inv,
@@ -1151,6 +1259,11 @@ fn prepare_resid_basis(
 ) -> Result<(Vec<f64>, bool, Vec<f64>, Vec<f64>), CoreError> {
     let n = geom.n;
     let qx = orthonormal_design_basis(x_in, n, k_x)?;
+    if q > n - k_x {
+        return Err(CoreError::invalid_input(
+            "q cannot exceed residual degrees of freedom (n - rank(X))",
+        ));
+    }
     let c_bm = geom.get_cbar(RHO_BM)?;
     let sigdm_bm = geom.residual_sigma_bm(c_bm, &qx, k_x);
     let mut sigdm_work = sigdm_bm.clone();
@@ -1262,6 +1375,17 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
             "response y must have length n with finite values",
         ));
     }
+    let (y_min, y_max) = req
+        .y
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), &v| {
+            (mn.min(v), mx.max(v))
+        });
+    if y_max - y_min == 0.0 {
+        return Err(CoreError::degenerate(
+            "response y is constant; half-life inference requires variation in y",
+        ));
+    }
 
     run_with_threads(req.nthreads, || {
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
@@ -1273,6 +1397,7 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
         let mut sigdm_bm = geom.kernel_dm(c_bm);
         let (basis_r, tied) = select_leading_basis(&mut sigdm_bm, n, q)?;
         let mr = col_demean_matrix(&basis_r, n, q);
+        let p_vec = prepare_y_projections(req.y, n, 1, &basis_r, q)?;
 
         let mut hl_grid_ho = Vec::with_capacity(HL_HO_LEN);
         for i in 0..HL_HO_SMALL_LEN {
@@ -1290,6 +1415,24 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
         let neg_ln_half = -(0.5_f64).ln();
         let c_grid_ho: Vec<f64> = hl_grid_ho.iter().map(|&h| neg_ln_half / h).collect();
         let c_grid_ha: Vec<f64> = hl_grid_ha.iter().map(|&h| neg_ln_half / h).collect();
+
+        // If every tested covariance has the same shape, the angular likelihood
+        // is constant. Strict simulation exceedances then have no meaningful
+        // interpretation, even when q > 1 (e.g. an equilateral triangle).
+        let reference_shape = geom.projected_omega_from_mr(c_grid_ho[0], &mr, q);
+        let mut informative = false;
+        for &c in c_grid_ho.iter().chain(&c_grid_ha) {
+            let candidate = geom.projected_omega_from_mr(c, &mr, q);
+            if covariance_shapes_differ(&candidate, &reference_shape, q)? {
+                informative = true;
+                break;
+            }
+        }
+        if !informative {
+            return Err(CoreError::degenerate(
+                "half-life experiment is uninformative: retained covariance shapes are proportional",
+            ));
+        }
 
         let build_factor = |c: f64| -> Result<OmegaPairFactor, CoreError> {
             let om = geom.projected_omega_from_mr(c, &mr, q);
@@ -1319,7 +1462,6 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                 .collect::<Result<Vec<_>, _>>()?
         };
 
-        let p_vec = prepare_y_projections(req.y, n, 1, &basis_r, q)?;
         let q_f = q as f64;
         let ha_x_log: Vec<f64> = ha_factors
             .iter()
@@ -1764,6 +1906,7 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ErrorKind;
 
     fn load_bench_200_spur() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         let path = format!(
@@ -2063,5 +2206,242 @@ mod tests {
         for r in 2..5 {
             assert!(iso_m[r * 5..(r + 1) * 5].iter().all(|&v| v == 0.0));
         }
+    }
+
+    #[test]
+    fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
+        let n = 12usize;
+        let k_x = 3usize;
+        let coords: Vec<f64> = (0..n)
+            .flat_map(|i| {
+                let fi = i as f64;
+                [(fi * 0.7).sin() + 0.1 * fi, (fi * 1.1).cos()]
+            })
+            .collect();
+        let y: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.53).sin() + 0.2).collect();
+        let mut x_in = Vec::with_capacity(n * k_x);
+        for i in 0..n {
+            let fi = i as f64;
+            x_in.extend_from_slice(&[1.0, (fi * 0.37).cos(), (fi * 0.89).sin() + 0.1 * fi]);
+        }
+
+        // Finding 3a: q > n - k_x is rejected cleanly (q=10, 11 for n=12, k_x=3 -> dof=9).
+        for q_bad in [n - k_x + 1, n - 1] {
+            let emat_bad = make_deterministic_emat(q_bad, 50);
+            let err0 = run_spur_i0_resid(&SpurTestRequest {
+                coords: &coords,
+                n,
+                d: 2,
+                metric: Metric::Euclidean,
+                y: &y,
+                n_y: 1,
+                x_in: Some(&x_in),
+                k_x,
+                emat: &emat_bad,
+                q: q_bad,
+                nrep: 50,
+                nthreads: Some(1),
+            })
+            .unwrap_err();
+            assert_eq!(err0.kind(), ErrorKind::InvalidInput);
+            let err1 = run_spur_i1_resid(&SpurTestRequest {
+                coords: &coords,
+                n,
+                d: 2,
+                metric: Metric::Euclidean,
+                y: &y,
+                n_y: 1,
+                x_in: Some(&x_in),
+                k_x,
+                emat: &emat_bad,
+                q: q_bad,
+                nrep: 50,
+                nthreads: Some(1),
+            })
+            .unwrap_err();
+            assert_eq!(err1.kind(), ErrorKind::InvalidInput);
+        }
+
+        // Legal boundary q == n - k_x succeeds cleanly.
+        let q_legal = n - k_x;
+        let emat_legal = make_deterministic_emat(q_legal, 60);
+        let ok_res = run_spur_i0_resid(&SpurTestRequest {
+            coords: &coords,
+            n,
+            d: 2,
+            metric: Metric::Euclidean,
+            y: &y,
+            n_y: 1,
+            x_in: Some(&x_in),
+            k_x,
+            emat: &emat_legal,
+            q: q_legal,
+            nrep: 60,
+            nthreads: Some(1),
+        })
+        .unwrap();
+        assert!(ok_res.lr[0].is_finite() && ok_res.pvalue[0].is_finite());
+
+        // Co-located points reducing covariance rank below q are rejected explicitly.
+        let mut coords_col = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            let site = (i % 6) as f64;
+            coords_col.extend_from_slice(&[site, (site * 1.3).sin()]);
+        }
+        let emat_rank = make_deterministic_emat(7, 40);
+        let err_rank = run_spur_i0_resid(&SpurTestRequest {
+            coords: &coords_col,
+            n,
+            d: 2,
+            metric: Metric::Euclidean,
+            y: &y,
+            n_y: 1,
+            x_in: Some(&x_in),
+            k_x,
+            emat: &emat_rank,
+            q: 7,
+            nrep: 40,
+            nthreads: Some(1),
+        })
+        .unwrap_err();
+        assert_eq!(err_rank.kind(), ErrorKind::InvalidInput);
+
+        // Finding 3b: Half-life rejects q=1, constant y, and zero projection, while accepting n=3, q=2.
+        let emat_1 = make_deterministic_emat(1, 50);
+        let err_q1 = run_spur_halflife(&SpurHalfLifeRequest {
+            coords: &coords,
+            n,
+            d: 2,
+            metric: Metric::Euclidean,
+            y: &y,
+            emat: &emat_1,
+            q: 1,
+            nrep: 50,
+            level: 0.95,
+            nthreads: Some(1),
+        })
+        .unwrap_err();
+        assert_eq!(err_q1.kind(), ErrorKind::InvalidInput);
+        let q1_test = SpurTestRequest {
+            coords: &coords, n, d: 2, metric: Metric::Euclidean, y: &y, n_y: 1,
+            x_in: Some(&x_in), k_x, emat: &emat_1, q: 1, nrep: 50, nthreads: Some(1),
+        };
+        assert_eq!(run_spur_i0(&q1_test).unwrap_err().kind(), ErrorKind::InvalidInput);
+        assert_eq!(run_spur_i1(&q1_test).unwrap_err().kind(), ErrorKind::InvalidInput);
+        assert_eq!(run_spur_i0_resid(&q1_test).unwrap_err().kind(), ErrorKind::InvalidInput);
+        assert_eq!(run_spur_i1_resid(&q1_test).unwrap_err().kind(), ErrorKind::InvalidInput);
+
+        let emat_2 = make_deterministic_emat(2, 50);
+        // All centered covariance shapes on an equilateral triangle are scalar
+        // multiples of the identity, despite retaining two positive directions.
+        let equilateral = [0.0, 0.0, 1.0, 0.0, 0.5, 3.0_f64.sqrt() / 2.0];
+        let err_proportional = run_spur_halflife(&SpurHalfLifeRequest {
+            coords: &equilateral, n: 3, d: 2, metric: Metric::Euclidean,
+            y: &[0.0, 1.0, -0.5], emat: &emat_2, q: 2, nrep: 50,
+            level: 0.95, nthreads: Some(1),
+        }).unwrap_err();
+        assert_eq!(err_proportional.kind(), ErrorKind::DegenerateVariance);
+        let equilateral_y = [0.0, 1.0, -0.5];
+        let intercept = [1.0, 1.0, 1.0];
+        let equilateral_test = SpurTestRequest {
+            coords: &equilateral, n: 3, d: 2, metric: Metric::Euclidean,
+            y: &equilateral_y, n_y: 1, x_in: Some(&intercept), k_x: 1,
+            emat: &emat_2, q: 2, nrep: 50, nthreads: Some(1),
+        };
+        assert_eq!(run_spur_i0(&equilateral_test).unwrap_err().kind(), ErrorKind::DegenerateVariance);
+        assert_eq!(run_spur_i1(&equilateral_test).unwrap_err().kind(), ErrorKind::DegenerateVariance);
+        assert_eq!(run_spur_i0_resid(&equilateral_test).unwrap_err().kind(), ErrorKind::DegenerateVariance);
+        assert_eq!(run_spur_i1_resid(&equilateral_test).unwrap_err().kind(), ErrorKind::DegenerateVariance);
+        let const_y = vec![5.0; n];
+        let err_const = run_spur_halflife(&SpurHalfLifeRequest {
+            coords: &coords,
+            n,
+            d: 2,
+            metric: Metric::Euclidean,
+            y: &const_y,
+            emat: &emat_2,
+            q: 2,
+            nrep: 50,
+            level: 0.95,
+            nthreads: Some(1),
+        })
+        .unwrap_err();
+        assert_eq!(err_const.kind(), ErrorKind::DegenerateVariance);
+
+        // 3-site legal half-life check (n=3, q=2).
+        let coords_3 = [0.0, 0.0, 1.0, 0.0, 0.3, 0.9];
+        let y_3 = [0.0, 1.0, -0.5];
+        let hl_3 = run_spur_halflife(&SpurHalfLifeRequest {
+            coords: &coords_3,
+            n: 3,
+            d: 2,
+            metric: Metric::Euclidean,
+            y: &y_3,
+            emat: &emat_2,
+            q: 2,
+            nrep: 50,
+            level: 0.95,
+            nthreads: Some(1),
+        })
+        .unwrap();
+        assert!(hl_3.ci_lower.is_finite() && hl_3.ci_upper.is_finite());
+
+        // Finding 5: Column scaling of X_in (1e-12 and 1e12) leaves projection and inference invariant,
+        // while true rank deficiency is still rejected.
+        let (_, _, coords_200) = load_bench_200_spur();
+        let n200 = 100usize;
+        let coords_sub = &coords_200[..n200 * 2];
+        let y_sub: Vec<f64> = (0..n200).map(|i| ((i as f64) * 0.31).sin()).collect();
+        let mut x_orig = Vec::with_capacity(n200 * 2);
+        let mut x_tiny = Vec::with_capacity(n200 * 2);
+        let mut x_huge = Vec::with_capacity(n200 * 2);
+        for i in 0..n200 {
+            let v = ((i as f64) * 0.77).cos() + 0.1 * ((i as f64) * 0.13).sin();
+            x_orig.extend_from_slice(&[1.0, v]);
+            x_tiny.extend_from_slice(&[1.0, v * 1e-12]);
+            x_huge.extend_from_slice(&[1.0, v * 1e12]);
+        }
+        let emat_s = make_deterministic_emat(8, 200);
+        let run_scaled = |xm: &[f64]| {
+            run_spur_i0_resid(&SpurTestRequest {
+                coords: coords_sub,
+                n: n200,
+                d: 2,
+                metric: Metric::Euclidean,
+                y: &y_sub,
+                n_y: 1,
+                x_in: Some(xm),
+                k_x: 2,
+                emat: &emat_s,
+                q: 8,
+                nrep: 200,
+                nthreads: Some(1),
+            })
+            .unwrap()
+        };
+        let r_orig = run_scaled(&x_orig);
+        let r_tiny = run_scaled(&x_tiny);
+        let r_huge = run_scaled(&x_huge);
+        assert!((r_orig.lr[0] - r_tiny.lr[0]).abs() < 1e-11);
+        assert!((r_orig.lr[0] - r_huge.lr[0]).abs() < 1e-11);
+        assert!((r_orig.ha_param - r_tiny.ha_param).abs() < 1e-12);
+        assert!((r_orig.pvalue[0] - r_tiny.pvalue[0]).abs() < 1e-12);
+
+        // Collinear column still rejected despite scaling.
+        let mut x_dep = Vec::with_capacity(n200 * 3);
+        for i in 0..n200 {
+            let v = x_orig[i * 2 + 1];
+            x_dep.extend_from_slice(&[1.0, v * 1e-12, v * 3e-12]);
+        }
+        let err_dep = orthonormal_design_basis(&x_dep, n200, 3).unwrap_err();
+        assert_eq!(err_dep.kind(), ErrorKind::InvalidInput);
+
+        // Division by the column maximum remains valid even when its reciprocal
+        // would overflow, and response location does not determine degeneracy.
+        let tiny = [1e-320, 0.0, 0.0, 1e-320, -1e-320, -1e-320];
+        assert!(orthonormal_design_basis(&tiny, 3, 2).is_ok());
+        let basis = [1.0 / 2.0_f64.sqrt(), -1.0 / 2.0_f64.sqrt(), 0.0];
+        let p = prepare_y_projections(&[1e13, 1e13 + 1.0, 1e13 - 1.0], 3, 1, &basis, 1).unwrap();
+        assert!(p[0].is_finite() && p[0] != 0.0);
     }
 }

@@ -13,6 +13,7 @@
 #' }
 #' @keywords internal
 get_r <- function(sig, qmax) {
+  storage.mode(sig) <- "double"
   n <- nrow(sig)
   if (length(qmax) != 1L || !is.finite(qmax) || qmax < 1 || qmax != as.integer(qmax)) {
     stop("qmax must be a positive integer.")
@@ -26,16 +27,47 @@ get_r <- function(sig, qmax) {
   # For small n, full eigen() is more stable for strict parity checks.
   use_rspectra <- qmax < n && n >= 500L
   eig_out <- if (use_rspectra) {
-    RSpectra::eigs_sym(sig, k = qmax, which = "LM")
+    had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    if (had_seed) {
+      old_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    }
+    on.exit({
+      if (had_seed) {
+        assign(".Random.seed", old_seed, envir = .GlobalEnv)
+      } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+        rm(list = ".Random.seed", envir = .GlobalEnv)
+      }
+    }, add = TRUE)
+    res <- RSpectra::eigs_sym(
+      sig,
+      k = qmax,
+      which = "LA",
+      opts = list(initvec = cos(seq_len(n) * 0.6180339887498949))
+    )
+    if (length(res$values) < qmax || ncol(res$vectors) < qmax) {
+      eigen(sig, symmetric = TRUE)
+    } else {
+      res
+    }
   } else {
     eigen(sig, symmetric = TRUE)
   }
   idx <- order(eig_out$values, decreasing = TRUE)
-  values <- eig_out$values[idx]
-  vectors <- eig_out$vectors[, idx, drop = FALSE]
+  values <- eig_out$values[idx][seq_len(qmax)]
+  vectors <- eig_out$vectors[, idx, drop = FALSE][, seq_len(qmax), drop = FALSE]
+
+  # Canonicalize eigenvector signs to match spatial-core: largest-magnitude
+  # entry positive (earliest index breaks exact ties).
+  for (j in seq_len(qmax)) {
+    col <- vectors[, j]
+    max_idx <- which.max(abs(col))
+    if (length(max_idx) == 1L && col[max_idx] < 0) {
+      vectors[, j] <- -col
+    }
+  }
 
   list(
-    R = vectors[, seq_len(qmax), drop = FALSE],
-    DS = values[seq_len(qmax)]
+    R = vectors,
+    DS = values
   )
 }

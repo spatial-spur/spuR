@@ -46,16 +46,18 @@ pub struct ExactScpcRequest<'a> {
     /// Optional 1-way absorbed fixed-effect membership indices in `0..n_fe` for `m_obs`
     /// observations when `uncond == false`, or `None` when not demeaning by a 1-way FE.
     pub fe_id: Option<&'a [usize]>,
-    /// Conditional regressor direction (`m_obs x k_use`); for OLS `xj`, for IV `xjs`.
+    /// Conditional regressor direction (`m_obs x k_use`): `xj` for both OLS and IV.
     /// Required when `uncond == false`.
     pub xj: Option<&'a [f64]>,
-    /// Conditional scaling direction (`m_obs x k_use`); for OLS `sign(xj)` / within-cluster
-    /// normalized `xj`, for IV `xj`. Required when `uncond == false`.
+    /// Conditional scaling direction (`m_obs x k_use`): `sign(xj)` or within-cluster
+    /// normalized `xj` for both OLS and IV. Required when `uncond == false`.
     pub xjs: Option<&'a [f64]>,
-    /// Left factor `U` (`m_obs x proj_rank`) of conditional projection `A -> A - U (V' A)`.
+    /// Left factor `U` (`m_obs x proj_rank`) of conditional projection `A -> A - U (V' A)`
+    /// (for OLS `Q_x`, for IV `V = P_Z X (X' P_Z X)^{-1}` corresponding to `M' = I - V U'`).
     /// Required when `uncond == false` and `proj_rank > 0`.
     pub proj_u: Option<&'a [f64]>,
-    /// Right factor `V` (`m_obs x proj_rank`) of conditional projection `A -> A - U (V' A)`.
+    /// Right factor `V` (`m_obs x proj_rank`) of conditional projection `A -> A - U (V' A)`
+    /// (for OLS `Q_x`, for IV `U = X` corresponding to `M' = I - V U'`).
     /// Required when `uncond == false` and `proj_rank > 0`.
     pub proj_v: Option<&'a [f64]>,
     pub proj_rank: usize,
@@ -2294,7 +2296,7 @@ mod tests {
             })
             .collect();
 
-        // Notice swapped weights for IV: xj = xjs_iv_c, xjs = xj_iv_c
+        // IV denominator weights are Xi_s' M' Xi R where M' = I - V U'.
         let out_fe_iv_c = run_exact_scpc(&ExactScpcRequest {
             coords: &s_cl,
             n: g_sites,
@@ -2307,10 +2309,10 @@ mod tests {
             wj: &wj_iv_c,
             cluster_id: Some(&cl_id),
             fe_id: Some(&fe_id),
-            xj: Some(&xjs_iv_c),
-            xjs: Some(&xj_iv_c),
-            proj_u: Some(&u_iv_dm),
-            proj_v: Some(&v_iv_dm),
+            xj: Some(&xj_iv_c),
+            xjs: Some(&xjs_iv_c),
+            proj_u: Some(&v_iv_dm),
+            proj_v: Some(&u_iv_dm),
             proj_rank: 2,
             cv_tolerance: 0.001,
             nthreads: Some(2),
@@ -2328,10 +2330,10 @@ mod tests {
             wj: &wj_iv_c,
             cluster_id: Some(&cl_id),
             fe_id: None,
-            xj: Some(&xjs_iv_c),
-            xjs: Some(&xj_iv_c),
-            proj_u: Some(&u_iv_dum),
-            proj_v: Some(&v_iv_dum),
+            xj: Some(&xj_iv_c),
+            xjs: Some(&xjs_iv_c),
+            proj_u: Some(&v_iv_dum),
+            proj_v: Some(&u_iv_dum),
             proj_rank: 2 + n_fe,
             cv_tolerance: 0.001,
             nthreads: Some(2),
@@ -2514,6 +2516,195 @@ mod tests {
             .zip(out_u4.scpccvs.as_ref().unwrap().iter())
         {
             assert!((a - b).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn iv_conditional_weights_use_transposed_residual_maker_and_match_ols_when_z_equals_x() {
+        // Reproducer 1 from rust_core_handoff.md: s=[0,1,2,4,6], x=[-1,-4,2,2,1], z=x, y=x+(s==0).
+        let n = 5usize;
+        let coords = [0.0, 1.0, 2.0, 4.0, 6.0];
+        let x = [-1.0, -4.0, 2.0, 2.0, 1.0];
+        let y: Vec<f64> = x
+            .iter()
+            .enumerate()
+            .map(|(i, &xi)| xi + if i == 0 { 1.0 } else { 0.0 })
+            .collect();
+
+        // Design [1, x], fit OLS y ~ 1 + x
+        let mut xtx = [0.0; 4];
+        let mut xty = [0.0; 2];
+        for i in 0..n {
+            xtx[0] += 1.0;
+            xtx[1] += x[i];
+            xtx[2] += x[i];
+            xtx[3] += x[i] * x[i];
+            xty[0] += y[i];
+            xty[1] += x[i] * y[i];
+        }
+        let det = xtx[0] * xtx[3] - xtx[1] * xtx[2];
+        let inv = [xtx[3] / det, -xtx[1] / det, -xtx[2] / det, xtx[0] / det];
+        let beta = [
+            inv[0] * xty[0] + inv[1] * xty[1],
+            inv[2] * xty[0] + inv[3] * xty[1],
+        ];
+        let bread = inv;
+        let mut wj = vec![0.0; n * 2];
+        let mut xj = vec![0.0; n * 2];
+        let mut xjs = vec![0.0; n * 2];
+        let mut x_full = vec![0.0; n * 2];
+        for i in 0..n {
+            let resid = y[i] - (beta[0] + beta[1] * x[i]);
+            let row = [1.0, x[i]];
+            x_full[i * 2] = 1.0;
+            x_full[i * 2 + 1] = x[i];
+            for j in 0..2 {
+                let d_ij = (n as f64) * (bread[j * 2] * row[0] + bread[j * 2 + 1] * row[1]);
+                wj[i * 2 + j] = d_ij * resid + beta[j];
+                xj[i * 2 + j] = d_ij;
+                xjs[i * 2 + j] = if d_ij > 0.0 {
+                    1.0
+                } else if d_ij < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                };
+            }
+        }
+        let q_mat = modified_gram_schmidt(&x_full, n, 2);
+        let out_ols = run_exact_scpc(&ExactScpcRequest {
+            coords: &coords,
+            n,
+            d: 1,
+            metric: Metric::Euclidean,
+            avc: 0.5,
+            uncond: false,
+            cvs: true,
+            coef: &beta,
+            wj: &wj,
+            cluster_id: None,
+            fe_id: None,
+            xj: Some(&xj),
+            xjs: Some(&xjs),
+            proj_u: Some(&q_mat),
+            proj_v: Some(&q_mat),
+            proj_rank: 2,
+            cv_tolerance: 0.001,
+            nthreads: Some(1),
+        })
+        .unwrap();
+
+        // For IV with z=x: V = P_Z X (X' P_Z X)^{-1} = X (X' X)^{-1}, U = X.
+        let mut v_iv = vec![0.0; n * 2];
+        for i in 0..n {
+            v_iv[i * 2] = inv[0] + inv[1] * x[i];
+            v_iv[i * 2 + 1] = inv[2] + inv[3] * x[i];
+        }
+        let out_iv = run_exact_scpc(&ExactScpcRequest {
+            coords: &coords,
+            n,
+            d: 1,
+            metric: Metric::Euclidean,
+            avc: 0.5,
+            uncond: false,
+            cvs: true,
+            coef: &beta,
+            wj: &wj,
+            cluster_id: None,
+            fe_id: None,
+            xj: Some(&xj),
+            xjs: Some(&xjs),
+            proj_u: Some(&v_iv),
+            proj_v: Some(&x_full),
+            proj_rank: 2,
+            cv_tolerance: 0.001,
+            nthreads: Some(1),
+        })
+        .unwrap();
+
+        assert!((out_ols.scpcstats[6 + 3] - 0.0241534748).abs() < 1e-8);
+        assert!((out_ols.scpccvs.as_ref().unwrap()[4 + 2] - 17.62678224).abs() < 1e-4);
+        for (&a, &b) in out_ols.scpcstats.iter().zip(&out_iv.scpcstats) {
+            assert!((a - b).abs() < 1e-11, "OLS vs IV stat mismatch: {a} vs {b}");
+        }
+        for (&a, &b) in out_ols
+            .scpccvs
+            .as_ref()
+            .unwrap()
+            .iter()
+            .zip(out_iv.scpccvs.as_ref().unwrap())
+        {
+            assert!((a - b).abs() < 1e-11, "OLS vs IV cv mismatch: {a} vs {b}");
+        }
+
+        // Independent quadrature for this covariance gives 0.07143375445 at
+        // the previous IV cutoff. The corrected cutoff must control size.
+        let conditional = build_conditional_basis(
+            &out_iv.wfin, n, out_iv.q, None, None, &xj, &xjs, 2, 1,
+            Some(&v_iv), Some(&x_full), 2,
+        ).unwrap();
+        let dist = distance_matrix(&coords, n, 1, Metric::Euclidean).unwrap();
+        let omega = covariance_grids(&dist, n, &[&conditional], &[out_iv.q + 1], &[out_iv.c0])
+            .unwrap().remove(0);
+        let mut probability = ProbabilityWorkspace::new(out_iv.q);
+        let root_q = (out_iv.q as f64).sqrt();
+        let old_p = probability.evaluate(&omega, out_iv.q + 1, 14.50861818 / root_q).unwrap();
+        assert!((old_p - 0.07143375445).abs() < 1e-8, "old rejection probability {old_p}");
+        let corrected_p = probability.evaluate(
+            &omega, out_iv.q + 1, out_iv.scpccvs.as_ref().unwrap()[6] / root_q,
+        ).unwrap();
+        assert!(corrected_p <= 0.05, "corrected rejection probability {corrected_p}");
+
+        // Genuinely oblique IV projection: M = I - U V', check build_conditional_basis == D_xjs M' D_xj B_q
+        // U = [1, x], V = P_Z X (X' P_Z X)^{-1} where X is oblique to Z
+        let z_ob = [-2.0, -1.0, 0.5, 3.0, -0.5];
+        // Center z_ob and x to keep exact orthogonality with [1]
+        let mx = x.iter().sum::<f64>() / (n as f64);
+        let mz = z_ob.iter().sum::<f64>() / (n as f64);
+        let xc: Vec<f64> = x.iter().map(|v| v - mx).collect();
+        let zc: Vec<f64> = z_ob.iter().map(|v| v - mz).collect();
+        let ztz: f64 = zc.iter().map(|v| v * v).sum();
+        let ztx: f64 = zc.iter().zip(&xc).map(|(a, b)| a * b).sum();
+        let pzx1: Vec<f64> = zc.iter().map(|&zi| zi * (ztx / ztz)).collect();
+        let xt_pzx: f64 = xc.iter().zip(&pzx1).map(|(a, b)| a * b).sum();
+        let mut u_ob = vec![0.0; n * 2];
+        let mut v_ob = vec![0.0; n * 2];
+        let mut w_raw = vec![0.0; n * 2];
+        for i in 0..n {
+            u_ob[i * 2] = 1.0;
+            u_ob[i * 2 + 1] = xc[i];
+            v_ob[i * 2] = 1.0 / (n as f64);
+            v_ob[i * 2 + 1] = pzx1[i] / xt_pzx;
+            w_raw[i * 2] = 1.0 / (n as f64).sqrt();
+            w_raw[i * 2 + 1] = ((i as f64) * 1.1).sin();
+        }
+        // Build expected D_xjs (I - V U') D_xj b_1 directly
+        let basis_got = build_conditional_basis(
+            &w_raw,
+            n,
+            1,
+            None,
+            None,
+            &xj,
+            &xjs,
+            2,
+            1,
+            Some(&v_ob),
+            Some(&u_ob),
+            2,
+        )
+        .unwrap();
+        let mut u_t_rx = [0.0; 2];
+        for i in 0..n {
+            let rx_i = w_raw[i * 2 + 1] * xj[i * 2 + 1];
+            u_t_rx[0] += u_ob[i * 2] * rx_i;
+            u_t_rx[1] += u_ob[i * 2 + 1] * rx_i;
+        }
+        for i in 0..n {
+            let rx_i = w_raw[i * 2 + 1] * xj[i * 2 + 1];
+            let m_t_rx_i = rx_i - (v_ob[i * 2] * u_t_rx[0] + v_ob[i * 2 + 1] * u_t_rx[1]);
+            let exp_i = m_t_rx_i * xjs[i * 2 + 1];
+            assert!((basis_got[i * 2 + 1] - exp_i).abs() < 1e-12);
         }
     }
 }

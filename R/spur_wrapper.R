@@ -232,7 +232,7 @@
 #'
 #' @param formula Two-sided regression formula.
 #' @param data Data frame containing model and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages (at least 2).
 #' @param nrep Number of Monte Carlo draws.
 #' @param lon Optional longitude column name.
 #' @param lat Optional latitude column name.
@@ -275,20 +275,22 @@ spur <- function(formula,
   }
 
   depvar_formula <- stats::reformulate("1", response = depvar)
+  parsed <- .parse_residual_formula(formula = formula, data = data, fn_name = "spur()")
+  .validate_spur_y(parsed$Y, name = depvar)
+  q_x <- .orthonormal_design_basis(parsed$X_in)
+  resid_dof <- nrow(parsed$Y) - ncol(q_x)
+  if (q > resid_dof) {
+    stop(sprintf(
+      "`q` (%d) cannot exceed residual degrees of freedom (n - ncol(X) = %d).",
+      q, resid_dof
+    ))
+  }
   rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_pipeline")
 
   if (!identical(backend_resolved, "fallback") && rust_loaded) {
-    parsed <- .parse_residual_formula(formula = formula, data = data, fn_name = "spur()")
     tr_vars <- .parse_transform_formula(formula = formula, data = data)
     all_tr_complete <- length(tr_vars) > 0L && all(stats::complete.cases(data[tr_vars]))
-    if (isTRUE(all(parsed$use_rows)) && isTRUE(all_tr_complete) && nrow(data) >= 5L) {
-      if (q >= nrow(data)) {
-        stop("`q` must be less than the number of observations.")
-      }
-      xtx <- crossprod(parsed$X_in)
-      if (qr(xtx)$rank < ncol(xtx)) {
-        stop("Design matrix is rank-deficient; residual tests require full column rank.")
-      }
+    if (isTRUE(all(parsed$use_rows)) && isTRUE(all_tr_complete) && nrow(data) >= 2L) {
       coord_info <- .resolve_spur_coords(
         data = data,
         use_rows = parsed$use_rows,

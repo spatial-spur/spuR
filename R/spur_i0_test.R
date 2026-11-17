@@ -9,15 +9,20 @@
 #' @return A list with elements: LR, pvalue, cvalue, ha_parm, cvalue_mat, pvalue_mat, and rho_grid.
 #' @keywords internal
 spur_i0_test <- function(Y, distmat, emat) {
-  #--- Determine sizes ---
-  q <- nrow(emat)
+  #--- Determine sizes and validate inputs ---
+  dims <- .validate_core_spur_inputs(distmat, emat, min_q = 2L)
+  q <- dims$q
+  y_info <- .validate_spur_y(Y, name = "Y")
+  if (nrow(y_info$Y_dm) != dims$n) {
+    stop("`Y` row count must match `distmat`.")
+  }
 
   # 1) BM covariance matrix (approximation for demeaned value)
   sigdm_bm <- get_sigma_lbm_dm(distmat)
 
   # 2) Construct R and eigenvalues for low-frequency weights
-  R_out <- get_r(sigdm_bm, q)
-  R <- R_out$R
+  R <- .extract_spur_basis(sigdm_bm, q)
+  P_mat <- .project_spur_y(y_info, R)
 
   # 3) Compute covariance matrix for rho = 0.001
   rho <- 0.001
@@ -25,8 +30,13 @@ spur_i0_test <- function(Y, distmat, emat) {
   sigdm_rho <- get_sigma_dm(distmat, c_val)
 
   # 4) Matrices used in analysis
-  om_rho <- t(R) %*% sigdm_rho %*% R
-  om_bm <- t(R) %*% sigdm_bm %*% R
+  om_rho <- crossprod(R, sigdm_rho %*% R)
+  om_rho <- 0.5 * (om_rho + t(om_rho))
+  om_bm <- crossprod(R, sigdm_bm %*% R)
+  om_bm <- 0.5 * (om_bm + t(om_bm))
+  if (!.spur_shapes_differ(om_rho, om_bm)) {
+    stop("SPUR experiment is uninformative: covariance shapes are proportional.")
+  }
 
   # 5) Find Ha parameter yielding ~50% power
   om_i0 <- om_rho
@@ -39,15 +49,17 @@ spur_i0_test <- function(Y, distmat, emat) {
   ch_omi_ha <- chol(solve(om_ha))
 
   # 7) Get LR for data
-  n_y <- ncol(Y)
+  n_y <- ncol(P_mat)
   LR <- numeric(n_y)
-  for(i in seq_len(n_y)) {
-    X <- Y[, i] - mean(Y[, i])
-    P <- t(R) %*% X
+  for (i in seq_len(n_y)) {
+    P <- P_mat[, i, drop = FALSE]
     y_P_ho <- ch_omi_ho %*% P
     y_P_ha <- ch_omi_ha %*% P
     q_P_ho <- sum(y_P_ho^2)
     q_P_ha <- sum(y_P_ha^2)
+    if (!is.finite(q_P_ho) || !is.finite(q_P_ha) || q_P_ha <= 0) {
+      stop("SPUR LR denominator is non-positive.")
+    }
     LR[i] <- q_P_ho / q_P_ha
   }
 
@@ -58,13 +70,14 @@ spur_i0_test <- function(Y, distmat, emat) {
   rho_grid <- seq(from = rho_min, to = rho_max, length.out = n_rho)
   ch_om_ho_mat <- array(NA_real_, dim = c(q, q, n_rho))
 
-  for(i in seq_len(n_rho)) {
+  for (i in seq_len(n_rho)) {
     om_ho_i <- diag(q)
     rho_i <- rho_grid[i]
     if (rho_i > 0) {
       c_i <- get_cbar(rho_i, distmat)
       sigdm_ho_i <- get_sigma_dm(distmat, c_i)
-      om_ho_i <- t(R) %*% sigdm_ho_i %*% R
+      om_ho_i <- crossprod(R, sigdm_ho_i %*% R)
+      om_ho_i <- 0.5 * (om_ho_i + t(om_ho_i))
     }
     ch_om_ho_mat[, , i] <- chol(om_ho_i)
   }

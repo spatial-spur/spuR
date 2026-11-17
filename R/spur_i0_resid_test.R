@@ -9,27 +9,45 @@
 #' @return List with test outputs.
 #' @keywords internal
 spur_i0_resid_test <- function(Y, X_in, distmat, emat) {
-  q <- nrow(emat)
-  n <- nrow(distmat)
-
-  xtx <- crossprod(X_in)
-  if (qr(xtx)$rank < ncol(xtx)) {
-    stop("Design matrix is rank-deficient; residual tests require full column rank.")
+  dims <- .validate_core_spur_inputs(distmat, emat, min_q = 2L)
+  q <- dims$q
+  n <- dims$n
+  y_info <- .validate_spur_y(Y, name = "Y")
+  if (nrow(y_info$Y_dm) != n) {
+    stop("`Y` row count must match `distmat`.")
   }
-  M <- diag(n) - X_in %*% solve(xtx, t(X_in))
+  if (nrow(as.matrix(X_in)) != n) {
+    stop("`X_in` row count must match `distmat`.")
+  }
+
+  q_x <- .orthonormal_design_basis(X_in)
+  resid_dof <- n - ncol(q_x)
+  if (q > resid_dof) {
+    stop(sprintf(
+      "`q` (%d) cannot exceed residual degrees of freedom (n - ncol(X) = %d).",
+      q, resid_dof
+    ))
+  }
+  M <- diag(n) - tcrossprod(q_x)
 
   rho_bm <- 0.999
   c_bm <- get_cbar(rho_bm, distmat)
   sigdm_bm <- get_sigma_residual(distmat, c_bm, M)
 
-  R <- get_r(sigdm_bm, q)$R
+  R <- .extract_spur_basis(sigdm_bm, q)
+  P_mat <- .project_spur_y(y_info, R)
 
   rho <- 0.001
   c_val <- get_cbar(rho, distmat)
   sigdm_rho <- get_sigma_residual(distmat, c_val, M)
 
-  om_rho <- t(R) %*% sigdm_rho %*% R
-  om_bm <- t(R) %*% sigdm_bm %*% R
+  om_rho <- crossprod(R, sigdm_rho %*% R)
+  om_rho <- 0.5 * (om_rho + t(om_rho))
+  om_bm <- crossprod(R, sigdm_bm %*% R)
+  om_bm <- 0.5 * (om_bm + t(om_bm))
+  if (!.spur_shapes_differ(om_rho, om_bm)) {
+    stop("SPUR experiment is uninformative: covariance shapes are proportional.")
+  }
 
   om_i0 <- om_rho
   om_ho <- om_rho
@@ -39,15 +57,17 @@ spur_i0_resid_test <- function(Y, X_in, distmat, emat) {
   ch_omi_ho <- chol(solve(om_ho))
   ch_omi_ha <- chol(solve(om_ha))
 
-  n_y <- ncol(Y)
+  n_y <- ncol(P_mat)
   LR <- numeric(n_y)
   for (i in seq_len(n_y)) {
-    X <- Y[, i] - mean(Y[, i])
-    P <- t(R) %*% X
+    P <- P_mat[, i, drop = FALSE]
     y_P_ho <- ch_omi_ho %*% P
     y_P_ha <- ch_omi_ha %*% P
     q_P_ho <- sum(y_P_ho^2)
     q_P_ha <- sum(y_P_ha^2)
+    if (!is.finite(q_P_ho) || !is.finite(q_P_ha) || q_P_ha <= 0) {
+      stop("SPUR LR denominator is non-positive.")
+    }
     LR[i] <- q_P_ho / q_P_ha
   }
 
@@ -59,7 +79,8 @@ spur_i0_resid_test <- function(Y, X_in, distmat, emat) {
     if (rho_i > 0) {
       c_i <- get_cbar(rho_i, distmat)
       sigdm_ho_i <- get_sigma_residual(distmat, c_i, M)
-      om_ho_i <- t(R) %*% sigdm_ho_i %*% R
+      om_ho_i <- crossprod(R, sigdm_ho_i %*% R)
+      om_ho_i <- 0.5 * (om_ho_i + t(om_ho_i))
     }
     ch_om_ho_mat[, , i] <- chol(om_ho_i)
   }

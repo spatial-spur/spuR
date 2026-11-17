@@ -130,8 +130,11 @@ lbm_gls_matrix <- function(s, latlong = FALSE) {
   vectors <- vectors[, idx, drop = FALSE]
 
   keep <- values > 1e-10
+  if (!any(keep)) {
+    stop("LBM-GLS covariance has no eigenvalues above 1e-10.")
+  }
   values <- values[keep]
   vectors <- vectors[, keep, drop = FALSE]
 
-  vectors %*% diag(1 / sqrt(values)) %*% t(vectors)
+  vectors %*% diag(1 / sqrt(values), nrow = length(values), ncol = length(values)) %*% t(vectors)
 }

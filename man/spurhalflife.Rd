@@ -25,7 +25,7 @@ spurhalflife(
 
 \item{data}{Data frame containing test and coordinate variables.}
 
-\item{q}{Number of low-frequency weighted averages.}
+\item{q}{Number of low-frequency weighted averages (at least 2).}
 
 \item{nrep}{Number of Monte Carlo draws.}
 

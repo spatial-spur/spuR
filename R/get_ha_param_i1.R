@@ -18,7 +18,12 @@ get_ha_param_i1 <- function(om_ho, distmat, R, e) {
   ## ---- lower bracket: power just under 0.5 ------------------
   pow  <- 1
   ctry <- get_cbar(0.95, distmat)
+  bracket_steps <- 0L
   while (pow > 0.5) {
+    bracket_steps <- bracket_steps + 1L
+    if (bracket_steps > 200L) {
+      stop("get_ha_param_i1 step-1 bracketing did not converge.")
+    }
     c        <- ctry
     sigdm_c  <- get_sigma_dm(distmat, c)
     om_c     <- t(R) %*% sigdm_c %*% R
@@ -30,7 +35,12 @@ get_ha_param_i1 <- function(om_ho, distmat, R, e) {
   ## ---- upper bracket: power just over 0.5 -------------------
   pow  <- 0
   ctry <- get_cbar(0.01, distmat)
+  bracket_steps <- 0L
   while (pow < 0.5) {
+    bracket_steps <- bracket_steps + 1L
+    if (bracket_steps > 200L) {
+      stop("get_ha_param_i1 step-2 bracketing did not converge.")
+    }
     c        <- ctry
     sigdm_c  <- get_sigma_dm(distmat, c)
     om_c     <- t(R) %*% sigdm_c %*% R

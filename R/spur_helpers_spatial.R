@@ -17,7 +17,7 @@ get_s_matrix <- function(coords, latlong = FALSE, verbose = FALSE) {
   }
 
   ns <- nrow(coords)
-  if (ns < 5) {
+  if (ns < 2) {
     stop("Too few locations found; aborting")
   }
 

@@ -515,3 +515,36 @@ fn partial_eigenvectors(
     }
     Ok(None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_solver_checks_interior_and_cutoff_ties() {
+        // n and q enter the partial-solver branch. Well-separated low
+        // eigenvalues make its q+1 residual certification deterministic.
+        let n = 260;
+        let q = 2;
+        let steps = (2 * q + 16).max(64);
+        let mut matrix = vec![0.0; n * n];
+        for i in 0..n {
+            matrix[i * n + i] = 1.0 / (i as f64 + 1.0);
+        }
+        for (i, &v) in [10.0, 9.0, 8.0].iter().enumerate() {
+            matrix[i * n + i] = v;
+        }
+        assert!(partial_eigenvectors(&matrix, n, q, steps).unwrap().is_some());
+        assert!(!symmetric_eigenpairs(&matrix, n, q).unwrap().tied);
+
+        // Ties within the retained prefix and across its cutoff both force
+        // dense fallback, which reports ambiguity to the host.
+        for leading in [[10.0, 10.0, 8.0], [10.0, 9.0, 9.0]] {
+            for (i, &v) in leading.iter().enumerate() {
+                matrix[i * n + i] = v;
+            }
+            assert!(partial_eigenvectors(&matrix, n, q, steps).unwrap().is_none());
+            assert!(symmetric_eigenpairs(&matrix, n, q).unwrap().tied);
+        }
+    }
+}

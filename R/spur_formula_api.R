@@ -99,6 +99,9 @@
   if (length(q) != 1L || !is.finite(q) || q < 1 || q != as.integer(q)) {
     stop("`q` must be a positive integer.")
   }
+  if (q < 2L) {
+    stop("`q` must be at least 2 for informative SPUR inference.")
+  }
   if (length(nrep) != 1L || !is.finite(nrep) || nrep < 1 || nrep != as.integer(nrep)) {
     stop("`nrep` must be a positive integer.")
   }
@@ -200,7 +203,7 @@
 #'
 #' @param formula Formula identifying a single variable (`y ~ 1` or `~ y`).
 #' @param data Data frame containing test and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages (at least 2).
 #' @param nrep Number of Monte Carlo draws.
 #' @param lon Optional longitude column name (must be supplied with `lat`).
 #' @param lat Optional latitude column name (must be supplied with `lon`).
@@ -247,6 +250,7 @@ spurtest_i0 <- function(formula,
   if (q >= nrow(y)) {
     stop("`q` must be less than the number of observations.")
   }
+  .validate_spur_y(y, name = parsed$var)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
@@ -298,7 +302,7 @@ spurtest_i0 <- function(formula,
 #'
 #' @param formula Formula identifying a single variable (`y ~ 1` or `~ y`).
 #' @param data Data frame containing test and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages (at least 2).
 #' @param nrep Number of Monte Carlo draws.
 #' @param lon Optional longitude column name (must be supplied with `lat`).
 #' @param lat Optional latitude column name (must be supplied with `lon`).
@@ -345,6 +349,7 @@ spurtest_i1 <- function(formula,
   if (q >= nrow(y)) {
     stop("`q` must be less than the number of observations.")
   }
+  .validate_spur_y(y, name = parsed$var)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
@@ -396,7 +401,7 @@ spurtest_i1 <- function(formula,
 #'
 #' @param formula Two-sided model formula (`y ~ x1 + x2`).
 #' @param data Data frame containing model and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages (at least 2).
 #' @param nrep Number of Monte Carlo draws.
 #' @param lon Optional longitude column name (must be supplied with `lat`).
 #' @param lat Optional latitude column name (must be supplied with `lon`).
@@ -439,12 +444,14 @@ spurtest_i0resid <- function(formula,
     verbose = verbose
   )
 
-  if (q >= nrow(parsed$Y)) {
-    stop("`q` must be less than the number of observations.")
-  }
-  xtx <- crossprod(parsed$X_in)
-  if (qr(xtx)$rank < ncol(xtx)) {
-    stop("Design matrix is rank-deficient; residual tests require full column rank.")
+  .validate_spur_y(parsed$Y, name = "Y")
+  q_x <- .orthonormal_design_basis(parsed$X_in)
+  resid_dof <- nrow(parsed$Y) - ncol(q_x)
+  if (q > resid_dof) {
+    stop(sprintf(
+      "`q` (%d) cannot exceed residual degrees of freedom (n - ncol(X) = %d).",
+      q, resid_dof
+    ))
   }
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
@@ -498,7 +505,7 @@ spurtest_i0resid <- function(formula,
 #'
 #' @param formula Two-sided model formula (`y ~ x1 + x2`).
 #' @param data Data frame containing model and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages (at least 2).
 #' @param nrep Number of Monte Carlo draws.
 #' @param lon Optional longitude column name (must be supplied with `lat`).
 #' @param lat Optional latitude column name (must be supplied with `lon`).
@@ -541,12 +548,14 @@ spurtest_i1resid <- function(formula,
     verbose = verbose
   )
 
-  if (q >= nrow(parsed$Y)) {
-    stop("`q` must be less than the number of observations.")
-  }
-  xtx <- crossprod(parsed$X_in)
-  if (qr(xtx)$rank < ncol(xtx)) {
-    stop("Design matrix is rank-deficient; residual tests require full column rank.")
+  .validate_spur_y(parsed$Y, name = "Y")
+  q_x <- .orthonormal_design_basis(parsed$X_in)
+  resid_dof <- nrow(parsed$Y) - ncol(q_x)
+  if (q > resid_dof) {
+    stop(sprintf(
+      "`q` (%d) cannot exceed residual degrees of freedom (n - ncol(X) = %d).",
+      q, resid_dof
+    ))
   }
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
@@ -600,7 +609,7 @@ spurtest_i1resid <- function(formula,
 #'
 #' @param formula Formula identifying a single variable (`y ~ 1` or `~ y`).
 #' @param data Data frame containing test and coordinate variables.
-#' @param q Number of low-frequency weighted averages.
+#' @param q Number of low-frequency weighted averages (at least 2).
 #' @param nrep Number of Monte Carlo draws.
 #' @param level Confidence level in percent.
 #' @param normdist Logical; return CI as fractions of maximum distance.
@@ -637,6 +646,9 @@ spurhalflife <- function(formula,
   backend_resolved <- .resolve_spur_backend(backend, missing(backend))
   nthreads_resolved <- .resolve_spur_nthreads(nthreads)
   .validate_common_args(data = data, q = q, nrep = nrep)
+  if (q < 2L) {
+    stop("`q` must be at least 2 for half-life inference.")
+  }
   if (length(level) != 1L || !is.finite(level)) {
     stop("`level` must be a finite scalar.")
   }
@@ -658,6 +670,7 @@ spurhalflife <- function(formula,
   if (q >= nrow(z)) {
     stop("`q` must be less than the number of observations.")
   }
+  .validate_spur_y(z, name = parsed$var)
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
@@ -690,7 +703,10 @@ spurhalflife <- function(formula,
         backend = "rust",
         tied = tied_from_rust
       )
-      max_dist <- as.numeric(rust_res$max_dist) * .SPUR_HALFLIFE_SCALE_M
+      max_dist <- as.numeric(rust_res$max_dist)
+      if (isTRUE(coord_info$latlong)) {
+        max_dist <- max_dist * .SPUR_HALFLIFE_SCALE_M
+      }
     }
   }
 
@@ -700,16 +716,15 @@ spurhalflife <- function(formula,
     ci$backend <- "fallback"
     ci$tied <- tied_from_rust
     max_dist <- if (isTRUE(coord_info$latlong)) {
-      max(get_distmat_lat_lon(coord_info$coords))
+      max(get_distmat_lat_lon(coord_info$coords)) * .SPUR_HALFLIFE_SCALE_M
     } else {
       max(get_distmat_euclidean(coord_info$coords))
     }
-    max_dist <- max_dist * .SPUR_HALFLIFE_SCALE_M
   }
 
   ci_l <- ci$hl_ci_lower
   ci_u <- ci$hl_ci_upper
-  if (ci_u >= 100) {
+  if (!is.na(ci_u) && ci_u >= 100) {
     ci_u <- NA_real_
   }
 

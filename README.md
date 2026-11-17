@@ -50,6 +50,23 @@ out <- spurtransform(am ~ gini + fracblack, data = spur_example,
 head(out[, c("h_am", "h_gini", "h_fracblack")])
 ```
 
+## Shared Rust backend conventions
+
+Use `backend = "auto"`, `"rust"`, or `"fallback"` independently of `nthreads`.
+Setting `nthreads = 1` keeps a single-threaded Rust computation when Rust is selected.
+The fallback remains available when Rust is not installed.
+
+SPUR inference requires at least two retained directions, positive retained covariance
+rank, and a nonzero projected response. Residual tests also require
+`q <= n - rank(X)`. Uninformative covariance shapes produce an explicit error.
+Rank checks are invariant to nonzero changes in regressor units.
+
+Euclidean absolute half-lives use the original coordinate units. Geographic absolute
+half-lives use metres, and `normdist = TRUE` reports fractions of the sample diameter.
+Public native and fallback calls use the same host draws and canonical eigenvector
+signs, so a fixed R seed gives matching simulations for isolated eigenvalues.
+Repeated eigenspaces remain basis-dependent finite-simulation cases.
+
 ## Documentation
 
 Please refer to [the package documentation](https://spatial-spur.github.io/spuR/) for detailed information and other (R, Python, Stata) packages.

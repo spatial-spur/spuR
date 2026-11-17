@@ -35,6 +35,11 @@ spur_stata_rc_from_log <- function(log_lines) {
 }
 
 spur_run_stata_do <- function(do_lines) {
+  ado_dirs <- Sys.getenv("SPUR_STATA_ADOPATH", unset = "")
+  if (nzchar(ado_dirs)) {
+    ado_dirs <- strsplit(ado_dirs, .Platform$path.sep, fixed = TRUE)[[1L]]
+    do_lines <- c(sprintf('adopath ++ "%s"', vapply(ado_dirs, spur_stata_path, "")), do_lines)
+  }
   wd <- tempfile("stata_parity_")
   dir.create(wd, recursive = TRUE)
   do_file <- file.path(wd, "run.do")

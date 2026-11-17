@@ -6,30 +6,6 @@ make_det_emat_r <- function(q, nrep) {
   matrix(out, nrow = q, ncol = nrep, byrow = TRUE)
 }
 
-sign_align_emat_for_rust <- function(emat, coords, latlong, kind, x_in = NULL) {
-  q <- nrow(emat)
-  distmat <- spuR:::.normalized_distmat(coords = coords, latlong = latlong)
-  sig <- if (identical(kind, "lbm")) {
-    spuR:::get_sigma_lbm_dm(distmat)
-  } else if (identical(kind, "resid")) {
-    n <- nrow(distmat)
-    xtx <- crossprod(x_in)
-    m_mat <- diag(n) - x_in %*% solve(xtx, t(x_in))
-    c_bm <- spuR:::get_cbar(0.999, distmat)
-    spuR:::get_sigma_residual(distmat, c_bm, m_mat)
-  } else {
-    c_bm <- spuR:::get_cbar(0.999, distmat)
-    spuR:::get_sigma_dm(distmat, c_bm)
-  }
-  r_fb <- spuR:::get_r(sig, q)$R
-  signs <- vapply(seq_len(q), function(j) {
-    col <- r_fb[, j]
-    idx <- which.max(abs(col))
-    if (col[idx] < 0) -1 else 1
-  }, numeric(1))
-  list(fb = emat, ru = sweep(emat, 1L, signs, "*"))
-}
-
 bench_df_or_skip <- function() {
   candidates <- c(
     "../../../verification/data/bench_200.csv",
@@ -57,8 +33,8 @@ testthat::test_that("spuR diagnostics match fallback with frozen emat (geodesic 
   )
 
   for (cfg in configs) {
-    e_lbm <- sign_align_emat_for_rust(base_emat, cfg$coords, cfg$latlong, "lbm")
-    e_res <- sign_align_emat_for_rust(base_emat, cfg$coords, cfg$latlong, "resid", x_in = x_in)
+    e_lbm <- list(fb = base_emat, ru = base_emat)
+    e_res <- list(fb = base_emat, ru = base_emat)
 
     for (pair in list(
       list(name = "i0", fn = spuR::spurtest_i0),
@@ -168,7 +144,7 @@ testthat::test_that("spurhalflife matches fallback with frozen emat and preserve
     list(latlong = FALSE, lon = NULL, lat = NULL, euc = c("s_1", "s_2"), coords = as.matrix(df[, c("s_1", "s_2")]))
   )
   for (cfg in configs) {
-    e_hl <- sign_align_emat_for_rust(base_emat, cfg$coords, cfg$latlong, "hl")
+    e_hl <- list(fb = base_emat, ru = base_emat)
     for (normdist in c(FALSE, TRUE)) {
       fb <- testthat::with_mocked_bindings(
         .draw_emat = function(q, nrep) e_hl$fb,
@@ -287,11 +263,11 @@ testthat::test_that("tied eigenspace triggers auto fallback and backend validati
   )
   ru_i0 <- spuR::spurtest_i0(
     val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"),
-    q = 2L, nrep = 400L, seed = 42L, backend = "rust"
+    q = 8L, nrep = 2000L, seed = 42L, backend = "rust"
   )
   auto_i0 <- spuR::spurtest_i0(
     val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"),
-    q = 2L, nrep = 400L, seed = 42L, backend = "auto"
+    q = 8L, nrep = 2000L, seed = 42L, backend = "auto"
   )
   testthat::expect_identical(ru_i0$backend, "rust")
   testthat::expect_true(ru_i0$tied)
@@ -299,11 +275,11 @@ testthat::test_that("tied eigenspace triggers auto fallback and backend validati
   testthat::expect_true(auto_i0$tied)
 
   testthat::expect_error(
-    spuR::spurtest_i0(val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"), q = 2L, nrep = 400L, backend = "bogus"),
+    spuR::spurtest_i0(val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"), q = 8L, nrep = 2000L, backend = "bogus"),
     "auto"
   )
   testthat::expect_error(
-    spuR::spurtest_i0(val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"), q = 2L, nrep = 400L, nthreads = 0L),
+    spuR::spurtest_i0(val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"), q = 8L, nrep = 2000L, nthreads = 0L),
     "positive integer"
   )
   testthat::with_mocked_bindings(
@@ -312,13 +288,13 @@ testthat::test_that("tied eigenspace triggers auto fallback and backend validati
     {
       auto_fb <- spuR::spurtest_i0(
         val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"),
-        q = 2L, nrep = 400L, backend = "auto"
+        q = 8L, nrep = 2000L, seed = 42L, backend = "auto"
       )
       testthat::expect_identical(auto_fb$backend, "fallback")
       testthat::expect_error(
         spuR::spurtest_i0(
           val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"),
-          q = 2L, nrep = 400L, backend = "rust"
+          q = 8L, nrep = 2000L, backend = "rust"
         ),
         "not loaded"
       )

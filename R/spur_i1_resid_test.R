@@ -9,26 +9,42 @@
 #' @return List with test outputs.
 #' @keywords internal
 spur_i1_resid_test <- function(Y, X_in, distmat, emat) {
-  q <- nrow(emat)
-  n <- nrow(distmat)
-  n_y <- ncol(Y)
-
-  xtx <- crossprod(X_in)
-  if (qr(xtx)$rank < ncol(xtx)) {
-    stop("Design matrix is rank-deficient; residual tests require full column rank.")
+  dims <- .validate_core_spur_inputs(distmat, emat, min_q = 2L)
+  q <- dims$q
+  n <- dims$n
+  y_info <- .validate_spur_y(Y, name = "Y")
+  if (nrow(y_info$Y_dm) != n) {
+    stop("`Y` row count must match `distmat`.")
   }
-  M <- diag(n) - X_in %*% solve(xtx, t(X_in))
+  if (nrow(as.matrix(X_in)) != n) {
+    stop("`X_in` row count must match `distmat`.")
+  }
+
+  q_x <- .orthonormal_design_basis(X_in)
+  resid_dof <- n - ncol(q_x)
+  if (q > resid_dof) {
+    stop(sprintf(
+      "`q` (%d) cannot exceed residual degrees of freedom (n - ncol(X) = %d).",
+      q, resid_dof
+    ))
+  }
+  M <- diag(n) - tcrossprod(q_x)
 
   rho_bm <- 0.999
   c_bm <- get_cbar(rho_bm, distmat)
   sigdm_bm <- get_sigma_residual(distmat, c_bm, M)
 
-  R <- get_r(sigdm_bm, q)$R
-  om_ho <- t(R) %*% sigdm_bm %*% R
+  R <- .extract_spur_basis(sigdm_bm, q)
+  P_mat <- .project_spur_y(y_info, R)
+  .validate_spur_i1_shapes(distmat, R, M)
+
+  om_ho <- crossprod(R, sigdm_bm %*% R)
+  om_ho <- 0.5 * (om_ho + t(om_ho))
 
   ha_parm <- get_ha_param_i1_residual(om_ho, distmat, R, emat, M)
   sigdm_ha <- get_sigma_residual(distmat, ha_parm, M)
-  om_ha <- t(R) %*% sigdm_ha %*% R
+  om_ha <- crossprod(R, sigdm_ha %*% R)
+  om_ha <- 0.5 * (om_ha + t(om_ha))
 
   ch_om_ho <- chol(om_ho)
   omi_ho <- solve(om_ho)
@@ -46,12 +62,17 @@ spur_i1_resid_test <- function(Y, X_in, distmat, emat) {
   sz_vec <- c(0.01, 0.05, 0.10)
   cv_vec <- as.numeric(stats::quantile(lr_ho, probs = 1 - sz_vec))
 
+  n_y <- ncol(P_mat)
   LR <- numeric(n_y)
   pvalue <- numeric(n_y)
   for (i in seq_len(n_y)) {
-    X <- Y[, i] - mean(Y[, i])
-    P <- t(R) %*% X
-    LR[i] <- (t(P) %*% omi_ho %*% P) / (t(P) %*% omi_ha %*% P)
+    P <- P_mat[, i, drop = FALSE]
+    q_P_ho <- sum((ch_omi_ho %*% P)^2)
+    q_P_ha <- sum((ch_omi_ha %*% P)^2)
+    if (!is.finite(q_P_ho) || !is.finite(q_P_ha) || q_P_ha <= 0) {
+      stop("SPUR LR denominator is non-positive.")
+    }
+    LR[i] <- q_P_ho / q_P_ha
     pvalue[i] <- mean(lr_ho > LR[i])
   }
 

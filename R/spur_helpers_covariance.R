@@ -53,5 +53,6 @@ get_sigma_lbm_dm <- function(distmat) {
 #' @keywords internal
 get_sigma_residual <- function(distmat, c, M) {
   sigma <- exp(-c * distmat)
-  M %*% sigma %*% t(M)
+  res <- M %*% sigma %*% t(M)
+  0.5 * (res + t(res))
 }
