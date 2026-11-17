@@ -15,7 +15,9 @@ spurhalflife(
   lat = NULL,
   coords_euclidean = NULL,
   seed = 42L,
-  verbose = FALSE
+  verbose = FALSE,
+  backend = c("auto", "rust", "fallback"),
+  nthreads = NULL
 )
 }
 \arguments{
@@ -40,6 +42,10 @@ spurhalflife(
 \item{seed}{Optional integer seed for reproducibility of Monte Carlo draws.}
 
 \item{verbose}{Logical; if \code{TRUE}, print CI summary and diagnostics.}
+
+\item{backend}{Backend selector: \code{"auto"} (default), \code{"rust"}, or \code{"fallback"}.}
+
+\item{nthreads}{Optional positive integer thread count for parallel Rust execution.}
 }
 \value{
 A list of class \code{"spur_halflife"} with \code{ci_l}, \code{ci_u}, \code{max_dist},

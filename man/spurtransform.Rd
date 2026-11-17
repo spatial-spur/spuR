@@ -16,7 +16,9 @@ spurtransform(
   coords_euclidean = NULL,
   separately = FALSE,
   replace = FALSE,
-  verbose = FALSE
+  verbose = FALSE,
+  backend = c("auto", "rust", "fallback"),
+  nthreads = NULL
 )
 }
 \arguments{
@@ -46,6 +48,10 @@ analysis formula directly.}
 \item{replace}{Logical; allow overwriting existing output columns.}
 
 \item{verbose}{Logical; if \code{TRUE}, print coordinate diagnostics.}
+
+\item{backend}{Backend selector: \code{"auto"} (default), \code{"rust"}, or \code{"fallback"}.}
+
+\item{nthreads}{Optional positive integer thread count for parallel Rust execution.}
 }
 \value{
 A data frame with transformed variables appended.

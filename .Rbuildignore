@@ -4,3 +4,13 @@
 ^\.DS_Store$
 ^\.claude$
 ^data-raw$
+^src/.*\.o$
+^src/.*\.so$
+^src/.*\.dll$
+^src/.*\.dylib$
+^src/symbols\.rds$
+^src/\.spatial_rust_mode$
+^src/rust/target$
+^\.{1,2}Rcheck$
+^spuR\.Rcheck$
+^spuR_.*\.tar\.gz$

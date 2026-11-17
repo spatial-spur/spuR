@@ -207,6 +207,8 @@
 #' @param coords_euclidean Optional Euclidean coordinate column names.
 #' @param seed Optional integer seed for reproducibility of Monte Carlo draws.
 #' @param verbose Logical; if `TRUE`, print test summary and diagnostics.
+#' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
+#' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
 #'   `cv`, and `full`.
 #' @examples
@@ -225,7 +227,11 @@ spurtest_i0 <- function(formula,
                         lat = NULL,
                         coords_euclidean = NULL,
                         seed = 42L,
-                        verbose = FALSE) {
+                        verbose = FALSE,
+                        backend = c("auto", "rust", "fallback"),
+                        nthreads = NULL) {
+  backend_resolved <- .resolve_spur_backend(backend, missing(backend))
+  nthreads_resolved <- .resolve_spur_nthreads(nthreads)
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_single_var_formula(formula = formula, data = data, fn_name = "spurtest_i0()")
   coord_info <- .resolve_spur_coords(
@@ -238,34 +244,51 @@ spurtest_i0 <- function(formula,
   )
 
   y <- as.matrix(data[[parsed$var]][parsed$use_rows])
-  distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
+  if (q >= nrow(y)) {
+    stop("`q` must be less than the number of observations.")
+  }
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
+
+  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_i0")
+  tied_from_rust <- FALSE
+  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+    rust_attempt <- .try_spur_test_rust(
+      "wrap__rust_run_spur_i0",
+      coords = coord_info$coords,
+      latlong = coord_info$latlong,
+      y_mat = y,
+      emat = emat,
+      is_i0 = TRUE,
+      nthreads_resolved = nthreads_resolved,
+      backend_resolved = backend_resolved
+    )
+    tied_from_rust <- isTRUE(rust_attempt$tied)
+    if (!is.null(rust_attempt$res)) {
+      return(.format_spur_test_from_full(
+        rust_attempt$res,
+        test_type = "I(0)",
+        title = "Spatial I(0) Test Results",
+        stat_label = "LFST",
+        cv = rust_attempt$cv,
+        verbose = verbose,
+        backend = "rust",
+        tied = tied_from_rust
+      ))
+    }
+  }
+
+  distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   res <- spur_i0_test(Y = y, distmat = distmat, emat = emat)
-
-  teststat <- res$LR[1]
-  pvalue <- res$pvalue[1]
-  ha_param <- res$ha_parm
-  cv <- res$cvalue
-
-  .format_spur_test_output(
+  .format_spur_test_from_full(
+    res,
+    test_type = "I(0)",
     title = "Spatial I(0) Test Results",
     stat_label = "LFST",
-    teststat = teststat,
-    pvalue = pvalue,
-    verbose = verbose
-  )
-
-  structure(
-    list(
-      pvalue = pvalue,
-      teststat = teststat,
-      ha_param = ha_param,
-      cv = cv,
-      full = res
-    ),
-    class = "spur_test",
-    test_type = "I(0)"
+    cv = res$cvalue,
+    verbose = verbose,
+    backend = "fallback",
+    tied = tied_from_rust
   )
 }
 
@@ -282,6 +305,8 @@ spurtest_i0 <- function(formula,
 #' @param coords_euclidean Optional Euclidean coordinate column names.
 #' @param seed Optional integer seed for reproducibility of Monte Carlo draws.
 #' @param verbose Logical; if `TRUE`, print test summary and diagnostics.
+#' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
+#' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
 #'   `cv`, and `full`.
 #' @examples
@@ -300,7 +325,11 @@ spurtest_i1 <- function(formula,
                         lat = NULL,
                         coords_euclidean = NULL,
                         seed = 42L,
-                        verbose = FALSE) {
+                        verbose = FALSE,
+                        backend = c("auto", "rust", "fallback"),
+                        nthreads = NULL) {
+  backend_resolved <- .resolve_spur_backend(backend, missing(backend))
+  nthreads_resolved <- .resolve_spur_nthreads(nthreads)
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_single_var_formula(formula = formula, data = data, fn_name = "spurtest_i1()")
   coord_info <- .resolve_spur_coords(
@@ -313,34 +342,51 @@ spurtest_i1 <- function(formula,
   )
 
   y <- as.matrix(data[[parsed$var]][parsed$use_rows])
-  distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
+  if (q >= nrow(y)) {
+    stop("`q` must be less than the number of observations.")
+  }
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
+
+  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_i1")
+  tied_from_rust <- FALSE
+  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+    rust_attempt <- .try_spur_test_rust(
+      "wrap__rust_run_spur_i1",
+      coords = coord_info$coords,
+      latlong = coord_info$latlong,
+      y_mat = y,
+      emat = emat,
+      is_i0 = FALSE,
+      nthreads_resolved = nthreads_resolved,
+      backend_resolved = backend_resolved
+    )
+    tied_from_rust <- isTRUE(rust_attempt$tied)
+    if (!is.null(rust_attempt$res)) {
+      return(.format_spur_test_from_full(
+        rust_attempt$res,
+        test_type = "I(1)",
+        title = "Spatial I(1) Test Results",
+        stat_label = "LFUR",
+        cv = rust_attempt$cv,
+        verbose = verbose,
+        backend = "rust",
+        tied = tied_from_rust
+      ))
+    }
+  }
+
+  distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   res <- spur_i1_test(Y = y, distmat = distmat, emat = emat)
-
-  teststat <- res$LR[1]
-  pvalue <- res$pvalue[1]
-  ha_param <- res$ha_parm
-  cv <- res$cv_vec
-
-  .format_spur_test_output(
+  .format_spur_test_from_full(
+    res,
+    test_type = "I(1)",
     title = "Spatial I(1) Test Results",
     stat_label = "LFUR",
-    teststat = teststat,
-    pvalue = pvalue,
-    verbose = verbose
-  )
-
-  structure(
-    list(
-      pvalue = pvalue,
-      teststat = teststat,
-      ha_param = ha_param,
-      cv = cv,
-      full = res
-    ),
-    class = "spur_test",
-    test_type = "I(1)"
+    cv = res$cv_vec,
+    verbose = verbose,
+    backend = "fallback",
+    tied = tied_from_rust
   )
 }
 
@@ -357,6 +403,8 @@ spurtest_i1 <- function(formula,
 #' @param coords_euclidean Optional Euclidean coordinate column names.
 #' @param seed Optional integer seed for reproducibility of Monte Carlo draws.
 #' @param verbose Logical; if `TRUE`, print test summary and diagnostics.
+#' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
+#' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
 #'   `cv`, and `full`.
 #' @examples
@@ -375,7 +423,11 @@ spurtest_i0resid <- function(formula,
                              lat = NULL,
                              coords_euclidean = NULL,
                              seed = 42L,
-                             verbose = FALSE) {
+                             verbose = FALSE,
+                             backend = c("auto", "rust", "fallback"),
+                             nthreads = NULL) {
+  backend_resolved <- .resolve_spur_backend(backend, missing(backend))
+  nthreads_resolved <- .resolve_spur_nthreads(nthreads)
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_residual_formula(formula = formula, data = data, fn_name = "spurtest_i0resid()")
   coord_info <- .resolve_spur_coords(
@@ -387,34 +439,56 @@ spurtest_i0resid <- function(formula,
     verbose = verbose
   )
 
-  distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
+  if (q >= nrow(parsed$Y)) {
+    stop("`q` must be less than the number of observations.")
+  }
+  xtx <- crossprod(parsed$X_in)
+  if (qr(xtx)$rank < ncol(xtx)) {
+    stop("Design matrix is rank-deficient; residual tests require full column rank.")
+  }
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
+
+  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_i0_resid")
+  tied_from_rust <- FALSE
+  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+    rust_attempt <- .try_spur_test_rust(
+      "wrap__rust_run_spur_i0_resid",
+      coords = coord_info$coords,
+      latlong = coord_info$latlong,
+      y_mat = parsed$Y,
+      emat = emat,
+      x_in = parsed$X_in,
+      is_i0 = TRUE,
+      nthreads_resolved = nthreads_resolved,
+      backend_resolved = backend_resolved
+    )
+    tied_from_rust <- isTRUE(rust_attempt$tied)
+    if (!is.null(rust_attempt$res)) {
+      return(.format_spur_test_from_full(
+        rust_attempt$res,
+        test_type = "I(0) Residual",
+        title = "Spatial I(0) Test Results for Residuals",
+        stat_label = "LFST",
+        cv = rust_attempt$cv,
+        verbose = verbose,
+        backend = "rust",
+        tied = tied_from_rust
+      ))
+    }
+  }
+
+  distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   res <- spur_i0_resid_test(Y = parsed$Y, X_in = parsed$X_in, distmat = distmat, emat = emat)
-
-  teststat <- res$LR[1]
-  pvalue <- res$pvalue[1]
-  ha_param <- res$ha_parm
-  cv <- res$cvalue
-
-  .format_spur_test_output(
+  .format_spur_test_from_full(
+    res,
+    test_type = "I(0) Residual",
     title = "Spatial I(0) Test Results for Residuals",
     stat_label = "LFST",
-    teststat = teststat,
-    pvalue = pvalue,
-    verbose = verbose
-  )
-
-  structure(
-    list(
-      pvalue = pvalue,
-      teststat = teststat,
-      ha_param = ha_param,
-      cv = cv,
-      full = res
-    ),
-    class = "spur_test",
-    test_type = "I(0) Residual"
+    cv = res$cvalue,
+    verbose = verbose,
+    backend = "fallback",
+    tied = tied_from_rust
   )
 }
 
@@ -431,6 +505,8 @@ spurtest_i0resid <- function(formula,
 #' @param coords_euclidean Optional Euclidean coordinate column names.
 #' @param seed Optional integer seed for reproducibility of Monte Carlo draws.
 #' @param verbose Logical; if `TRUE`, print test summary and diagnostics.
+#' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
+#' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
 #'   `cv`, and `full`.
 #' @examples
@@ -449,7 +525,11 @@ spurtest_i1resid <- function(formula,
                              lat = NULL,
                              coords_euclidean = NULL,
                              seed = 42L,
-                             verbose = FALSE) {
+                             verbose = FALSE,
+                             backend = c("auto", "rust", "fallback"),
+                             nthreads = NULL) {
+  backend_resolved <- .resolve_spur_backend(backend, missing(backend))
+  nthreads_resolved <- .resolve_spur_nthreads(nthreads)
   .validate_common_args(data = data, q = q, nrep = nrep)
   parsed <- .parse_residual_formula(formula = formula, data = data, fn_name = "spurtest_i1resid()")
   coord_info <- .resolve_spur_coords(
@@ -461,34 +541,56 @@ spurtest_i1resid <- function(formula,
     verbose = verbose
   )
 
-  distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
+  if (q >= nrow(parsed$Y)) {
+    stop("`q` must be less than the number of observations.")
+  }
+  xtx <- crossprod(parsed$X_in)
+  if (qr(xtx)$rank < ncol(xtx)) {
+    stop("Design matrix is rank-deficient; residual tests require full column rank.")
+  }
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
+
+  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_i1_resid")
+  tied_from_rust <- FALSE
+  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+    rust_attempt <- .try_spur_test_rust(
+      "wrap__rust_run_spur_i1_resid",
+      coords = coord_info$coords,
+      latlong = coord_info$latlong,
+      y_mat = parsed$Y,
+      emat = emat,
+      x_in = parsed$X_in,
+      is_i0 = FALSE,
+      nthreads_resolved = nthreads_resolved,
+      backend_resolved = backend_resolved
+    )
+    tied_from_rust <- isTRUE(rust_attempt$tied)
+    if (!is.null(rust_attempt$res)) {
+      return(.format_spur_test_from_full(
+        rust_attempt$res,
+        test_type = "I(1) Residual",
+        title = "Spatial I(1) Test Results for Residuals",
+        stat_label = "LFUR",
+        cv = rust_attempt$cv,
+        verbose = verbose,
+        backend = "rust",
+        tied = tied_from_rust
+      ))
+    }
+  }
+
+  distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   res <- spur_i1_resid_test(Y = parsed$Y, X_in = parsed$X_in, distmat = distmat, emat = emat)
-
-  teststat <- res$LR[1]
-  pvalue <- res$pvalue[1]
-  ha_param <- res$ha_parm
-  cv <- res$cv_vec
-
-  .format_spur_test_output(
+  .format_spur_test_from_full(
+    res,
+    test_type = "I(1) Residual",
     title = "Spatial I(1) Test Results for Residuals",
     stat_label = "LFUR",
-    teststat = teststat,
-    pvalue = pvalue,
-    verbose = verbose
-  )
-
-  structure(
-    list(
-      pvalue = pvalue,
-      teststat = teststat,
-      ha_param = ha_param,
-      cv = cv,
-      full = res
-    ),
-    class = "spur_test",
-    test_type = "I(1) Residual"
+    cv = res$cv_vec,
+    verbose = verbose,
+    backend = "fallback",
+    tied = tied_from_rust
   )
 }
 
@@ -507,6 +609,8 @@ spurtest_i1resid <- function(formula,
 #' @param coords_euclidean Optional Euclidean coordinate column names.
 #' @param seed Optional integer seed for reproducibility of Monte Carlo draws.
 #' @param verbose Logical; if `TRUE`, print CI summary and diagnostics.
+#' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
+#' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_halflife"` with `ci_l`, `ci_u`, `max_dist`,
 #'   and `full`.
 #' @examples
@@ -527,7 +631,11 @@ spurhalflife <- function(formula,
                          lat = NULL,
                          coords_euclidean = NULL,
                          seed = 42L,
-                         verbose = FALSE) {
+                         verbose = FALSE,
+                         backend = c("auto", "rust", "fallback"),
+                         nthreads = NULL) {
+  backend_resolved <- .resolve_spur_backend(backend, missing(backend))
+  nthreads_resolved <- .resolve_spur_nthreads(nthreads)
   .validate_common_args(data = data, q = q, nrep = nrep)
   if (length(level) != 1L || !is.finite(level)) {
     stop("`level` must be a finite scalar.")
@@ -547,23 +655,63 @@ spurhalflife <- function(formula,
   )
 
   z <- as.matrix(data[[parsed$var]][parsed$use_rows])
-  distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
+  if (q >= nrow(z)) {
+    stop("`q` must be less than the number of observations.")
+  }
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
-  ci <- spur_persistence(Z = z, distmat = distmat, emat = emat, level = level / 100)
+
+  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_halflife")
+  tied_from_rust <- FALSE
+  used_rust <- FALSE
+  ci <- NULL
+  max_dist <- NA_real_
+
+  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+    e_m <- as.matrix(emat)
+    storage.mode(e_m) <- "double"
+    rust_res <- .call_spur_rust(
+      "wrap__rust_run_spur_halflife",
+      .swap_coords_for_rust(coord_info$coords, coord_info$latlong),
+      isTRUE(coord_info$latlong),
+      as.double(z),
+      e_m,
+      as.double(level / 100),
+      nthreads_resolved
+    )
+    tied_from_rust <- isTRUE(rust_res$tied)
+    if (!tied_from_rust || identical(backend_resolved, "rust")) {
+      used_rust <- TRUE
+      ci <- list(
+        hl_ci_lower = as.numeric(rust_res$hl_ci_lower),
+        hl_ci_upper = as.numeric(rust_res$hl_ci_upper),
+        pv_mat = as.numeric(rust_res$pv_mat),
+        hl_grid_ho = as.numeric(rust_res$hl_grid_ho),
+        backend = "rust",
+        tied = tied_from_rust
+      )
+      max_dist <- as.numeric(rust_res$max_dist) * .SPUR_HALFLIFE_SCALE_M
+    }
+  }
+
+  if (!used_rust) {
+    distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
+    ci <- spur_persistence(Z = z, distmat = distmat, emat = emat, level = level / 100)
+    ci$backend <- "fallback"
+    ci$tied <- tied_from_rust
+    max_dist <- if (isTRUE(coord_info$latlong)) {
+      max(get_distmat_lat_lon(coord_info$coords))
+    } else {
+      max(get_distmat_euclidean(coord_info$coords))
+    }
+    max_dist <- max_dist * .SPUR_HALFLIFE_SCALE_M
+  }
 
   ci_l <- ci$hl_ci_lower
   ci_u <- ci$hl_ci_upper
   if (ci_u >= 100) {
     ci_u <- NA_real_
   }
-
-  max_dist <- if (isTRUE(coord_info$latlong)) {
-    max(get_distmat_lat_lon(coord_info$coords))
-  } else {
-    max(get_distmat_euclidean(coord_info$coords))
-  }
-  max_dist <- max_dist * pi * 6371000.009 * 2
 
   if (!isTRUE(normdist)) {
     ci_l <- ci_l * max_dist
@@ -595,7 +743,9 @@ spurhalflife <- function(formula,
       ci_l = ci_l,
       ci_u = ci_u,
       max_dist = max_dist,
-      full = ci
+      full = ci,
+      backend = if (used_rust) "rust" else "fallback",
+      tied = tied_from_rust
     ),
     class = "spur_halflife",
     level = level
@@ -621,6 +771,8 @@ spurhalflife <- function(formula,
 #' @param separately Logical; handle missingness separately by variable.
 #' @param replace Logical; allow overwriting existing output columns.
 #' @param verbose Logical; if `TRUE`, print coordinate diagnostics.
+#' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
+#' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A data frame with transformed variables appended.
 #' @examples
 #' data(spur_example)
@@ -646,7 +798,11 @@ spurtransform <- function(formula,
                           coords_euclidean = NULL,
                           separately = FALSE,
                           replace = FALSE,
-                          verbose = FALSE) {
+                          verbose = FALSE,
+                          backend = c("auto", "rust", "fallback"),
+                          nthreads = NULL) {
+  backend_resolved <- .resolve_spur_backend(backend, missing(backend))
+  nthreads_resolved <- .resolve_spur_nthreads(nthreads)
   if (!is.data.frame(data)) {
     stop("`data` must be a data frame.")
   }
@@ -681,6 +837,9 @@ spurtransform <- function(formula,
     stop("prefix must be a valid name prefix.")
   }
 
+  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_transform")
+  use_rust_path <- !identical(backend_resolved, "fallback") && rust_loaded
+
   base_sample <- if (isTRUE(separately)) {
     rep(TRUE, nrow(data))
   } else {
@@ -693,13 +852,44 @@ spurtransform <- function(formula,
     NULL
   }
 
-  shared <- NULL
+  result <- data
+
   if (!isTRUE(separately)) {
     use_rows <- base_sample
     if (transformation == "cluster") {
       use_rows <- use_rows & !is.na(data[[clustvar]])
     }
 
+    if (use_rust_path && any(use_rows) && (sum(use_rows) >= 2L || identical(backend_resolved, "rust"))) {
+      for (var in vars) {
+        out_var <- paste0(prefix, var)
+        if (out_var %in% names(result) && !isTRUE(replace)) {
+          stop(sprintf("%s already defined or invalid name", out_var))
+        }
+      }
+      tr_mat <- .transform_vars_rust(
+        data = data,
+        vars = vars,
+        use_rows = use_rows,
+        transformation = transformation,
+        radius = radius,
+        cluster_group = cluster_group,
+        lon = lon,
+        lat = lat,
+        coords_euclidean = coords_euclidean,
+        verbose = verbose,
+        nthreads_resolved = nthreads_resolved
+      )
+      for (j in seq_along(vars)) {
+        out_var <- paste0(prefix, vars[[j]])
+        result_vec <- rep(NA_real_, nrow(data))
+        result_vec[use_rows] <- as.numeric(tr_mat[, j])
+        result[[out_var]] <- result_vec
+      }
+      return(result)
+    }
+
+    shared <- NULL
     if (any(use_rows)) {
       coord_info <- .resolve_spur_coords(
         data = data,
@@ -729,9 +919,29 @@ spurtransform <- function(formula,
     } else {
       shared <- list(use_rows = use_rows, H = NULL)
     }
-  }
 
-  result <- data
+    for (var in vars) {
+      out_var <- paste0(prefix, var)
+      if (out_var %in% names(result) && !isTRUE(replace)) {
+        stop(sprintf("%s already defined or invalid name", out_var))
+      }
+      if (!any(shared$use_rows)) {
+        warning(sprintf("No valid observations for variable: %s", var))
+        next
+      }
+      transformed <- spur_transform_vector(
+        data = data,
+        varname = var,
+        H = shared$H,
+        transformation = transformation,
+        use_rows = shared$use_rows
+      )
+      result_vec <- rep(NA_real_, nrow(data))
+      result_vec[shared$use_rows] <- transformed
+      result[[out_var]] <- result_vec
+    }
+    return(result)
+  }
 
   for (var in vars) {
     out_var <- paste0(prefix, var)
@@ -739,50 +949,58 @@ spurtransform <- function(formula,
       stop(sprintf("%s already defined or invalid name", out_var))
     }
 
-    if (!is.null(shared)) {
-      use_rows <- shared$use_rows
-      H <- shared$H
-    } else {
-      use_rows <- base_sample
-      if (isTRUE(separately)) {
-        use_rows <- use_rows & !is.na(data[[var]])
-      }
-      if (transformation == "cluster") {
-        use_rows <- use_rows & !is.na(data[[clustvar]])
-      }
-
-      if (any(use_rows)) {
-        coord_info <- .resolve_spur_coords(
-          data = data,
-          use_rows = use_rows,
-          lon = lon,
-          lat = lat,
-          coords_euclidean = coords_euclidean,
-          verbose = verbose
-        )
-
-        cluster_vals <- if (transformation == "cluster") {
-          get_cluster_matrix(cluster_values = cluster_group, use_rows = use_rows)
-        } else {
-          NULL
-        }
-
-        H <- make_transform(
-          s = coord_info$coords,
-          transformation = transformation,
-          radius = radius,
-          cluster = cluster_vals,
-          latlong = coord_info$latlong
-        )
-      } else {
-        H <- NULL
-      }
+    use_rows <- base_sample & !is.na(data[[var]])
+    if (transformation == "cluster") {
+      use_rows <- use_rows & !is.na(data[[clustvar]])
     }
 
     if (!any(use_rows)) {
       warning(sprintf("No valid observations for variable: %s", var))
       next
     }
+
+    if (use_rust_path && (sum(use_rows) >= 2L || identical(backend_resolved, "rust"))) {
+      tr_mat <- .transform_vars_rust(
+        data = data,
+        vars = var,
+        use_rows = use_rows,
+        transformation = transformation,
+        radius = radius,
+        cluster_group = cluster_group,
+        lon = lon,
+        lat = lat,
+        coords_euclidean = coords_euclidean,
+        verbose = verbose,
+        nthreads_resolved = nthreads_resolved
+      )
+      result_vec <- rep(NA_real_, nrow(data))
+      result_vec[use_rows] <- as.numeric(tr_mat[, 1L])
+      result[[out_var]] <- result_vec
+      next
+    }
+
+    coord_info <- .resolve_spur_coords(
+      data = data,
+      use_rows = use_rows,
+      lon = lon,
+      lat = lat,
+      coords_euclidean = coords_euclidean,
+      verbose = verbose
+    )
+
+    cluster_vals <- if (transformation == "cluster") {
+      get_cluster_matrix(cluster_values = cluster_group, use_rows = use_rows)
+    } else {
+      NULL
+    }
+
+    H <- make_transform(
+      s = coord_info$coords,
+      transformation = transformation,
+      radius = radius,
+      cluster = cluster_vals,
+      latlong = coord_info$latlong
+    )
 
     transformed <- spur_transform_vector(
       data = data,

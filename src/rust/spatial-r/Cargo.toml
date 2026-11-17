@@ -1,0 +1,18 @@
+[package]
+name = "spatial-r"
+version = "0.2.0"
+edition = "2021"
+description = "Shared extendr Rust adapter for scpcR and spuR"
+license = "MIT"
+
+[lib]
+name = "spatial_r"
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = ["exports"]
+exports = []
+
+[dependencies]
+extendr-api = { version = "0.7", features = ["result_condition"] }
+spatial-core = { path = "../spatial-core" }

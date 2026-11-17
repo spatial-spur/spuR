@@ -13,7 +13,9 @@ spurtest_i0(
   lat = NULL,
   coords_euclidean = NULL,
   seed = 42L,
-  verbose = FALSE
+  verbose = FALSE,
+  backend = c("auto", "rust", "fallback"),
+  nthreads = NULL
 )
 }
 \arguments{
@@ -34,6 +36,10 @@ spurtest_i0(
 \item{seed}{Optional integer seed for reproducibility of Monte Carlo draws.}
 
 \item{verbose}{Logical; if \code{TRUE}, print test summary and diagnostics.}
+
+\item{backend}{Backend selector: \code{"auto"} (default), \code{"rust"}, or \code{"fallback"}.}
+
+\item{nthreads}{Optional positive integer thread count for parallel Rust execution.}
 }
 \value{
 A list of class \code{"spur_test"} with \code{pvalue}, \code{teststat}, \code{ha_param},

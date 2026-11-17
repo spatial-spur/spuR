@@ -1,0 +1,46 @@
+TARGET_DIR = rust/target
+LIBDIR = $(TARGET_DIR)/release
+STATLIB = $(LIBDIR)/libspur_rust.a
+
+SPATIAL_RUST ?= 1
+CARGO ?= cargo
+OFFLINE_FLAG = $(if $(wildcard rust/vendor),--offline,)
+
+ifeq ($(strip $(SPATIAL_RUST)),0)
+  RUST_AVAILABLE :=
+else
+  RUST_AVAILABLE := $(shell command -v "$(CARGO)" 2>/dev/null)
+endif
+
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+  RUST_SYS_LIBS = -framework Accelerate -lpthread -ldl -lm
+else
+  RUST_SYS_LIBS = -lpthread -ldl -lm
+endif
+
+ifneq ($(strip $(RUST_AVAILABLE)),)
+  RUST_MODE = rust
+  PKG_CFLAGS = -DSPATIAL_USE_RUST
+  PKG_LIBS = $(STATLIB) $(RUST_SYS_LIBS)
+  RUST_DEPS = $(STATLIB)
+else
+  RUST_MODE = norust
+  PKG_CFLAGS =
+  PKG_LIBS =
+  RUST_DEPS =
+endif
+
+PREV_MODE := $(shell cat .spatial_rust_mode 2>/dev/null || true)
+ifneq ($(PREV_MODE),$(RUST_MODE))
+  $(shell rm -f init.o $(SHLIB) && printf '%s\n' "$(RUST_MODE)" > .spatial_rust_mode)
+endif
+
+all: $(SHLIB)
+
+$(SHLIB): $(RUST_DEPS)
+
+.PHONY: $(STATLIB)
+$(STATLIB):
+	"$(CARGO)" --version && rustc --version
+	CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build --release --manifest-path rust/Cargo.toml $(OFFLINE_FLAG) --locked

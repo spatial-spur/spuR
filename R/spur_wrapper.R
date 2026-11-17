@@ -241,7 +241,12 @@
 #' @param avc SCPC tuning parameter passed to \code{scpcR::scpc()}.
 #' @param uncond Passed through to \code{scpcR::scpc()}.
 #' @param cvs Passed through to \code{scpcR::scpc()}.
+#' @param backend Backend selector: \code{"auto"} (default), \code{"rust"}, or
+#'   \code{"fallback"}.
+#' @param nthreads Optional positive integer thread count for parallel Rust
+#'   execution.
 #' @return A list of class \code{"spur_result"} with \code{tests} and \code{fits}.
+#' @useDynLib spuR, .registration = TRUE
 #' @export
 spur <- function(formula,
                  data,
@@ -253,7 +258,11 @@ spur <- function(formula,
                  seed = 42L,
                  avc = 0.03,
                  uncond = FALSE,
-                 cvs = FALSE) {
+                 cvs = FALSE,
+                 backend = c("auto", "rust", "fallback"),
+                 nthreads = NULL) {
+  backend_resolved <- .resolve_spur_backend(backend, missing(backend))
+  nthreads_resolved <- .resolve_spur_nthreads(nthreads)
   .validate_common_args(data = data, q = q, nrep = nrep)
 
   if (!inherits(formula, "formula") || length(formula) != 3L) {
@@ -266,6 +275,152 @@ spur <- function(formula,
   }
 
   depvar_formula <- stats::reformulate("1", response = depvar)
+  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_pipeline")
+
+  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+    parsed <- .parse_residual_formula(formula = formula, data = data, fn_name = "spur()")
+    tr_vars <- .parse_transform_formula(formula = formula, data = data)
+    all_tr_complete <- length(tr_vars) > 0L && all(stats::complete.cases(data[tr_vars]))
+    if (isTRUE(all(parsed$use_rows)) && isTRUE(all_tr_complete) && nrow(data) >= 5L) {
+      if (q >= nrow(data)) {
+        stop("`q` must be less than the number of observations.")
+      }
+      xtx <- crossprod(parsed$X_in)
+      if (qr(xtx)$rank < ncol(xtx)) {
+        stop("Design matrix is rank-deficient; residual tests require full column rank.")
+      }
+      coord_info <- .resolve_spur_coords(
+        data = data,
+        use_rows = parsed$use_rows,
+        lon = lon,
+        lat = lat,
+        coords_euclidean = coords_euclidean,
+        verbose = FALSE
+      )
+      if (!is.null(seed)) set.seed(seed)
+      emat <- .draw_emat(q = q, nrep = nrep)
+      e_m <- as.matrix(emat)
+      storage.mode(e_m) <- "double"
+      x_m <- as.matrix(parsed$X_in)
+      storage.mode(x_m) <- "double"
+      tr_mat_in <- as.matrix(data[, tr_vars, drop = FALSE])
+      storage.mode(tr_mat_in) <- "double"
+
+      pipe <- .call_spur_rust(
+        "wrap__rust_run_spur_pipeline",
+        .swap_coords_for_rust(coord_info$coords, coord_info$latlong),
+        isTRUE(coord_info$latlong),
+        as.double(parsed$Y),
+        x_m,
+        e_m,
+        tr_mat_in,
+        TRUE,
+        nthreads_resolved
+      )
+      any_tied <- isTRUE(pipe$i0$tied) || isTRUE(pipe$i0resid$tied)
+      if (!any_tied || identical(backend_resolved, "rust")) {
+        i0 <- .format_spur_test_from_full(
+          pipe$i0,
+          test_type = "I(0)",
+          title = "Spatial I(0) Test Results",
+          stat_label = "LFST",
+          cv = as.numeric(pipe$i0$cvalue),
+          verbose = FALSE,
+          backend = "rust",
+          tied = isTRUE(pipe$i0$tied)
+        )
+        i1 <- .format_spur_test_from_full(
+          pipe$i1,
+          test_type = "I(1)",
+          title = "Spatial I(1) Test Results",
+          stat_label = "LFUR",
+          cv = as.numeric(pipe$i1$cv_vec),
+          verbose = FALSE,
+          backend = "rust",
+          tied = isTRUE(pipe$i1$tied)
+        )
+        i0resid <- .format_spur_test_from_full(
+          pipe$i0resid,
+          test_type = "I(0) Residual",
+          title = "Spatial I(0) Test Results for Residuals",
+          stat_label = "LFST",
+          cv = as.numeric(pipe$i0resid$cvalue),
+          verbose = FALSE,
+          backend = "rust",
+          tied = isTRUE(pipe$i0resid$tied)
+        )
+        i1resid <- .format_spur_test_from_full(
+          pipe$i1resid,
+          test_type = "I(1) Residual",
+          title = "Spatial I(1) Test Results for Residuals",
+          stat_label = "LFUR",
+          cv = as.numeric(pipe$i1resid$cv_vec),
+          verbose = FALSE,
+          backend = "rust",
+          tied = isTRUE(pipe$i1resid$tied)
+        )
+
+        transformed_data <- data
+        tr_out <- pipe$transformed_vars
+        for (j in seq_along(tr_vars)) {
+          transformed_data[[paste0("h_", tr_vars[[j]])]] <- as.numeric(tr_out[, j])
+        }
+
+        levels_model <- stats::lm(formula = formula, data = data)
+        levels_scpc <- scpcR::scpc(
+          levels_model,
+          data = data,
+          lon = lon,
+          lat = lat,
+          coords_euclidean = coords_euclidean,
+          avc = avc,
+          uncond = uncond,
+          cvs = cvs,
+          backend = backend_resolved,
+          nthreads = nthreads_resolved
+        )
+
+        transformed_formula <- .rewrite_formula_with_prefix(formula, "h_")
+        transformed_model <- stats::lm(formula = transformed_formula, data = transformed_data)
+        transformed_scpc <- scpcR::scpc(
+          transformed_model,
+          data = transformed_data,
+          lon = lon,
+          lat = lat,
+          coords_euclidean = coords_euclidean,
+          avc = avc,
+          uncond = uncond,
+          cvs = cvs,
+          backend = backend_resolved,
+          nthreads = nthreads_resolved
+        )
+
+        return(structure(
+          list(
+            tests = list(
+              i0 = i0,
+              i1 = i1,
+              i0resid = i0resid,
+              i1resid = i1resid
+            ),
+            fits = list(
+              levels = list(
+                model = levels_model,
+                scpc = levels_scpc
+              ),
+              transformed = list(
+                model = transformed_model,
+                scpc = transformed_scpc
+              )
+            ),
+            backend = "rust",
+            tied = any_tied
+          ),
+          class = "spur_result"
+        ))
+      }
+    }
+  }
 
   i0 <- spurtest_i0(
     depvar_formula,
@@ -275,7 +430,9 @@ spur <- function(formula,
     lon = lon,
     lat = lat,
     coords_euclidean = coords_euclidean,
-    seed = seed
+    seed = seed,
+    backend = backend_resolved,
+    nthreads = nthreads_resolved
   )
   i1 <- spurtest_i1(
     depvar_formula,
@@ -285,7 +442,9 @@ spur <- function(formula,
     lon = lon,
     lat = lat,
     coords_euclidean = coords_euclidean,
-    seed = seed
+    seed = seed,
+    backend = backend_resolved,
+    nthreads = nthreads_resolved
   )
   i0resid <- spurtest_i0resid(
     formula,
@@ -295,7 +454,9 @@ spur <- function(formula,
     lon = lon,
     lat = lat,
     coords_euclidean = coords_euclidean,
-    seed = seed
+    seed = seed,
+    backend = backend_resolved,
+    nthreads = nthreads_resolved
   )
   i1resid <- spurtest_i1resid(
     formula,
@@ -305,7 +466,9 @@ spur <- function(formula,
     lon = lon,
     lat = lat,
     coords_euclidean = coords_euclidean,
-    seed = seed
+    seed = seed,
+    backend = backend_resolved,
+    nthreads = nthreads_resolved
   )
 
   levels_model <- stats::lm(formula = formula, data = data)
@@ -317,7 +480,9 @@ spur <- function(formula,
     coords_euclidean = coords_euclidean,
     avc = avc,
     uncond = uncond,
-    cvs = cvs
+    cvs = cvs,
+    backend = backend_resolved,
+    nthreads = nthreads_resolved
   )
 
   transformed_data <- spurtransform(
@@ -327,7 +492,9 @@ spur <- function(formula,
     transformation = "lbmgls",
     lon = lon,
     lat = lat,
-    coords_euclidean = coords_euclidean
+    coords_euclidean = coords_euclidean,
+    backend = backend_resolved,
+    nthreads = nthreads_resolved
   )
   transformed_formula <- .rewrite_formula_with_prefix(formula, "h_")
   transformed_model <- stats::lm(formula = transformed_formula, data = transformed_data)
@@ -339,8 +506,16 @@ spur <- function(formula,
     coords_euclidean = coords_euclidean,
     avc = avc,
     uncond = uncond,
-    cvs = cvs
+    cvs = cvs,
+    backend = backend_resolved,
+    nthreads = nthreads_resolved
   )
+
+  all_rust <- identical(i0$backend, "rust") &&
+    identical(i1$backend, "rust") &&
+    identical(i0resid$backend, "rust") &&
+    identical(i1resid$backend, "rust")
+  any_tied <- isTRUE(i0$tied) || isTRUE(i1$tied) || isTRUE(i0resid$tied) || isTRUE(i1resid$tied)
 
   structure(
     list(
@@ -359,7 +534,9 @@ spur <- function(formula,
           model = transformed_model,
           scpc = transformed_scpc
         )
-      )
+      ),
+      backend = if (all_rust) "rust" else "fallback",
+      tied = any_tied
     ),
     class = "spur_result"
   )

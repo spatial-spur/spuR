@@ -1,0 +1,20 @@
+[package]
+name = "spur_rust"
+version = "0.2.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+name = "spur_rust"
+crate-type = ["staticlib"]
+
+[dependencies]
+extendr-api = { version = "0.7", features = ["result_condition"] }
+spatial-r = { path = "spatial-r", default-features = false }
+spatial-core = { path = "spatial-core" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

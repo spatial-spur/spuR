@@ -15,7 +15,9 @@ spur(
   seed = 42L,
   avc = 0.03,
   uncond = FALSE,
-  cvs = FALSE
+  cvs = FALSE,
+  backend = c("auto", "rust", "fallback"),
+  nthreads = NULL
 )
 }
 \arguments{
@@ -40,6 +42,12 @@ spur(
 \item{uncond}{Passed through to \code{scpcR::scpc()}.}
 
 \item{cvs}{Passed through to \code{scpcR::scpc()}.}
+
+\item{backend}{Backend selector: \code{"auto"} (default), \code{"rust"}, or
+\code{"fallback"}.}
+
+\item{nthreads}{Optional positive integer thread count for parallel Rust
+execution.}
 }
 \value{
 A list of class \code{"spur_result"} with \code{tests} and \code{fits}.

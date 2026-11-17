@@ -1,0 +1,13 @@
+[package]
+name = "spatial-core"
+version = "0.2.0"
+edition = "2021"
+description = "Shared numerical core for spatial SCPC and SPUR"
+license = "MIT"
+
+[features]
+portable = []
+
+[dependencies]
+matrixmultiply = "0.3"
+rayon = "1.10"
