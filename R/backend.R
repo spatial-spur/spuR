@@ -207,25 +207,18 @@
   )
 }
 
-.transform_vars_rust <- function(data,
-                                 vars,
-                                 use_rows,
+.transform_vars_rust <- function(y_mat,
+                                 coord_info,
                                  transformation,
                                  radius,
-                                 cluster_group,
-                                 lon,
-                                 lat,
-                                 coords_euclidean,
-                                 verbose,
+                                 cluster,
                                  nthreads_resolved) {
-  sub_n <- sum(use_rows)
-  y_mat <- as.matrix(data[use_rows, vars, drop = FALSE])
   storage.mode(y_mat) <- "double"
+  sub_n <- nrow(y_mat)
   y_names <- colnames(y_mat)
 
   if (identical(transformation, "cluster")) {
-    cl_raw <- factor(cluster_group[use_rows])
-    cl_id <- as.integer(cl_raw) - 1L
+    cl_id <- as.integer(droplevels(cluster)) - 1L
     storage.mode(cl_id) <- "integer"
     res <- .call_spur_rust(
       "wrap__rust_run_spur_transform",
@@ -247,14 +240,6 @@
     return(out_mat)
   }
 
-  coord_info <- .resolve_spur_coords(
-    data = data,
-    use_rows = use_rows,
-    lon = lon,
-    lat = lat,
-    coords_euclidean = coords_euclidean,
-    verbose = verbose
-  )
   coords_rust <- .swap_coords_for_rust(coord_info$coords, coord_info$latlong)
   radius_arg <- if (identical(transformation, "iso")) {
     if (isTRUE(coord_info$latlong)) radius / .SPUR_EARTH_CIRCUMFERENCE_M else as.double(radius)

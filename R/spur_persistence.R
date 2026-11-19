@@ -39,7 +39,10 @@ spur_persistence <- function(Z, distmat, emat, level) {
     y_info = y_info
   )
 
-  ii <- as.vector(pv_mat > (1 - level))
+  # Compare the complement from the simulation count so equality at nominal
+  # levels such as 90% stays excluded by the strict acceptance rule.
+  non_exceedances <- dims$nrep - round(pv_mat * dims$nrep)
+  ii <- as.vector(non_exceedances / dims$nrep < level)
   hl <- hl_grid_ho[ii]
   if (!length(hl)) {
     return(list(

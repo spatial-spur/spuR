@@ -14,17 +14,31 @@ guide to these methods can be found in
 
 ## Installation
 
-Install from GitHub:
+For this development checkout, install from the workspace root with Cargo on your PATH.
+Set `SPATIAL_RUST=0` for a pure R build; `backend = "fallback"` selects pure R at
+runtime in either build.
+
+```sh
+R CMD INSTALL scpcR
+R CMD INSTALL spuR
+```
+
+For a standalone source archive that can build Rust without network access, run
+`bash spatial-rust/scripts/build_r_source.sh scpcR ../r-source` and
+`bash spatial-rust/scripts/build_r_source.sh spuR ../r-source`. Install the
+scpcR archive before the spuR archive.
+
+On Windows install the Rust target matching Rtools and your R installation.
+The build uses `x86_64-pc-windows-gnu` for x86-64 R or
+`aarch64-pc-windows-gnullvm` for ARM64 R. Set `WIN_TARGET` to override
+the selection. Windows native execution still needs validation.
+
+For the published version:
 
 ```r
-# install.packages("remotes")
 remotes::install_github("spatial-spur/scpcR@v0.1.3")
 remotes::install_github("spatial-spur/spuR@v0.1.2")
 ```
-
-GitHub installation does not guarantee the declared `scpcR` version is
-updated, so make sure both versions are up to date by installing the tagged
-version explicitly.
 
 ## Usage
 

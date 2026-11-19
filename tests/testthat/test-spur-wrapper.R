@@ -1,13 +1,3 @@
-testthat::test_that("rewrite_formula_with_prefix prefixes a simple additive formula", {
-  rewrite_formula <- getFromNamespace(".rewrite_formula_with_prefix", "spuR")
-  out <- rewrite_formula(am ~ fracblack + racseg, "h_")
-
-  testthat::expect_identical(
-    format(out),
-    format(h_am ~ h_fracblack + h_racseg)
-  )
-})
-
 testthat::test_that("spur returns the same pipeline as manual composition", {
   df <- spur_fixture_data(n = 180L)
 
@@ -167,4 +157,42 @@ testthat::test_that("print.spur_result matches summary.spur_result", {
   summary_txt <- paste(capture.output(summary(out)), collapse = "\n")
 
   testthat::expect_identical(print_txt, summary_txt)
+})
+testthat::test_that("spur transforms the evaluated model on one sample and consumes one draw matrix", {
+  df <- spur_fixture_data(n = 75L)
+  df$positive <- df$am - min(df$am) + 1
+  df$positive[c(1L, 4L)] <- NA_real_
+  df$fracblack[9L] <- NA_real_
+  df$lon[c(1L, 9L)] <- NA_real_
+  f <- log(positive) ~ fracblack * racseg
+  q <- 8L
+  nrep <- 500L
+  set.seed(42)
+  .draw_emat(q, nrep)
+  expected_rng <- .Random.seed
+
+  out <- spur(f, df, q, nrep, lon = "lon", lat = "lat", seed = 42,
+              avc = 0.2, uncond = TRUE, backend = "fallback")
+  testthat::expect_identical(.Random.seed, expected_rng)
+  original <- stats::lm(f, df)
+  sample <- match(rownames(model.frame(original)), rownames(df))
+  transformed <- out$fits$transformed$model
+  testthat::expect_identical(rownames(model.frame(transformed)), rownames(model.frame(original)))
+  coords <- as.matrix(df[sample, c("lat", "lon")])
+  expected <- lbm_gls_matrix(coords, TRUE) %*% model.response(model.frame(original))
+  testthat::expect_equal(
+    as.numeric(model.response(model.frame(transformed))),
+    as.numeric(expected - mean(expected)), tolerance = 1e-10
+  )
+  testthat::expect_true("fracblack:racseg" %in% out$fits$transformed$term_names)
+  testthat::expect_identical(unname(out$stage_backends), rep("fallback", 7L))
+  if (is.loaded("wrap__rust_run_spur_pipeline", PACKAGE = "spuR")) {
+    native <- spur(f, df, q, nrep, lon = "lon", lat = "lat", seed = 42,
+                   avc = 0.2, uncond = TRUE, backend = "rust", nthreads = 1L)
+    testthat::expect_identical(.Random.seed, expected_rng)
+    testthat::expect_identical(unname(native$stage_backends), rep("rust", 7L))
+    testthat::expect_equal(
+      coef(native$fits$transformed$model), coef(transformed), tolerance = 1e-9
+    )
+  }
 })

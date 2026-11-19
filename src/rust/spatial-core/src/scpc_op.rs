@@ -1165,7 +1165,7 @@ pub fn run_approx_scpc(req: &ApproxScpcRequest<'_>) -> Result<ExactScpcOutput, C
                 lb.state,
             )?;
             if !is_psd_prefix_grid(&oms, full_width, qmax) {
-                return Err(CoreError::tied(
+                return Err(CoreError::invalid_sampled_covariance(
                     "sampled SCPC covariance grid is not positive semidefinite",
                 ));
             }
@@ -1221,7 +1221,7 @@ pub fn run_approx_scpc(req: &ApproxScpcRequest<'_>) -> Result<ExactScpcOutput, C
                     seeds[j],
                 )?;
                 if !is_psd_prefix_grid(&omsx, width, q) {
-                    return Err(CoreError::tied(
+                    return Err(CoreError::invalid_sampled_covariance(
                         "sampled conditional SCPC covariance grid is not positive semidefinite",
                     ));
                 }
@@ -1346,7 +1346,7 @@ mod tests {
 
     fn load_bench_csv(name: &str) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         let path = format!(
-            "{}/../../../verification/data/{}",
+            "{}/tests/fixtures/{}",
             env!("CARGO_MANIFEST_DIR"),
             name
         );

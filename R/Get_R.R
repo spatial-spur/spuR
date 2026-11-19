@@ -57,10 +57,12 @@ get_r <- function(sig, qmax) {
   vectors <- eig_out$vectors[, idx, drop = FALSE][, seq_len(qmax), drop = FALSE]
 
   # Canonicalize eigenvector signs to match spatial-core: largest-magnitude
-  # entry positive (earliest index breaks exact ties).
+  # entry positive (earliest index within a roundoff tolerance).
   for (j in seq_len(qmax)) {
     col <- vectors[, j]
-    max_idx <- which.max(abs(col))
+    magnitudes <- abs(col)
+    peak <- max(magnitudes)
+    max_idx <- which(magnitudes >= peak - 64 * .Machine$double.eps * peak)[1L]
     if (length(max_idx) == 1L && col[max_idx] < 0) {
       vectors[, j] <- -col
     }

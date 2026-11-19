@@ -11,9 +11,10 @@ use spatial_core::{
 
 fn core_err(err: CoreError) -> Error {
     match err.kind() {
-        ErrorKind::InvalidInput => Error::Other(err.message().to_string()),
+        ErrorKind::InvalidInput | ErrorKind::TiedEigenspace | ErrorKind::InvalidSampledCovariance => {
+            Error::Other(err.message().to_string())
+        }
         ErrorKind::UnsupportedCase => Error::Other(format!("unsupported case: {}", err.message())),
-        ErrorKind::TiedEigenspace => Error::Other(format!("tied eigenspace: {}", err.message())),
         ErrorKind::CalibrationFailed => {
             Error::Other(format!("calibration failed: {}", err.message()))
         }
@@ -21,6 +22,50 @@ fn core_err(err: CoreError) -> Error {
             Error::Other(format!("degenerate variance: {}", err.message()))
         }
         ErrorKind::InternalFailure => Error::Other(format!("internal failure: {}", err.message())),
+    }
+}
+
+/// The extendr result envelope carries a classed R condition for approximate
+/// SCPC outcomes that the host needs to distinguish at dispatch.
+pub struct ApproxScpcError {
+    message: String,
+    class: Option<&'static str>,
+}
+
+impl From<Error> for ApproxScpcError {
+    fn from(error: Error) -> Self {
+        Self {
+            message: error.to_string(),
+            class: None,
+        }
+    }
+}
+
+impl From<CoreError> for ApproxScpcError {
+    fn from(error: CoreError) -> Self {
+        let class = match error.kind() {
+            ErrorKind::TiedEigenspace => Some("spatial_tied_eigenspace"),
+            ErrorKind::InvalidSampledCovariance => Some("spatial_invalid_sampled_covariance"),
+            _ => None,
+        };
+        Self {
+            message: core_err(error).to_string(),
+            class,
+        }
+    }
+}
+
+impl From<ApproxScpcError> for Robj {
+    fn from(error: ApproxScpcError) -> Self {
+        if let Some(class) = error.class {
+            let mut condition = list!(message = error.message, call = NULL);
+            condition
+                .set_class([class, "error", "condition"])
+                .expect("failed to set the SCPC error condition class");
+            condition.into()
+        } else {
+            error.message.into()
+        }
     }
 }
 
@@ -417,16 +462,14 @@ pub fn run_approx_scpc_r_impl(
     landmarks: i32,
     samples: i32,
     pair_count: i32,
-) -> extendr_api::Result<List> {
+) -> std::result::Result<List, ApproxScpcError> {
     if !seed.is_finite() || seed < 0.0 || seed >= 4_294_967_296.0 || seed.fract() != 0.0 {
-        return Err(Error::Other(
-            "`seed` must be an integer-valued number in [0, 2^32).".into(),
-        ));
+        return Err(
+            Error::Other("`seed` must be an integer-valued number in [0, 2^32).".into()).into(),
+        );
     }
     if landmarks < 2 || samples < 1 || pair_count < 1 {
-        return Err(Error::Other(
-            "invalid Nystrom landmark or sampling parameters.".into(),
-        ));
+        return Err(Error::Other("invalid Nystrom landmark or sampling parameters.".into()).into());
     }
     let inputs = parse_r_scpc_inputs(
         coords, latlong, uncond, coef, wj, xj, xjs, proj_u, proj_v, nthreads, cluster_id, fe_id,
@@ -459,8 +502,8 @@ pub fn run_approx_scpc_r_impl(
         pair_count: pair_count as usize,
     };
 
-    let out = run_approx_scpc(&req).map_err(core_err)?;
-    build_r_scpc_list(out, inputs.n, inputs.k_use)
+    let out = run_approx_scpc(&req)?;
+    Ok(build_r_scpc_list(out, inputs.n, inputs.k_use)?)
 }
 
 #[cfg(feature = "exports")]
@@ -598,7 +641,7 @@ pub fn rust_run_approx_scpc(
     landmarks: i32,
     samples: i32,
     pair_count: i32,
-) -> extendr_api::Result<List> {
+) -> std::result::Result<List, ApproxScpcError> {
     run_approx_scpc_r_impl(
         coords,
         latlong,
@@ -1243,7 +1286,8 @@ mod tests {
         let cases = [
             (CoreError::invalid_input("bad arg"), "bad arg"),
             (CoreError::unsupported("approx"), "unsupported case: approx"),
-            (CoreError::tied("ambiguous"), "tied eigenspace: ambiguous"),
+            (CoreError::tied("ambiguous"), "ambiguous"),
+            (CoreError::invalid_sampled_covariance("not psd"), "not psd"),
             (CoreError::calibration("no root"), "calibration failed: no root"),
             (CoreError::degenerate("zero var"), "degenerate variance: zero var"),
             (CoreError::internal("lapack"), "internal failure: lapack"),
@@ -1254,5 +1298,25 @@ mod tests {
                 other => panic!("unexpected Error variant: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn approx_scpc_error_sets_expected_classes_and_messages() {
+        let tied = ApproxScpcError::from(CoreError::tied("tied basis"));
+        assert_eq!(tied.class, Some("spatial_tied_eigenspace"));
+        assert_eq!(tied.message, "tied basis");
+
+        let invalid_cov =
+            ApproxScpcError::from(CoreError::invalid_sampled_covariance("indefinite grid"));
+        assert_eq!(invalid_cov.class, Some("spatial_invalid_sampled_covariance"));
+        assert_eq!(invalid_cov.message, "indefinite grid");
+
+        let other_core = ApproxScpcError::from(CoreError::degenerate("zero var"));
+        assert_eq!(other_core.class, None);
+        assert_eq!(other_core.message, "degenerate variance: zero var");
+
+        let extendr_err = ApproxScpcError::from(Error::Other("direct msg".to_string()));
+        assert_eq!(extendr_err.class, None);
+        assert_eq!(extendr_err.message, "direct msg");
     }
 }

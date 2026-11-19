@@ -415,7 +415,7 @@ fn combine_landmarks(
         );
         let norm = component.iter().map(|v| v * v).sum::<f64>().sqrt();
         if !norm.is_finite() || norm <= f64::EPSILON.sqrt() {
-            return Err(CoreError::tied(
+            return Err(CoreError::degenerate(
                 "degenerate principal direction in Nystrom landmark consolidation",
             ));
         }
@@ -447,26 +447,42 @@ fn combine_landmarks(
 /// Check whether every scale matrix's leading `(q + 1) x (q + 1)` submatrix is positive semidefinite
 /// via pivoted Cholesky factorization.
 pub(crate) fn is_psd_prefix_grid(omegas: &[f64], width: usize, q: usize) -> bool {
-    let k = q + 1;
-    if k == 0 || k > width || omegas.is_empty() || omegas.len() % (width * width) != 0 {
+    let Some(k) = q.checked_add(1) else {
+        return false;
+    };
+    let Ok(matrix_len) = checked_len(&[width, width]) else {
+        return false;
+    };
+    if k > width || omegas.is_empty() || omegas.len() % matrix_len != 0 {
         return false;
     }
     let mut diag = vec![0.0_f64; k];
     let mut perm = vec![0usize; k];
     let mut factors = vec![0.0_f64; k * k];
 
-    for omega in omegas.chunks_exact(width * width) {
-        let mut max_diag = 0.0_f64;
+    for omega in omegas.chunks_exact(matrix_len) {
+        let mut scale = 0.0_f64;
+        for i in 0..k {
+            for &value in &omega[i * width..i * width + k] {
+                if !value.is_finite() {
+                    return false;
+                }
+                scale = scale.max(value.abs());
+            }
+        }
+        if scale == 0.0 {
+            continue;
+        }
+        let tol = 32.0 * (k as f64) * f64::EPSILON;
         for i in 0..k {
             perm[i] = i;
-            let d = omega[i * width + i];
-            if !d.is_finite() {
-                return false;
+            diag[i] = omega[i * width + i] / scale;
+            for j in 0..i {
+                if (omega[i * width + j] / scale - omega[j * width + i] / scale).abs() > tol {
+                    return false;
+                }
             }
-            diag[i] = d;
-            max_diag = max_diag.max(d.abs());
         }
-        let tol = 32.0 * (k as f64) * f64::EPSILON * max_diag;
         if diag.iter().any(|&d| d < -tol) {
             return false;
         }
@@ -480,9 +496,22 @@ pub(crate) fn is_psd_prefix_grid(omegas: &[f64], width: usize, q: usize) -> bool
                     p = cand;
                 }
             }
-            if best <= 0.0 {
+            if best <= tol {
                 if diag[step..].iter().any(|&v| v < -tol) {
                     return false;
+                }
+                // A zero Schur diagonal can only have zero covariances in its
+                // remaining row/column. Pivot diagonals alone miss e.g. [0, 1; 1, 0].
+                for i in step..k {
+                    for j in step..i {
+                        let dot: f64 = (0..step)
+                            .map(|l| factors[i * k + l] * factors[j * k + l])
+                            .sum();
+                        let residual = omega[perm[i] * width + perm[j]] / scale - dot;
+                        if !residual.is_finite() || residual.abs() > tol {
+                            return false;
+                        }
+                    }
                 }
                 break;
             }
@@ -497,7 +526,7 @@ pub(crate) fn is_psd_prefix_grid(omegas: &[f64], width: usize, q: usize) -> bool
                 let dot: f64 = (0..step)
                     .map(|j| factors[i * k + j] * factors[step * k + j])
                     .sum();
-                let val = (omega[perm[i] * width + perm[step]] - dot) / root;
+                let val = (omega[perm[i] * width + perm[step]] / scale - dot) / root;
                 factors[i * k + step] = val;
                 diag[i] -= val * val;
                 if diag[i] < -tol {
@@ -702,6 +731,26 @@ mod tests {
             }
         }
         assert!(is_psd_prefix_grid(&grid, 3, 2));
+    }
+
+    #[test]
+    fn sampled_psd_check_is_scale_relative_and_checks_the_full_schur_remainder() {
+        let singular = [1.0, 1.0, 1.0, 1.0];
+        let indefinite = [0.0, 1.0, 1.0, 0.0];
+        // Eliminating one pivot leaves [0, 1; 1, 0] rather than a zero block.
+        let indefinite_schur = [1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 2.0, 1.0];
+        for scale in [1e-200, 1.0, 1e200] {
+            assert!(is_psd_prefix_grid(&singular.map(|v| v * scale), 2, 1));
+            assert!(!is_psd_prefix_grid(&indefinite.map(|v| v * scale), 2, 1));
+            assert!(!is_psd_prefix_grid(
+                &indefinite_schur.map(|v| v * scale),
+                3,
+                2
+            ));
+        }
+        assert!(is_psd_prefix_grid(&[0.0; 4], 2, 1));
+        assert!(!is_psd_prefix_grid(&[1.0, 0.1, 0.2, 1.0], 2, 1));
+        assert!(!is_psd_prefix_grid(&[1.0, 0.0, 0.0, f64::NAN], 2, 1));
     }
 
     #[test]

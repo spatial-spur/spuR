@@ -182,19 +182,27 @@
   if (!inherits(formula, "formula")) {
     stop("`formula` must be a formula.")
   }
+  frame <- stats::model.frame(formula, data = data, na.action = stats::na.pass)
+  if (!is.null(stats::model.offset(frame))) {
+    stop("Offsets are not supported by spurtransform().")
+  }
 
-  vars <- unique(all.vars(formula))
-  if (!length(vars)) {
+  values <- stats::model.matrix(attr(frame, "terms"), data = frame)
+  values <- values[, colnames(values) != "(Intercept)", drop = FALSE]
+  if (length(formula) == 3L) {
+    response <- stats::model.response(frame)
+    if (!is.numeric(response) || NCOL(response) != 1L) {
+      stop("The formula response must be univariate and numeric.")
+    }
+    labels <- c(paste(deparse(formula[[2L]]), collapse = ""), colnames(values))
+    values <- cbind(response, values)
+    colnames(values) <- labels
+  }
+  if (ncol(values) == 0L) {
     stop("`formula` must reference at least one variable to transform.")
   }
-  if (!all(vars %in% names(data))) {
-    stop("At least one variable in `formula` was not found in data.")
-  }
-  if (!all(vapply(data[vars], is.numeric, logical(1)))) {
-    stop("All variables in `formula` must be numeric.")
-  }
-
-  vars
+  colnames(values) <- make.names(colnames(values), unique = TRUE)
+  values
 }
 
 #' SPUR I(0) Test
@@ -706,15 +714,12 @@ spurhalflife <- function(formula,
   }
 
   if (!used_rust) {
-    distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
-    ci <- spur_persistence(Z = z, distmat = distmat, emat = emat, level = level / 100)
+    distances <- .spur_distance_setup(coord_info$coords, coord_info$latlong)
+    ci <- spur_persistence(Z = z, distmat = distances$normalized, emat = emat, level = level / 100)
     ci$backend <- "fallback"
     ci$tied <- tied_from_rust
-    max_dist <- if (isTRUE(coord_info$latlong)) {
-      max(get_distmat_lat_lon(coord_info$coords)) * .SPUR_HALFLIFE_SCALE_M
-    } else {
-      max(get_distmat_euclidean(coord_info$coords))
-    }
+    max_dist <- distances$max_dist
+    if (isTRUE(coord_info$latlong)) max_dist <- max_dist * .SPUR_HALFLIFE_SCALE_M
   }
 
   ci_l <- ci$hl_ci_lower
@@ -739,12 +744,7 @@ spurhalflife <- function(formula,
   if (isTRUE(verbose)) {
     cat(sprintf("Spatial half life %s%% confidence interval (in %s)\n", level, units))
     cat("---------------------------------------\n")
-    cat(sprintf("Lower bound: %9.4f\n", ci_l))
-    if (is.na(ci_u)) {
-      cat("Upper bound:    inf\n")
-    } else {
-      cat(sprintf("Upper bound: %9.4f\n", ci_u))
-    }
+    .print_halflife_bounds(ci_l, ci_u)
     cat("---------------------------------------\n")
   }
 
@@ -766,10 +766,10 @@ spurhalflife <- function(formula,
 #'
 #' Formula interface for `spurtransform`.
 #'
-#' @param formula Formula listing variables to transform. All variables
-#'   in the formula are transformed. Both one-sided (`~ y + x1 + x2`)
-#'   and two-sided (`y ~ x1 + x2`) formulas work, so you can pass your
-#'   analysis formula directly.
+#' @param formula One-sided (`~ y + x1 + x2`) or two-sided (`y ~ x1 + x2`)
+#'   formula. The evaluated response and design columns are transformed,
+#'   including interactions and expressions such as `log(y)`. The
+#'   intercept is excluded. Evaluated column names are made syntactic.
 #' @param data A data frame containing variables and coordinates.
 #' @param prefix Prefix for transformed variable names.
 #' @param transformation One of `"lbmgls"`, `"nn"`, `"iso"`, or `"cluster"`.
@@ -816,7 +816,7 @@ spurtransform <- function(formula,
   if (!is.data.frame(data)) {
     stop("`data` must be a data frame.")
   }
-  vars <- .parse_transform_formula(formula = formula, data = data)
+  values <- .parse_transform_formula(formula = formula, data = data)
 
   allowed <- c("lbmgls", "nn", "iso", "cluster")
   if (!transformation %in% allowed) {
@@ -850,179 +850,51 @@ spurtransform <- function(formula,
   rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_transform")
   use_rust_path <- !identical(backend_resolved, "fallback") && rust_loaded
 
-  base_sample <- if (isTRUE(separately)) {
-    rep(TRUE, nrow(data))
-  } else {
-    stats::complete.cases(data[vars])
-  }
-
   cluster_group <- if (transformation == "cluster") {
-    as.numeric(factor(data[[clustvar]]))
+    factor(data[[clustvar]])
   } else {
     NULL
   }
 
-  result <- data
-
-  if (!isTRUE(separately)) {
-    use_rows <- base_sample
-    if (transformation == "cluster") {
-      use_rows <- use_rows & !is.na(data[[clustvar]])
-    }
-
-    if (use_rust_path && any(use_rows) && (sum(use_rows) >= 2L || identical(backend_resolved, "rust"))) {
-      for (var in vars) {
-        out_var <- paste0(prefix, var)
-        if (out_var %in% names(result) && !isTRUE(replace)) {
-          stop(sprintf("%s already defined or invalid name", out_var))
-        }
-      }
-      tr_mat <- .transform_vars_rust(
-        data = data,
-        vars = vars,
-        use_rows = use_rows,
-        transformation = transformation,
-        radius = radius,
-        cluster_group = cluster_group,
-        lon = lon,
-        lat = lat,
-        coords_euclidean = coords_euclidean,
-        verbose = verbose,
-        nthreads_resolved = nthreads_resolved
-      )
-      for (j in seq_along(vars)) {
-        out_var <- paste0(prefix, vars[[j]])
-        result_vec <- rep(NA_real_, nrow(data))
-        result_vec[use_rows] <- as.numeric(tr_mat[, j])
-        result[[out_var]] <- result_vec
-      }
-      return(result)
-    }
-
-    shared <- NULL
-    if (any(use_rows)) {
-      coord_info <- .resolve_spur_coords(
-        data = data,
-        use_rows = use_rows,
-        lon = lon,
-        lat = lat,
-        coords_euclidean = coords_euclidean,
-        verbose = verbose
-      )
-
-      cluster_vals <- if (transformation == "cluster") {
-        get_cluster_matrix(cluster_values = cluster_group, use_rows = use_rows)
-      } else {
-        NULL
-      }
-
-      shared <- list(
-        use_rows = use_rows,
-        H = make_transform(
-          s = coord_info$coords,
-          transformation = transformation,
-          radius = radius,
-          cluster = cluster_vals,
-          latlong = coord_info$latlong
-        )
-      )
-    } else {
-      shared <- list(use_rows = use_rows, H = NULL)
-    }
-
-    for (var in vars) {
-      out_var <- paste0(prefix, var)
-      if (out_var %in% names(result) && !isTRUE(replace)) {
-        stop(sprintf("%s already defined or invalid name", out_var))
-      }
-      if (!any(shared$use_rows)) {
-        warning(sprintf("No valid observations for variable: %s", var))
-        next
-      }
-      transformed <- spur_transform_vector(
-        data = data,
-        varname = var,
-        H = shared$H,
-        transformation = transformation,
-        use_rows = shared$use_rows
-      )
-      result_vec <- rep(NA_real_, nrow(data))
-      result_vec[shared$use_rows] <- transformed
-      result[[out_var]] <- result_vec
-    }
-    return(result)
+  output_names <- paste0(prefix, colnames(values))
+  clashes <- intersect(output_names, names(data))
+  if (!isTRUE(replace) && length(clashes)) {
+    stop(sprintf("%s already defined or invalid name", clashes[[1L]]))
   }
 
-  for (var in vars) {
-    out_var <- paste0(prefix, var)
-    if (out_var %in% names(result) && !isTRUE(replace)) {
-      stop(sprintf("%s already defined or invalid name", out_var))
-    }
-
-    use_rows <- base_sample & !is.na(data[[var]])
-    if (transformation == "cluster") {
-      use_rows <- use_rows & !is.na(data[[clustvar]])
-    }
-
+  result <- data
+  all_columns <- seq_len(ncol(values))
+  groups <- if (isTRUE(separately)) as.list(all_columns) else list(all_columns)
+  for (columns in groups) {
+    y_mat <- values[, columns, drop = FALSE]
+    use_rows <- stats::complete.cases(y_mat)
+    if (!is.null(cluster_group)) use_rows <- use_rows & !is.na(cluster_group)
     if (!any(use_rows)) {
-      warning(sprintf("No valid observations for variable: %s", var))
+      for (term in colnames(y_mat)) warning(sprintf("No valid observations for variable: %s", term))
       next
     }
 
-    if (use_rust_path && (sum(use_rows) >= 2L || identical(backend_resolved, "rust"))) {
-      tr_mat <- .transform_vars_rust(
-        data = data,
-        vars = var,
-        use_rows = use_rows,
-        transformation = transformation,
-        radius = radius,
-        cluster_group = cluster_group,
-        lon = lon,
-        lat = lat,
-        coords_euclidean = coords_euclidean,
-        verbose = verbose,
-        nthreads_resolved = nthreads_resolved
-      )
-      result_vec <- rep(NA_real_, nrow(data))
-      result_vec[use_rows] <- as.numeric(tr_mat[, 1L])
-      result[[out_var]] <- result_vec
-      next
+    y_mat <- y_mat[use_rows, , drop = FALSE]
+    if (any(!is.finite(y_mat))) {
+      stop("Evaluated transformation variables must be finite on the selected sample.")
     }
-
-    coord_info <- .resolve_spur_coords(
-      data = data,
-      use_rows = use_rows,
-      lon = lon,
-      lat = lat,
-      coords_euclidean = coords_euclidean,
-      verbose = verbose
-    )
-
-    cluster_vals <- if (transformation == "cluster") {
-      get_cluster_matrix(cluster_values = cluster_group, use_rows = use_rows)
+    coord_info <- if (is.null(cluster_group)) {
+      .resolve_spur_coords(data, use_rows, lon, lat, coords_euclidean, verbose)
     } else {
-      NULL
+      list(coords = NULL, latlong = FALSE)
+    }
+    cluster <- cluster_group[use_rows]
+    transformed <- if (use_rust_path && (nrow(y_mat) >= 2L || identical(backend_resolved, "rust"))) {
+      .transform_vars_rust(y_mat, coord_info, transformation, radius, cluster, nthreads_resolved)
+    } else if (transformation == "lbmgls") {
+      .apply_lbm_transform(.normalized_distmat(coord_info$coords, coord_info$latlong), y_mat)
+    } else {
+      make_transform(coord_info$coords, transformation, radius, cluster, coord_info$latlong) %*% y_mat
     }
 
-    H <- make_transform(
-      s = coord_info$coords,
-      transformation = transformation,
-      radius = radius,
-      cluster = cluster_vals,
-      latlong = coord_info$latlong
-    )
-
-    transformed <- spur_transform_vector(
-      data = data,
-      varname = var,
-      H = H,
-      transformation = transformation,
-      use_rows = use_rows
-    )
-
-    result_vec <- rep(NA_real_, nrow(data))
-    result_vec[use_rows] <- transformed
-    result[[out_var]] <- result_vec
+    out <- matrix(NA_real_, nrow(data), length(columns))
+    out[use_rows, ] <- transformed
+    result[output_names[columns]] <- as.data.frame(out)
   }
 
   result

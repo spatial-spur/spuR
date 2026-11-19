@@ -1,16 +1,21 @@
 TARGET_DIR = rust/target
-WIN_TARGET ?= x86_64-pc-windows-gnu
+ifndef WIN_TARGET
+  R_NATIVE_ARCH := $(shell "$(R_HOME)/bin/Rscript.exe" --vanilla -e "cat(R.version[['arch']])")
+  WIN_TARGET := $(if $(filter aarch64 arm64,$(R_NATIVE_ARCH)),aarch64-pc-windows-gnullvm,x86_64-pc-windows-gnu)
+endif
 LIBDIR = $(TARGET_DIR)/$(WIN_TARGET)/release
 STATLIB = $(LIBDIR)/libspur_rust.a
 
 SPATIAL_RUST ?= 1
 CARGO ?= cargo
-OFFLINE_FLAG = $(if $(wildcard rust/vendor),--offline,)
+VENDOR_ARCHIVE = $(wildcard rust/vendor.tar.xz)
+CARGO_VENDOR_FLAGS = $(if $(VENDOR_ARCHIVE),--offline --config target/vendor-config.toml,$(if $(wildcard rust/vendor),--offline,))
 
 ifeq ($(strip $(SPATIAL_RUST)),0)
   RUST_AVAILABLE :=
 else
-  RUST_AVAILABLE := $(shell command -v "$(CARGO)" 2>/dev/null)
+  RUST_TARGET_LIBDIR := $(shell rustc --print target-libdir --target "$(WIN_TARGET)" 2>/dev/null)
+  RUST_AVAILABLE := $(shell test -n "$(RUST_TARGET_LIBDIR)" && test -d "$(RUST_TARGET_LIBDIR)" && command -v "$(CARGO)" 2>/dev/null)
 endif
 
 RUST_SYS_LIBS = -lws2_32 -ladvapi32 -luserenv -lbcrypt -lntdll -lm
@@ -39,4 +44,5 @@ $(SHLIB): $(RUST_DEPS)
 .PHONY: $(STATLIB)
 $(STATLIB):
 	"$(CARGO)" --version && rustc --version
-	CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build --release --target $(WIN_TARGET) --manifest-path rust/Cargo.toml $(OFFLINE_FLAG) --locked
+	$(if $(VENDOR_ARCHIVE),tar -xf "$(VENDOR_ARCHIVE)" -C rust && mkdir -p "$(TARGET_DIR)" && cp rust/vendor-config.toml "$(TARGET_DIR)/vendor-config.toml",:)
+	cd rust && CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build --release --target $(WIN_TARGET) $(CARGO_VENDOR_FLAGS) --locked

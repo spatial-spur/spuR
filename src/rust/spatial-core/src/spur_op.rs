@@ -1,12 +1,13 @@
 //! Whole-operation SPUR diagnostics, half-life confidence intervals, and spatial transforms.
 
-use crate::distance::{distance_matrix, lower_triangle, Metric};
+use crate::distance::{distance_matrix, lower_triangle, Distances, Metric};
 use crate::threads::{is_serial, run_with_threads};
 use crate::{basis, checked_len, linalg, CoreError};
 use rayon::prelude::*;
 
 const SUM_CHUNK_SIZE: usize = 32_768;
 const TILE_COLS: usize = 1024;
+const MAX_HALFLIFE_TILE_BYTES: usize = 4 * 1024 * 1024;
 const OMEGA_GRID_BLK: usize = 256;
 const MAX_PAIR_CONTRIB_DOUBLES: usize = 16_000_000;
 const SZ_LEVELS: [f64; 3] = [0.01, 0.05, 0.10];
@@ -315,10 +316,7 @@ impl SpurGeometry {
         };
 
         let mut flat_out = vec![0.0_f64; nc * qq];
-        if !is_serial()
-            && pairs.len() >= 4
-            && pairs.len() * nc * qq <= MAX_PAIR_CONTRIB_DOUBLES
-        {
+        if !is_serial() && pairs.len() >= 4 && pairs.len() * nc * qq <= MAX_PAIR_CONTRIB_DOUBLES {
             let stride = nc * qq;
             let mut pair_contribs = vec![0.0_f64; pairs.len() * stride];
             pair_contribs
@@ -682,10 +680,7 @@ fn residual_project_matrix(src: &[f64], qx: &[f64], n: usize, k_x: usize, q: usi
     linalg::multiply(qx, src, &mut qt_src, k_x, n, q, true);
     let mut q_qt_src = vec![0.0_f64; n * q];
     linalg::multiply(qx, &qt_src, &mut q_qt_src, n, k_x, q, false);
-    src.iter()
-        .zip(&q_qt_src)
-        .map(|(&s, &p)| s - p)
-        .collect()
+    src.iter().zip(&q_qt_src).map(|(&s, &p)| s - p).collect()
 }
 
 fn orthonormal_design_basis(x_in: &[f64], n: usize, k_x: usize) -> Result<Vec<f64>, CoreError> {
@@ -839,9 +834,13 @@ fn covariance_shapes_differ(a: &[f64], b: &[f64], q: usize) -> Result<bool, Core
     let ta: f64 = (0..q).map(|i| a[i * q + i]).sum();
     let tb: f64 = (0..q).map(|i| b[i * q + i]).sum();
     if !ta.is_finite() || ta <= 0.0 || !tb.is_finite() || tb <= 0.0 {
-        return Err(CoreError::degenerate("SPUR covariance has non-positive trace"));
+        return Err(CoreError::degenerate(
+            "SPUR covariance has non-positive trace",
+        ));
     }
-    Ok(a.iter().zip(b).any(|(&x, &y)| (x / ta - y / tb).abs() > 1e-12))
+    Ok(a.iter()
+        .zip(b)
+        .any(|(&x, &y)| (x / ta - y / tb).abs() > 1e-12))
 }
 
 fn quantile_type7_inplace(vals: &mut [f64], prob: f64) -> f64 {
@@ -942,8 +941,24 @@ impl<'a> PowQfBase<'a> {
         let alt = factor_omega(om1, q)?;
         let mut ho = vec![0.0_f64; q * q];
         let mut ha = vec![0.0_f64; q * q];
-        linalg::multiply(&alt.ch_omi.upper, &self.ch_om0_lower, &mut ho, q, q, q, false);
-        linalg::multiply(&self.ch_om0i_upper, &alt.ch_om.lower, &mut ha, q, q, q, false);
+        linalg::multiply(
+            &alt.ch_omi.upper,
+            &self.ch_om0_lower,
+            &mut ho,
+            q,
+            q,
+            q,
+            false,
+        );
+        linalg::multiply(
+            &self.ch_om0i_upper,
+            &alt.ch_om.lower,
+            &mut ha,
+            q,
+            q,
+            q,
+            false,
+        );
 
         let mut qa_o = vec![0.0_f64; nrep];
         let mut qo_a = vec![0.0_f64; nrep];
@@ -983,9 +998,7 @@ impl<'a> PowQfBase<'a> {
             lr_o[k] = self.qe[k] / qa_o[k];
         }
         let cv = quantile_type7_inplace(&mut lr_o, 0.95);
-        let exceed = (0..nrep)
-            .filter(|&k| (qo_a[k] / self.qe[k]) > cv)
-            .count();
+        let exceed = (0..nrep).filter(|&k| (qo_a[k] / self.qe[k]) > cv).count();
         Ok((exceed as f64) / (nrep as f64))
     }
 }
@@ -1006,17 +1019,14 @@ fn select_leading_basis(
     let mut r_mat = vec![0.0_f64; n * q];
     for j in 0..q {
         let src = &eigen.vectors[j * n..(j + 1) * n];
-        // Canonicalize each eigenvector's sign across LAPACK/Jacobi/host backends
-        // (largest-magnitude entry positive, earliest index breaks exact ties).
-        let mut max_idx = 0usize;
-        let mut max_abs = -1.0_f64;
-        for (i, &val) in src.iter().enumerate() {
-            let a = val.abs();
-            if a > max_abs {
-                max_abs = a;
-                max_idx = i;
-            }
-        }
+        // Small solver roundoff can swap equal-magnitude entries. Use the
+        // earliest entry within a relative tolerance of the maximum.
+        let max_abs = src.iter().map(|v| v.abs()).fold(0.0, f64::max);
+        let tolerance = 64.0 * f64::EPSILON * max_abs;
+        let max_idx = src
+            .iter()
+            .position(|v| max_abs - v.abs() <= tolerance)
+            .expect("an eigenvector has a largest-magnitude entry");
         let sign = if src[max_idx] < 0.0 { -1.0 } else { 1.0 };
         for i in 0..n {
             r_mat[i * q + j] = src[i] * sign;
@@ -1072,16 +1082,19 @@ fn prepare_y_projections(
         for i in 0..n {
             y_dm[i * n_y + j] /= max_d;
         }
-        y_dm_norm[j] = (0..n).map(|i| y_dm[i * n_y + j].powi(2)).sum::<f64>().sqrt();
+        y_dm_norm[j] = (0..n)
+            .map(|i| y_dm[i * n_y + j].powi(2))
+            .sum::<f64>()
+            .sqrt();
     }
     let mut p_mat = vec![0.0_f64; q * n_y];
     linalg::multiply(basis_r, &y_dm, &mut p_mat, q, n, n_y, true);
     for j in 0..n_y {
-        let p_max = (0..q).map(|r| p_mat[r * n_y + j].abs()).fold(0.0_f64, f64::max);
+        let p_max = (0..q)
+            .map(|r| p_mat[r * n_y + j].abs())
+            .fold(0.0_f64, f64::max);
         if !p_max.is_finite() || p_max == 0.0 {
-            return Err(CoreError::degenerate(
-                "projected SPUR vector has zero norm",
-            ));
+            return Err(CoreError::degenerate("projected SPUR vector has zero norm"));
         }
         let p_norm = p_max
             * (0..q)
@@ -1089,9 +1102,7 @@ fn prepare_y_projections(
                 .sum::<f64>()
                 .sqrt();
         if !p_norm.is_finite() || p_norm <= 1e-12 * y_dm_norm[j] {
-            return Err(CoreError::degenerate(
-                "projected SPUR vector has zero norm",
-            ));
+            return Err(CoreError::degenerate("projected SPUR vector has zero norm"));
         }
     }
     Ok(p_mat)
@@ -1123,13 +1134,7 @@ fn calibrate_ha_i0(
     nrep: usize,
 ) -> Result<f64, CoreError> {
     let base = PowQfBase::new(om_ho, emat, q, nrep)?;
-    let mix = |g: f64| -> Vec<f64> {
-        om_i0
-            .iter()
-            .zip(om_bm)
-            .map(|(&a, &b)| a + g * b)
-            .collect()
-    };
+    let mix = |g: f64| -> Vec<f64> { om_i0.iter().zip(om_bm).map(|(&a, &b)| a + g * b).collect() };
 
     let mut pow = 1.0_f64;
     let mut gtry = 1.0_f64;
@@ -1341,8 +1346,7 @@ fn eval_observed_lr(
 fn build_rho_grid() -> Vec<f64> {
     (0..RHO_GRID_LEN)
         .map(|i| {
-            RHO_GRID_MIN
-                + (RHO_GRID_MAX - RHO_GRID_MIN) * (i as f64) / ((RHO_GRID_LEN - 1) as f64)
+            RHO_GRID_MIN + (RHO_GRID_MAX - RHO_GRID_MIN) * (i as f64) / ((RHO_GRID_LEN - 1) as f64)
         })
         .collect()
 }
@@ -1586,16 +1590,7 @@ pub fn run_spur_i0(req: &SpurTestRequest<'_>) -> Result<SpurI0Output, CoreError>
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
         let (basis_r, tied, mr, om_bm) = prepare_lbm_basis(&geom, req.q)?;
         run_spur_i0_from_basis(
-            &mut geom,
-            &basis_r,
-            tied,
-            &mr,
-            &om_bm,
-            req.y,
-            req.n_y,
-            req.emat,
-            req.q,
-            req.nrep,
+            &mut geom, &basis_r, tied, &mr, &om_bm, req.y, req.n_y, req.emat, req.q, req.nrep,
         )
     })?
 }
@@ -1606,16 +1601,7 @@ pub fn run_spur_i1(req: &SpurTestRequest<'_>) -> Result<SpurI1Output, CoreError>
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
         let (basis_r, tied, mr, om_bm) = prepare_lbm_basis(&geom, req.q)?;
         run_spur_i1_from_basis(
-            &mut geom,
-            &basis_r,
-            tied,
-            &mr,
-            &om_bm,
-            req.y,
-            req.n_y,
-            req.emat,
-            req.q,
-            req.nrep,
+            &mut geom, &basis_r, tied, &mr, &om_bm, req.y, req.n_y, req.emat, req.q, req.nrep,
         )
     })?
 }
@@ -1629,16 +1615,7 @@ pub fn run_spur_i0_resid(req: &SpurTestRequest<'_>) -> Result<SpurI0Output, Core
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
         let (basis_r, tied, mr, om_bm) = prepare_resid_basis(&mut geom, x_in, req.k_x, req.q)?;
         run_spur_i0_from_basis(
-            &mut geom,
-            &basis_r,
-            tied,
-            &mr,
-            &om_bm,
-            req.y,
-            req.n_y,
-            req.emat,
-            req.q,
-            req.nrep,
+            &mut geom, &basis_r, tied, &mr, &om_bm, req.y, req.n_y, req.emat, req.q, req.nrep,
         )
     })?
 }
@@ -1652,16 +1629,7 @@ pub fn run_spur_i1_resid(req: &SpurTestRequest<'_>) -> Result<SpurI1Output, Core
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
         let (basis_r, tied, mr, om_bm) = prepare_resid_basis(&mut geom, x_in, req.k_x, req.q)?;
         run_spur_i1_from_basis(
-            &mut geom,
-            &basis_r,
-            tied,
-            &mr,
-            &om_bm,
-            req.y,
-            req.n_y,
-            req.emat,
-            req.q,
-            req.nrep,
+            &mut geom, &basis_r, tied, &mr, &om_bm, req.y, req.n_y, req.emat, req.q, req.nrep,
         )
     })?
 }
@@ -1692,6 +1660,42 @@ fn fast_neg_half_pow(x: f64, q: usize) -> f64 {
         acc *= x.sqrt();
     }
     acc.recip()
+}
+
+fn halflife_tile_size(q: usize, p_pairs: usize, nrep: usize) -> (usize, bool) {
+    // Packed pair products dominate scratch for large q. If even one packed
+    // draw would exceed the budget, use the factor-based path for every draw.
+    let base_per_draw = 2 * q + HL_HA_LEN + 3;
+    let budget = MAX_HALFLIFE_TILE_BYTES / size_of::<f64>();
+    let packed = base_per_draw + p_pairs <= budget;
+    let per_draw = base_per_draw + if packed { p_pairs } else { 0 };
+    ((budget / per_draw).clamp(1, TILE_COLS).min(nrep), packed)
+}
+
+fn quadratic_form_from_upper(upper: &[f64], draws: &[f64], cols: usize, c: usize) -> f64 {
+    let q = draws.len() / cols;
+    upper
+        .chunks_exact(q)
+        .enumerate()
+        .map(|(i, row)| {
+            (i..q)
+                .map(|j| row[j] * draws[j * cols + c])
+                .sum::<f64>()
+                .powi(2)
+        })
+        .sum()
+}
+
+fn log_sum_exp(terms: &[f64]) -> f64 {
+    let max = terms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let scaled_sum = terms.iter().map(|&term| (term - max).exp()).sum::<f64>();
+    max + scaled_sum.ln()
+}
+
+fn accepts_halflife_null(exceedances: usize, nrep: usize, level: f64) -> bool {
+    // Compare the complement from the integer count so an exact grid boundary
+    // is not accepted due to rounding 1 - level.
+    (nrep - exceedances) as f64 / (nrep as f64) < level
 }
 
 pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOutput, CoreError> {
@@ -1816,21 +1820,35 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                 emat_sq[c] += row[c] * row[c];
             }
         }
+        if emat_sq.iter().any(|&v| !v.is_finite() || v <= 0.0) {
+            return Err(CoreError::invalid_input(
+                "half-life simulation draws must have finite positive squared norms",
+            ));
+        }
 
         let p_pairs = q * (q + 1) / 2;
-        let mut w_ha = vec![0.0_f64; HL_HA_LEN * p_pairs];
-        for (j, ha) in ha_factors.iter().enumerate() {
-            let mut kp = 0usize;
-            for b in 0..q {
-                for a in 0..=b {
-                    let val = ha.om_inv[a * q + b];
-                    w_ha[j * p_pairs + kp] = if a == b { val } else { 2.0 * val };
-                    kp += 1;
+        let (max_tile, packed) = halflife_tile_size(q, p_pairs, nrep);
+        let mut w_ha = Vec::new();
+        let mut cancellation_scale = Vec::new();
+        if packed {
+            w_ha.resize(HL_HA_LEN * p_pairs, 0.0);
+            for (j, ha) in ha_factors.iter().enumerate() {
+                let mut kp = 0usize;
+                for b in 0..q {
+                    for a in 0..=b {
+                        let val = ha.om_inv[a * q + b];
+                        w_ha[j * p_pairs + kp] = if a == b { val } else { 2.0 * val };
+                        kp += 1;
+                    }
                 }
+                // Sum of absolute terms is bounded by ||A||_F * ||z||².
+                // Flag positive forms too when cancellation can dominate.
+                let frob = ha.om_inv.iter().map(|v| v * v).sum::<f64>().sqrt();
+                cancellation_scale.push(8.0 * f64::EPSILON * (p_pairs as f64) * frob);
             }
         }
 
-        let eval_null_hl = |ho: &OmegaPairFactor| -> Result<f64, CoreError> {
+        let eval_null_hl = |ho: &OmegaPairFactor| -> Result<usize, CoreError> {
             let mut xc_obs = vec![0.0_f64; q];
             linalg::multiply(&ho.ch_omi.upper, &p_vec, &mut xc_obs, q, q, 1, false);
             let qnorm_obs: f64 = xc_obs.iter().map(|&v| v * v).sum();
@@ -1840,32 +1858,32 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                 ));
             }
             let log_ho_obs = ho.ch_omi.log_sqrt_det - 0.5 * q_f * qnorm_obs.ln();
-            let lr_obs: f64 = ha_x_log
-                .iter()
-                .map(|&lha| (lha - log_ho_obs).exp())
-                .sum::<f64>()
-                / (HL_HA_LEN as f64);
+            let log_obs_sum = log_sum_exp(&ha_x_log) - log_ho_obs;
+            let obs_sum = log_obs_sum.exp();
 
             let det_ratios: Vec<f64> = ha_factors
                 .iter()
                 .map(|ha| (ha.ch_omi.log_sqrt_det - ho.ch_omi.log_sqrt_det).exp())
                 .collect();
-            let use_fast_pow = q <= 60
+            let use_fast_pow = packed
+                && q <= 60
+                && obs_sum.is_finite()
+                && obs_sum >= f64::MIN_POSITIVE
                 && det_ratios
                     .iter()
                     .all(|&v| v.is_finite() && v > 1e-150 && v < 1e150);
 
             let mut exceed = 0usize;
-            let max_tile = TILE_COLS.min(nrep);
             let mut tile_e = vec![0.0_f64; q * max_tile];
             let mut e_tile = vec![0.0_f64; q * max_tile];
-            let mut u_tile = vec![0.0_f64; p_pairs * max_tile];
-            let mut q_tile = vec![0.0_f64; HL_HA_LEN * max_tile];
-            let mut inv_q_ho = vec![0.0_f64; max_tile];
-            let mut sum_ha_over_ho = vec![0.0_f64; max_tile];
+            let mut u_tile = vec![0.0_f64; if packed { p_pairs * max_tile } else { 0 }];
+            let mut q_tile = vec![0.0_f64; if packed { HL_HA_LEN * max_tile } else { 0 }];
+            let mut inv_q_ho = vec![0.0_f64; if use_fast_pow { max_tile } else { 0 }];
+            let mut sum_ha_over_ho = vec![0.0_f64; if use_fast_pow { max_tile } else { 0 }];
+            let mut col_sq = vec![0.0_f64; if packed { max_tile } else { 0 }];
 
-            for start in (0..nrep).step_by(TILE_COLS) {
-                let cols = (nrep - start).min(TILE_COLS);
+            for start in (0..nrep).step_by(max_tile) {
+                let cols = (nrep - start).min(max_tile);
                 for r in 0..q {
                     tile_e[r * cols..(r + 1) * cols]
                         .copy_from_slice(&req.emat[r * nrep + start..r * nrep + start + cols]);
@@ -1882,38 +1900,94 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                     false,
                 );
 
-                let mut kp = 0usize;
-                for b in 0..q {
-                    let row_b = &e_tile[b * cols..(b + 1) * cols];
-                    for a in 0..=b {
-                        let row_a = &e_tile[a * cols..(a + 1) * cols];
-                        let dst = &mut u_tile[kp * cols..(kp + 1) * cols];
-                        for c in 0..cols {
-                            dst[c] = row_a[c] * row_b[c];
+                if packed {
+                    col_sq[..cols].fill(0.0);
+                    let mut kp = 0usize;
+                    for b in 0..q {
+                        let row_b = &e_tile[b * cols..(b + 1) * cols];
+                        for a in 0..=b {
+                            let row_a = &e_tile[a * cols..(a + 1) * cols];
+                            let dst = &mut u_tile[kp * cols..(kp + 1) * cols];
+                            for c in 0..cols {
+                                dst[c] = row_a[c] * row_b[c];
+                            }
+                            if a == b {
+                                for (sq, &term) in col_sq[..cols].iter_mut().zip(dst.iter()) {
+                                    *sq += term;
+                                }
+                            }
+                            kp += 1;
                         }
-                        kp += 1;
+                    }
+                    linalg::multiply(
+                        &w_ha,
+                        &u_tile[..p_pairs * cols],
+                        &mut q_tile[..HL_HA_LEN * cols],
+                        HL_HA_LEN,
+                        p_pairs,
+                        cols,
+                        false,
+                    );
+                    for j in 0..HL_HA_LEN {
+                        let row = &mut q_tile[j * cols..(j + 1) * cols];
+                        let thresh = cancellation_scale[j];
+                        // The normal case needs only the reduction. A second
+                        // pass repairs suspect forms without branching on each
+                        // simulation draw in the common path.
+                        let needs_repair = row
+                            .iter()
+                            .zip(&col_sq[..cols])
+                            .fold(false, |bad, (&form, &norm)| {
+                                bad | !form.is_finite() | (form <= thresh * norm)
+                            });
+                        if !needs_repair {
+                            continue;
+                        }
+                        for c in 0..cols {
+                            let mut form = row[c];
+                            if !form.is_finite() || form <= thresh * col_sq[c] {
+                                form = quadratic_form_from_upper(
+                                    &ha_factors[j].ch_omi.upper,
+                                    &e_tile[..q * cols],
+                                    cols,
+                                    c,
+                                );
+                                if !form.is_finite() || form <= 0.0 {
+                                    return Err(CoreError::degenerate(
+                                        "half-life simulation draw has an invalid covariance quadratic form",
+                                    ));
+                                }
+                                row[c] = form;
+                            }
+                        }
                     }
                 }
 
-                linalg::multiply(
-                    &w_ha,
-                    &u_tile[..p_pairs * cols],
-                    &mut q_tile[..HL_HA_LEN * cols],
-                    HL_HA_LEN,
-                    p_pairs,
-                    cols,
-                    false,
-                );
-
-                let exact_draw_sum = |c: usize| -> f64 {
+                let log_draw_sum = |c: usize| -> Result<f64, CoreError> {
                     let log_ho = ho.ch_omi.log_sqrt_det - 0.5 * q_f * emat_sq[start + c].ln();
-                    let mut acc = 0.0_f64;
-                    for (j, ha) in ha_factors.iter().enumerate() {
-                        let q_ha = q_tile[j * cols + c];
-                        let log_ha = ha.ch_omi.log_sqrt_det - 0.5 * q_f * q_ha.ln();
-                        acc += (log_ha - log_ho).exp();
+                    let mut log_ha = [0.0; HL_HA_LEN];
+                    if packed {
+                        for (j, ha) in ha_factors.iter().enumerate() {
+                            let q_ha = q_tile[j * cols + c];
+                            log_ha[j] = ha.ch_omi.log_sqrt_det - 0.5 * q_f * q_ha.ln();
+                        }
+                    } else {
+                        for (j, ha) in ha_factors.iter().enumerate() {
+                            let q_ha = quadratic_form_from_upper(
+                                &ha.ch_omi.upper,
+                                &e_tile[..q * cols],
+                                cols,
+                                c,
+                            );
+                            if !q_ha.is_finite() || q_ha <= 0.0 {
+                                return Err(CoreError::degenerate(
+                                    "half-life simulation draw has an invalid covariance quadratic form",
+                                ));
+                            }
+                            log_ha[j] = ha.ch_omi.log_sqrt_det - 0.5 * q_f * q_ha.ln();
+                        }
                     }
-                    acc
+                    Ok(log_sum_exp(&log_ha) - log_ho)
                 };
 
                 if use_fast_pow {
@@ -1922,44 +1996,47 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                     }
                     sum_ha_over_ho[..cols].fill(0.0);
                     for j in 0..HL_HA_LEN {
-                        let row = &q_tile[j * cols..(j + 1) * cols];
                         let coeff = det_ratios[j];
+                        let row = &q_tile[j * cols..(j + 1) * cols];
                         for c in 0..cols {
+                            // Each form and original draw norm was validated.
+                            // A non-normal power marks this draw for log-space
+                            // recomputation, even if other terms are normal.
                             let ratio = row[c] * inv_q_ho[c];
-                            if ratio > 0.0 && ratio.is_finite() {
-                                sum_ha_over_ho[c] += coeff * fast_neg_half_pow(ratio, q);
+                            let pow = fast_neg_half_pow(ratio, q);
+                            let term = if pow >= f64::MIN_POSITIVE {
+                                coeff * pow
                             } else {
-                                sum_ha_over_ho[c] = f64::NAN;
-                            }
+                                f64::NAN
+                            };
+                            sum_ha_over_ho[c] += term;
                         }
                     }
-                    let inv_nha = 1.0 / (HL_HA_LEN as f64);
                     for c in 0..cols {
-                        let total = if sum_ha_over_ho[c].is_finite()
-                            && sum_ha_over_ho[c] > 0.0
+                        let exceeds = if sum_ha_over_ho[c].is_finite()
+                            && sum_ha_over_ho[c] >= f64::MIN_POSITIVE
                             && inv_q_ho[c].is_finite()
                         {
-                            sum_ha_over_ho[c]
+                            sum_ha_over_ho[c] > obs_sum
                         } else {
-                            exact_draw_sum(c)
+                            log_draw_sum(c)? > log_obs_sum
                         };
-                        if (total * inv_nha) > lr_obs {
+                        if exceeds {
                             exceed += 1;
                         }
                     }
                 } else {
-                    let inv_nha = 1.0 / (HL_HA_LEN as f64);
                     for c in 0..cols {
-                        if (exact_draw_sum(c) * inv_nha) > lr_obs {
+                        if log_draw_sum(c)? > log_obs_sum {
                             exceed += 1;
                         }
                     }
                 }
             }
-            Ok((exceed as f64) / (nrep as f64))
+            Ok(exceed)
         };
 
-        let pv_mat: Vec<f64> = if is_serial() {
+        let exceedances = if is_serial() {
             ho_factors
                 .iter()
                 .map(eval_null_hl)
@@ -1971,12 +2048,11 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                 .collect::<Result<Vec<_>, _>>()?
         };
 
-        let alpha = 1.0 - req.level;
         let mut ci_lower = f64::INFINITY;
         let mut ci_upper = f64::NEG_INFINITY;
         let mut any_accepted = false;
-        for (&p, &hl) in pv_mat.iter().zip(&hl_grid_ho) {
-            if p > alpha {
+        for (&count, &hl) in exceedances.iter().zip(&hl_grid_ho) {
+            if accepts_halflife_null(count, nrep, req.level) {
                 any_accepted = true;
                 ci_lower = ci_lower.min(hl);
                 ci_upper = ci_upper.max(hl);
@@ -1986,6 +2062,10 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
             ci_lower = f64::NAN;
             ci_upper = f64::NAN;
         }
+        let pv_mat = exceedances
+            .into_iter()
+            .map(|count| count as f64 / nrep as f64)
+            .collect();
 
         Ok(SpurHalfLifeOutput {
             ci_lower,
@@ -2006,7 +2086,164 @@ impl SpurGeometry {
     }
 }
 
-pub fn run_spur_transform(req: &SpurTransformRequest<'_>) -> Result<SpurTransformOutput, CoreError> {
+fn transform_by_neighbors(
+    req: &SpurTransformRequest<'_>,
+    select: impl Fn(usize, &mut Vec<usize>) -> Result<(), CoreError> + Sync,
+) -> Result<SpurTransformOutput, CoreError> {
+    let n = req.n;
+    let (width, y) = if req.return_matrix {
+        (n, None)
+    } else {
+        (req.y.map_or(0, |_| req.n_y), req.y)
+    };
+    let mut values = vec![0.0; checked_len(&[n, width])?];
+    let write_row = |neighbors: &mut Vec<usize>, (i, row): (usize, &mut [f64])| {
+        neighbors.clear();
+        select(i, neighbors)?;
+        if neighbors.is_empty() || row.is_empty() {
+            return Ok(());
+        }
+        let weight = (neighbors.len() as f64).recip();
+        if let Some(y) = y {
+            row.copy_from_slice(&y[i * width..(i + 1) * width]);
+            for &j in neighbors.iter() {
+                for (out, &value) in row.iter_mut().zip(&y[j * width..(j + 1) * width]) {
+                    *out -= weight * value;
+                }
+            }
+        } else {
+            row[i] = 1.0;
+            for &j in neighbors.iter() {
+                row[j] = -weight;
+            }
+        }
+        Ok(())
+    };
+    if width == 0 {
+        let mut neighbors = Vec::new();
+        for i in 0..n {
+            write_row(&mut neighbors, (i, &mut []))?;
+        }
+    } else if is_serial() || n < 64 {
+        let mut neighbors = Vec::new();
+        for row in values.chunks_exact_mut(width).enumerate() {
+            write_row(&mut neighbors, row)?;
+        }
+    } else {
+        values
+            .par_chunks_mut(width)
+            .enumerate()
+            .try_for_each_init(Vec::new, write_row)?;
+    }
+
+    if req.return_matrix {
+        let transformed = req.y.map(|y| {
+            let mut out = vec![0.0; y.len()];
+            linalg::multiply(&values, y, &mut out, n, n, req.n_y, false);
+            out
+        });
+        Ok(SpurTransformOutput {
+            matrix: Some(values),
+            transformed,
+        })
+    } else {
+        Ok(SpurTransformOutput {
+            matrix: None,
+            transformed: y.map(|_| values),
+        })
+    }
+}
+
+fn neighbor_transform(
+    req: &SpurTransformRequest<'_>,
+    coords: &[f64],
+) -> Result<SpurTransformOutput, CoreError> {
+    let n = req.n;
+    let distances = Distances::new(coords, n, req.d, req.metric)?;
+    // Cache pairwise distances when the caller already needs a dense matrix.
+    // A transformed-only request keeps only the current row's neighbor indices.
+    let dense = req
+        .return_matrix
+        .then(|| distance_matrix(coords, n, req.d, req.metric))
+        .transpose()?;
+    let distance = |i: usize, j: usize| {
+        let value = match &dense {
+            Some(matrix) => matrix[i * n + j],
+            None => distances.pair(i.max(j), i.min(j)),
+        };
+        if !value.is_finite() {
+            return Err(CoreError::invalid_input(
+                "pairwise distance exceeds the floating-point range",
+            ));
+        }
+        Ok(value)
+    };
+    match req.kind {
+        SpurTransformKind::Nn {
+            exclude_zero_distances,
+        } => {
+            // Preserve the previous normalization before equality checks. For
+            // all-colocated data, every off-diagonal distance remains zero.
+            let max_in_row =
+                |i: usize| (0..i).try_fold(0.0_f64, |max, j| Ok(max.max(distance(i, j)?)));
+            let diameter = if let Some(matrix) = &dense {
+                matrix.iter().copied().fold(0.0, f64::max)
+            } else if is_serial() || n < 64 {
+                (0..n).try_fold(0.0_f64, |max, i| Ok(max.max(max_in_row(i)?)))?
+            } else {
+                (0..n)
+                    .into_par_iter()
+                    .map(max_in_row)
+                    .try_reduce(|| 0.0_f64, |a, b| Ok(a.max(b)))?
+            };
+            if exclude_zero_distances && diameter == 0.0 {
+                return Err(CoreError::invalid_input(
+                    "all coordinates are identical; normalization requires distinct locations",
+                ));
+            }
+            let scale = if diameter > 0.0 { diameter } else { 1.0 };
+            transform_by_neighbors(req, |i, neighbors| {
+                let mut nearest = f64::INFINITY;
+                for j in 0..n {
+                    if i == j {
+                        continue;
+                    }
+                    let mut d = distance(i, j)? / scale;
+                    if exclude_zero_distances && d == 0.0 {
+                        d = 1e10;
+                    }
+                    if d < nearest {
+                        nearest = d;
+                        neighbors.clear();
+                    }
+                    if d == nearest {
+                        neighbors.push(j);
+                    }
+                }
+                Ok(())
+            })
+        }
+        SpurTransformKind::Iso { radius, strict_lt } => {
+            transform_by_neighbors(req, |i, neighbors| {
+                for j in 0..n {
+                    if i == j {
+                        continue;
+                    }
+                    let d = distance(i, j)?;
+                    if d > 0.0 && if strict_lt { d < radius } else { d <= radius } {
+                        neighbors.push(j);
+                    }
+                }
+                Ok(())
+            })
+        }
+        _ => unreachable!("neighbor transform requires NN or ISO"),
+    }
+}
+
+pub fn run_spur_transform(
+    req: &SpurTransformRequest<'_>,
+) -> Result<SpurTransformOutput, CoreError> {
     let n = req.n;
     if n < 2 {
         return Err(CoreError::invalid_input(
@@ -2015,178 +2252,89 @@ pub fn run_spur_transform(req: &SpurTransformRequest<'_>) -> Result<SpurTransfor
     }
     if let Some(y) = req.y {
         if req.n_y == 0 || y.len() != checked_len(&[n, req.n_y])? {
-            return Err(CoreError::invalid_input("invalid Y dimensions for transform"));
+            return Err(CoreError::invalid_input(
+                "invalid Y dimensions for transform",
+            ));
         }
         if y.iter().any(|v| !v.is_finite()) {
             return Err(CoreError::invalid_input("Y values must be finite"));
         }
     }
 
-    run_with_threads(req.nthreads, || {
-        match req.kind {
-            SpurTransformKind::Cluster => {
-                let cid = req.cluster_id.ok_or_else(|| {
-                    CoreError::invalid_input("cluster transformation requires cluster_id")
-                })?;
-                if cid.len() != n {
-                    return Err(CoreError::invalid_input("cluster_id length mismatch"));
-                }
-                let max_c = cid.iter().copied().max().unwrap_or(0) + 1;
-                let mut counts = vec![0usize; max_c];
-                for &g in cid {
-                    counts[g] += 1;
-                }
-                let transformed = req.y.map(|y| {
-                    let ny = req.n_y;
-                    let mut sums = vec![0.0_f64; max_c * ny];
-                    for (i, &g) in cid.iter().enumerate() {
-                        for col in 0..ny {
-                            sums[g * ny + col] += y[i * ny + col];
-                        }
-                    }
-                    let mut out = vec![0.0_f64; n * ny];
-                    for (i, &g) in cid.iter().enumerate() {
-                        let inv_cnt = (counts[g] as f64).recip();
-                        for col in 0..ny {
-                            out[i * ny + col] = y[i * ny + col] - sums[g * ny + col] * inv_cnt;
-                        }
-                    }
-                    out
-                });
-                let matrix = if req.return_matrix {
-                    let mut mat = vec![0.0_f64; n * n];
-                    for i in 0..n {
-                        let gi = cid[i];
-                        let w = (counts[gi] as f64).recip();
-                        for j in 0..n {
-                            if cid[j] == gi {
-                                mat[i * n + j] = -w;
-                            }
-                        }
-                        mat[i * n + i] += 1.0;
-                    }
-                    Some(mat)
-                } else {
-                    None
-                };
-                Ok(SpurTransformOutput { matrix, transformed })
+    run_with_threads(req.nthreads, || match req.kind {
+        SpurTransformKind::Cluster => {
+            let cid = req.cluster_id.ok_or_else(|| {
+                CoreError::invalid_input("cluster transformation requires cluster_id")
+            })?;
+            if cid.len() != n {
+                return Err(CoreError::invalid_input("cluster_id length mismatch"));
             }
-            SpurTransformKind::Nn {
-                exclude_zero_distances,
-            } => {
-                let coords = req.coords.ok_or_else(|| {
-                    CoreError::invalid_input("nn transform requires coordinates")
-                })?;
-                let geom = SpurGeometry::from_coords(coords, n, req.d, req.metric)?;
+            let max_c = cid.iter().copied().max().unwrap_or(0) + 1;
+            let mut counts = vec![0usize; max_c];
+            for &g in cid {
+                counts[g] += 1;
+            }
+            let transformed = req.y.map(|y| {
+                let ny = req.n_y;
+                let mut sums = vec![0.0_f64; max_c * ny];
+                for (i, &g) in cid.iter().enumerate() {
+                    for col in 0..ny {
+                        sums[g * ny + col] += y[i * ny + col];
+                    }
+                }
+                let mut out = vec![0.0_f64; n * ny];
+                for (i, &g) in cid.iter().enumerate() {
+                    let inv_cnt = (counts[g] as f64).recip();
+                    for col in 0..ny {
+                        out[i * ny + col] = y[i * ny + col] - sums[g * ny + col] * inv_cnt;
+                    }
+                }
+                out
+            });
+            let matrix = if req.return_matrix {
                 let mut mat = vec![0.0_f64; n * n];
                 for i in 0..n {
-                    let row_d = &geom.norm_distmat[i * n..(i + 1) * n];
-                    let mut min_d = f64::INFINITY;
+                    let gi = cid[i];
+                    let w = (counts[gi] as f64).recip();
                     for j in 0..n {
-                        if i == j {
-                            continue;
-                        }
-                        let dval = if exclude_zero_distances && row_d[j] == 0.0 {
-                            1e10
-                        } else {
-                            row_d[j]
-                        };
-                        min_d = min_d.min(dval);
-                    }
-                    let mut cnt = 0usize;
-                    for j in 0..n {
-                        if i == j {
-                            continue;
-                        }
-                        let dval = if exclude_zero_distances && row_d[j] == 0.0 {
-                            1e10
-                        } else {
-                            row_d[j]
-                        };
-                        if dval == min_d {
-                            cnt += 1;
-                        }
-                    }
-                    let w = if cnt > 0 { (cnt as f64).recip() } else { 0.0 };
-                    for j in 0..n {
-                        if i == j {
-                            mat[i * n + j] = 1.0;
-                        } else {
-                            let dval = if exclude_zero_distances && row_d[j] == 0.0 {
-                                1e10
-                            } else {
-                                row_d[j]
-                            };
-                            if dval == min_d {
-                                mat[i * n + j] = -w;
-                            }
-                        }
-                    }
-                }
-                let transformed = req.y.map(|y| {
-                    let mut out = vec![0.0_f64; n * req.n_y];
-                    linalg::multiply(&mat, y, &mut out, n, n, req.n_y, false);
-                    out
-                });
-                Ok(SpurTransformOutput {
-                    matrix: if req.return_matrix { Some(mat) } else { None },
-                    transformed,
-                })
-            }
-            SpurTransformKind::Iso { radius, strict_lt } => {
-                if !radius.is_finite() || radius <= 0.0 {
-                    return Err(CoreError::invalid_input(
-                        "iso transform radius must be positive and finite",
-                    ));
-                }
-                let coords = req.coords.ok_or_else(|| {
-                    CoreError::invalid_input("iso transform requires coordinates")
-                })?;
-                let raw_distmat = distance_matrix(coords, n, req.d, req.metric)?;
-                let mut mat = vec![0.0_f64; n * n];
-                for i in 0..n {
-                    let row_d = &raw_distmat[i * n..(i + 1) * n];
-                    let in_rad = |j: usize| {
-                        let d = row_d[j];
-                        i != j && d > 0.0 && if strict_lt { d < radius } else { d <= radius }
-                    };
-                    let cnt = (0..n).filter(|&j| in_rad(j)).count();
-                    if cnt == 0 {
-                        // Isolated observations stay zero row (matches Stata/R/Python iso_matrix).
-                        continue;
-                    }
-                    let w = (cnt as f64).recip();
-                    for j in 0..n {
-                        if i == j {
-                            mat[i * n + j] = 1.0;
-                        } else if in_rad(j) {
+                        if cid[j] == gi {
                             mat[i * n + j] = -w;
                         }
                     }
+                    mat[i * n + i] += 1.0;
                 }
-                let transformed = req.y.map(|y| {
-                    let mut out = vec![0.0_f64; n * req.n_y];
-                    linalg::multiply(&mat, y, &mut out, n, n, req.n_y, false);
-                    out
-                });
-                Ok(SpurTransformOutput {
-                    matrix: if req.return_matrix { Some(mat) } else { None },
-                    transformed,
-                })
+                Some(mat)
+            } else {
+                None
+            };
+            Ok(SpurTransformOutput {
+                matrix,
+                transformed,
+            })
+        }
+        SpurTransformKind::Nn { .. } => {
+            let coords = req
+                .coords
+                .ok_or_else(|| CoreError::invalid_input("nn transform requires coordinates"))?;
+            neighbor_transform(req, coords)
+        }
+        SpurTransformKind::Iso { radius, .. } => {
+            if !radius.is_finite() || radius <= 0.0 {
+                return Err(CoreError::invalid_input(
+                    "iso transform radius must be positive and finite",
+                ));
             }
-            SpurTransformKind::LbmGls => {
-                let coords = req.coords.ok_or_else(|| {
-                    CoreError::invalid_input("lbmgls transform requires coordinates")
-                })?;
-                let geom = SpurGeometry::from_coords(coords, n, req.d, req.metric)?;
-                apply_lbmgls_with_geom(
-                    &geom,
-                    req.y,
-                    req.n_y,
-                    req.return_matrix,
-                    req.demean_lbmgls,
-                )
-            }
+            let coords = req
+                .coords
+                .ok_or_else(|| CoreError::invalid_input("iso transform requires coordinates"))?;
+            neighbor_transform(req, coords)
+        }
+        SpurTransformKind::LbmGls => {
+            let coords = req
+                .coords
+                .ok_or_else(|| CoreError::invalid_input("lbmgls transform requires coordinates"))?;
+            let geom = SpurGeometry::from_coords(coords, n, req.d, req.metric)?;
+            apply_lbmgls_with_geom(&geom, req.y, req.n_y, req.return_matrix, req.demean_lbmgls)
         }
     })?
 }
@@ -2255,13 +2403,18 @@ fn apply_lbmgls_with_geom(
         }
     });
 
-    Ok(SpurTransformOutput { matrix, transformed })
+    Ok(SpurTransformOutput {
+        matrix,
+        transformed,
+    })
 }
 
 pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOutput, CoreError> {
     validate_emat(req.emat, req.n, req.q, req.nrep)?;
     if req.y.len() != req.n || req.y.iter().any(|v| !v.is_finite()) {
-        return Err(CoreError::invalid_input("invalid y vector for SPUR pipeline"));
+        return Err(CoreError::invalid_input(
+            "invalid y vector for SPUR pipeline",
+        ));
     }
     if req.n_transform_vars == 0
         || req.transform_vars.len() != checked_len(&[req.n, req.n_transform_vars])?
@@ -2314,11 +2467,7 @@ mod tests {
     use crate::ErrorKind;
 
     fn load_bench_200_spur() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-        let path = format!(
-            "{}/../../../verification/data/bench_200.csv",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let text = std::fs::read_to_string(path).expect("bench_200.csv");
+        let text = include_str!("../tests/fixtures/bench_200.csv");
         let mut y = Vec::new();
         let mut x_in = Vec::new();
         let mut coords = Vec::new();
@@ -2336,6 +2485,141 @@ mod tests {
             coords.extend_from_slice(&[cols[6], cols[7]]);
         }
         (y, x_in, coords)
+    }
+
+    #[test]
+    fn streamed_neighbor_transforms_match_matrix_paths() {
+        let coords = [0.0, 0.0, 1.0, 2.0, 6.0];
+        let y = [1.0, 3.0, 5.0, 7.0, 9.0];
+        let nn = SpurTransformKind::Nn {
+            exclude_zero_distances: false,
+        };
+        let nn_excluded = SpurTransformKind::Nn {
+            exclude_zero_distances: true,
+        };
+        let iso = SpurTransformKind::Iso {
+            radius: 1.0,
+            strict_lt: false,
+        };
+        let iso_strict = SpurTransformKind::Iso {
+            radius: 1.0,
+            strict_lt: true,
+        };
+        let base = SpurTransformRequest {
+            coords: Some(&coords),
+            n: coords.len(),
+            d: 1,
+            metric: Metric::Euclidean,
+            kind: nn,
+            cluster_id: None,
+            y: Some(&y),
+            n_y: 1,
+            return_matrix: false,
+            demean_lbmgls: false,
+            nthreads: Some(1),
+        };
+        let compare = |base: SpurTransformRequest<'_>| {
+            let dense = run_spur_transform(&SpurTransformRequest {
+                return_matrix: true,
+                ..base
+            })
+            .unwrap();
+            let streamed = run_spur_transform(&base).unwrap();
+            assert!(dense.matrix.is_some());
+            assert!(streamed.matrix.is_none());
+            let values = streamed.transformed.unwrap();
+            for (&actual, expected) in values.iter().zip(dense.transformed.unwrap()) {
+                assert!((actual - expected).abs() < 1e-12);
+            }
+            values
+        };
+        for (kind, expected) in [
+            (nn, [-2.0, 2.0, 4.0 / 3.0, 2.0, 2.0]),
+            (nn_excluded, [-4.0, -2.0, 4.0 / 3.0, 2.0, 2.0]),
+            (iso, [-4.0, -2.0, 4.0 / 3.0, 2.0, 0.0]),
+            (iso_strict, [0.0; 5]),
+        ] {
+            let values = compare(SpurTransformRequest { kind, ..base });
+            for (actual, expected) in values.into_iter().zip(expected) {
+                assert!((actual - expected).abs() < 1e-12);
+            }
+        }
+        assert_eq!(
+            compare(SpurTransformRequest {
+                coords: Some(&[5.0; 3]),
+                n: 3,
+                y: Some(&[1.0, 3.0, 5.0]),
+                ..base
+            }),
+            vec![-3.0, 0.0, 3.0]
+        );
+        for return_matrix in [false, true] {
+            let err = run_spur_transform(&SpurTransformRequest {
+                coords: Some(&[5.0; 3]),
+                n: 3,
+                kind: nn_excluded,
+                y: Some(&[1.0, 3.0, 5.0]),
+                return_matrix,
+                ..base
+            })
+            .unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        }
+        let coords_many: Vec<f64> = (0..80).flat_map(|i| [i as f64, (i % 5) as f64]).collect();
+        let y_many: Vec<f64> = (0..160).map(|i| (i as f64).sin()).collect();
+        for kind in [nn, iso] {
+            compare(SpurTransformRequest {
+                coords: Some(&coords_many),
+                n: 80,
+                d: 2,
+                metric: Metric::GreatCircleFractionLatLon,
+                kind,
+                y: Some(&y_many),
+                n_y: 2,
+                nthreads: Some(4),
+                ..base
+            });
+        }
+    }
+
+    #[test]
+    fn spur_basis_orientation_uses_the_first_nearly_maximal_entry() {
+        for (offset, first_is_positive) in [(8.0, true), (1024.0, false)] {
+            let a = -1.0;
+            let b = 1.0 + offset * f64::EPSILON;
+            let mut covariance = [a * a, a * b, a * b, b * b];
+            let (basis, tied) = select_leading_basis(&mut covariance, 2, 1).unwrap();
+            assert!(!tied);
+            assert_eq!(basis[0].is_sign_positive(), first_is_positive);
+            assert_eq!(basis[1].is_sign_negative(), first_is_positive);
+        }
+    }
+
+    #[test]
+    fn halflife_worker_scratch_and_likelihood_terms_are_stable() {
+        for q in [4, 64, 500, 1200] {
+            let pairs = q * (q + 1) / 2;
+            let (cols, packed) = halflife_tile_size(q, pairs, 10_000);
+            assert!(cols <= TILE_COLS);
+            assert_eq!(packed, q <= 500);
+            let tile_doubles = cols * (2 * q + HL_HA_LEN + 3 + if packed { pairs } else { 0 });
+            assert!(tile_doubles * size_of::<f64>() <= MAX_HALFLIFE_TILE_BYTES);
+        }
+        let upper = [1.0, -1.0, 0.0, 1e-7];
+        let draws = [1.0, 2.0, 1.0, 3.0];
+        let form = quadratic_form_from_upper(&upper, &draws, 2, 0);
+        assert!((form / 1e-14 - 1.0).abs() < 4.0 * f64::EPSILON);
+        let log_total = log_sum_exp(&[1000.0, 1000.0]);
+        assert!((log_total - 1000.0 - 2.0_f64.ln()).abs() < 1e-13);
+    }
+
+    #[test]
+    fn halflife_confidence_set_excludes_exact_monte_carlo_boundaries() {
+        for (level, boundary) in [(0.90, 10), (0.95, 5)] {
+            assert!(!accepts_halflife_null(boundary - 1, 100, level));
+            assert!(!accepts_halflife_null(boundary, 100, level));
+            assert!(accepts_halflife_null(boundary + 1, 100, level));
+        }
     }
 
     fn make_deterministic_emat(q: usize, nrep: usize) -> Vec<f64> {
@@ -2480,11 +2764,7 @@ mod tests {
         assert!((pipe_1.i1.lr[0] - pipe_4.i1.lr[0]).abs() < 1e-13);
         assert!((pipe_1.i0resid.lr[0] - pipe_4.i0resid.lr[0]).abs() < 1e-13);
         assert!((pipe_1.i1resid.lr[0] - pipe_4.i1resid.lr[0]).abs() < 1e-13);
-        for (&a, &b) in pipe_1
-            .transformed_vars
-            .iter()
-            .zip(&pipe_4.transformed_vars)
-        {
+        for (&a, &b) in pipe_1.transformed_vars.iter().zip(&pipe_4.transformed_vars) {
             assert!((a - b).abs() < 1e-13);
         }
     }
@@ -2525,7 +2805,12 @@ mod tests {
         .unwrap();
         assert_eq!(hl_1.pv_mat.len(), 131);
         assert_eq!(hl_1.hl_grid_ho.len(), 131);
-        assert!((hl_1.ci_lower - 0.152_363_636_363_636_37).abs() < 1e-12, "got ci_lower={}, ci_upper={}", hl_1.ci_lower, hl_1.ci_upper);
+        assert!(
+            (hl_1.ci_lower - 0.152_363_636_363_636_37).abs() < 1e-12,
+            "got ci_lower={}, ci_upper={}",
+            hl_1.ci_lower,
+            hl_1.ci_upper
+        );
         assert!((hl_1.ci_upper - 100.0).abs() < 1e-12);
         for (&a, &b) in hl_1.pv_mat.iter().zip(&hl_2.pv_mat) {
             assert!((a - b).abs() < 1e-14);
@@ -2728,35 +3013,86 @@ mod tests {
         .unwrap_err();
         assert_eq!(err_q1.kind(), ErrorKind::InvalidInput);
         let q1_test = SpurTestRequest {
-            coords: &coords, n, d: 2, metric: Metric::Euclidean, y: &y, n_y: 1,
-            x_in: Some(&x_in), k_x, emat: &emat_1, q: 1, nrep: 50, nthreads: Some(1),
+            coords: &coords,
+            n,
+            d: 2,
+            metric: Metric::Euclidean,
+            y: &y,
+            n_y: 1,
+            x_in: Some(&x_in),
+            k_x,
+            emat: &emat_1,
+            q: 1,
+            nrep: 50,
+            nthreads: Some(1),
         };
-        assert_eq!(run_spur_i0(&q1_test).unwrap_err().kind(), ErrorKind::InvalidInput);
-        assert_eq!(run_spur_i1(&q1_test).unwrap_err().kind(), ErrorKind::InvalidInput);
-        assert_eq!(run_spur_i0_resid(&q1_test).unwrap_err().kind(), ErrorKind::InvalidInput);
-        assert_eq!(run_spur_i1_resid(&q1_test).unwrap_err().kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            run_spur_i0(&q1_test).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            run_spur_i1(&q1_test).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            run_spur_i0_resid(&q1_test).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            run_spur_i1_resid(&q1_test).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
 
         let emat_2 = make_deterministic_emat(2, 50);
         // All centered covariance shapes on an equilateral triangle are scalar
         // multiples of the identity, despite retaining two positive directions.
         let equilateral = [0.0, 0.0, 1.0, 0.0, 0.5, 3.0_f64.sqrt() / 2.0];
         let err_proportional = run_spur_halflife(&SpurHalfLifeRequest {
-            coords: &equilateral, n: 3, d: 2, metric: Metric::Euclidean,
-            y: &[0.0, 1.0, -0.5], emat: &emat_2, q: 2, nrep: 50,
-            level: 0.95, nthreads: Some(1),
-        }).unwrap_err();
+            coords: &equilateral,
+            n: 3,
+            d: 2,
+            metric: Metric::Euclidean,
+            y: &[0.0, 1.0, -0.5],
+            emat: &emat_2,
+            q: 2,
+            nrep: 50,
+            level: 0.95,
+            nthreads: Some(1),
+        })
+        .unwrap_err();
         assert_eq!(err_proportional.kind(), ErrorKind::DegenerateVariance);
         let equilateral_y = [0.0, 1.0, -0.5];
         let intercept = [1.0, 1.0, 1.0];
         let equilateral_test = SpurTestRequest {
-            coords: &equilateral, n: 3, d: 2, metric: Metric::Euclidean,
-            y: &equilateral_y, n_y: 1, x_in: Some(&intercept), k_x: 1,
-            emat: &emat_2, q: 2, nrep: 50, nthreads: Some(1),
+            coords: &equilateral,
+            n: 3,
+            d: 2,
+            metric: Metric::Euclidean,
+            y: &equilateral_y,
+            n_y: 1,
+            x_in: Some(&intercept),
+            k_x: 1,
+            emat: &emat_2,
+            q: 2,
+            nrep: 50,
+            nthreads: Some(1),
         };
-        assert_eq!(run_spur_i0(&equilateral_test).unwrap_err().kind(), ErrorKind::DegenerateVariance);
-        assert_eq!(run_spur_i1(&equilateral_test).unwrap_err().kind(), ErrorKind::DegenerateVariance);
-        assert_eq!(run_spur_i0_resid(&equilateral_test).unwrap_err().kind(), ErrorKind::DegenerateVariance);
-        assert_eq!(run_spur_i1_resid(&equilateral_test).unwrap_err().kind(), ErrorKind::DegenerateVariance);
+        assert_eq!(
+            run_spur_i0(&equilateral_test).unwrap_err().kind(),
+            ErrorKind::DegenerateVariance
+        );
+        assert_eq!(
+            run_spur_i1(&equilateral_test).unwrap_err().kind(),
+            ErrorKind::DegenerateVariance
+        );
+        assert_eq!(
+            run_spur_i0_resid(&equilateral_test).unwrap_err().kind(),
+            ErrorKind::DegenerateVariance
+        );
+        assert_eq!(
+            run_spur_i1_resid(&equilateral_test).unwrap_err().kind(),
+            ErrorKind::DegenerateVariance
+        );
         let const_y = vec![5.0; n];
         let err_const = run_spur_halflife(&SpurHalfLifeRequest {
             coords: &coords,
@@ -2854,8 +3190,7 @@ mod tests {
     fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
         // 1. projected_omega_grid parity for n < 256 and n > 256 (serial & parallel)
         let (_, _, coords_200) = load_bench_200_spur();
-        let geom_200 =
-            SpurGeometry::from_coords(&coords_200, 200, 2, Metric::Euclidean).unwrap();
+        let geom_200 = SpurGeometry::from_coords(&coords_200, 200, 2, Metric::Euclidean).unwrap();
         let (basis_200, _, mr_200, _) = prepare_lbm_basis(&geom_200, 8).unwrap();
         let c_vals = [0.25, 1.5, 8.0, 42.0, 120.0];
         let grid_serial = run_with_threads(Some(1), || {
@@ -2879,15 +3214,14 @@ mod tests {
         }
         let _ = basis_200;
 
-        let n_big = 280usize;
+        let n_big = 513usize;
         let coords_big: Vec<f64> = (0..n_big)
             .flat_map(|i| {
                 let f = i as f64;
                 [(f * 0.37).sin() + 0.05 * f, (f * 0.83).cos()]
             })
             .collect();
-        let geom_big =
-            SpurGeometry::from_coords(&coords_big, n_big, 2, Metric::Euclidean).unwrap();
+        let geom_big = SpurGeometry::from_coords(&coords_big, n_big, 2, Metric::Euclidean).unwrap();
         let (_, _, mr_big, _) = prepare_lbm_basis(&geom_big, 6).unwrap();
         let big_serial = run_with_threads(Some(1), || {
             geom_big.projected_omega_grid(&c_vals, &mr_big, 6)
@@ -2927,12 +3261,12 @@ mod tests {
             assert_eq!(g.to_bits(), e.to_bits());
         }
 
-        // 3. run_spur_halflife fast W_ha * U_tile path vs reference log-sum-exp for q=4, 8, 15
-        let n_hl = 60usize;
+        // 3. Compare both single- and multiple-tile, fast and log-scale
+        // half-life paths to a factor-based calculation.
+        let n_hl = 64usize;
         let coords_hl = &coords_200[..n_hl * 2];
         let y_hl: Vec<f64> = (0..n_hl).map(|i| ((i as f64) * 0.41).sin() + 0.1).collect();
-        for q_hl in [4usize, 8, 15] {
-            let nrep_hl = 80usize;
+        for (q_hl, nrep_hl) in [(4, TILE_COLS + 3), (8, 80), (15, 80), (60, 7), (61, 7)] {
             let emat_hl = make_deterministic_emat(q_hl, nrep_hl);
             let out_fast = run_spur_halflife(&SpurHalfLifeRequest {
                 coords: coords_hl,
@@ -2959,12 +3293,16 @@ mod tests {
             let ho_f: Vec<_> = out_fast
                 .hl_grid_ho
                 .iter()
-                .map(|&h| factor_omega(&g.projected_omega_from_mr(neg_ln_half / h, &mr, q_hl), q_hl).unwrap())
+                .map(|&h| {
+                    factor_omega(&g.projected_omega_from_mr(neg_ln_half / h, &mr, q_hl), q_hl)
+                        .unwrap()
+                })
                 .collect();
             let ha_f: Vec<_> = (0..HL_HA_LEN)
                 .map(|i| {
                     let h = 0.001 + (1.0 - 0.001) * (i as f64) / ((HL_HA_LEN - 1) as f64);
-                    factor_omega(&g.projected_omega_from_mr(neg_ln_half / h, &mr, q_hl), q_hl).unwrap()
+                    factor_omega(&g.projected_omega_from_mr(neg_ln_half / h, &mr, q_hl), q_hl)
+                        .unwrap()
                 })
                 .collect();
             let q_f = q_hl as f64;
@@ -3049,5 +3387,16 @@ mod tests {
         assert!((hl_orig.ci_lower - hl_tiny.ci_lower).abs() < 1e-12);
         assert!((hl_orig.ci_upper - hl_tiny.ci_upper).abs() < 1e-12);
         assert!((hl_tiny.max_dist - hl_orig.max_dist * 1e-12).abs() < 1e-22);
+
+        // 5. fast_neg_half_pow overflows ratio^(q/2) -> 0.0 at q=60, ratio=1e11; verify
+        // underflow guard forces log-space fallback instead of zeroing a dominant term.
+        let pow_underflow = fast_neg_half_pow(1e11, 60);
+        assert_eq!(pow_underflow, 0.0);
+        assert!(pow_underflow < f64::MIN_POSITIVE);
+        let dominant_log = 140.0_f64 * 10.0_f64.ln() - 30.0 * (1e11_f64).ln();
+        let secondary_log = 0.0_f64 - 30.0 * (1e7_f64).ln();
+        let true_log_sum = log_sum_exp(&[dominant_log, secondary_log]);
+        assert!(true_log_sum > -200.0 * 10.0_f64.ln());
+        assert!(true_log_sum - secondary_log > 40.0);
     }
 }

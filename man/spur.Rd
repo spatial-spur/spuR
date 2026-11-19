@@ -35,7 +35,7 @@ spur(
 
 \item{coords_euclidean}{Optional Euclidean coordinate column names.}
 
-\item{seed}{Integer seed passed to the SPUR test steps.}
+\item{seed}{Optional integer seed for the draws shared by all four SPUR tests.}
 
 \item{avc}{SCPC tuning parameter passed to \code{scpcR::scpc()}.}
 
@@ -50,9 +50,15 @@ spur(
 execution.}
 }
 \value{
-A list of class \code{"spur_result"} with \code{tests} and \code{fits}.
+A list of class \code{"spur_result"} with \code{tests}, \code{fits},
+\code{stage_backends}, and \code{fallback_reasons}.
 }
 \description{
 Run the SPUR diagnostics, fit the levels and transformed regressions,
 and compute SCPC inference for both branches.
+}
+\details{
+Both regressions and the diagnostics use the levels model's estimation
+sample. The spatial transformation applies to the evaluated response and
+design columns. For example, a log response is logged before transformation.
 }

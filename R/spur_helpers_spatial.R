@@ -49,7 +49,25 @@ get_s_matrix <- function(coords, latlong = FALSE, verbose = FALSE) {
 #' @return A numeric matrix of pairwise Euclidean distances between locations.
 #' @keywords internal
 get_distmat_euclidean <- function(s) {
-  as.matrix(stats::dist(s, method = "euclidean"))
+  s <- as.matrix(s)
+  distances <- stats::dist(s)
+  if (all(is.finite(distances) & distances >= 1e-150)) return(as.matrix(distances))
+
+  # Recompute only pairs that can lose precision while squaring.
+  out <- as.matrix(distances)
+  n <- nrow(s)
+  for (i in seq_len(n - 1L)) {
+    j <- (i + 1L):n
+    j <- j[!is.finite(out[i, j]) | out[i, j] < 1e-150]
+    if (!length(j)) next
+    delta <- sweep(s[j, , drop = FALSE], 2L, s[i, ], "-")
+    scale <- apply(abs(delta), 1L, max)
+    if (any(!is.finite(scale))) stop("Pairwise distance exceeds the floating-point range.")
+    d <- scale * sqrt(rowSums((delta / ifelse(scale > 0, scale, 1))^2))
+    if (any(!is.finite(d))) stop("Pairwise distance exceeds the floating-point range.")
+    out[i, j] <- out[j, i] <- d
+  }
+  out
 }
 
 #' Calculate Distance Matrix for Latitude/Longitude Points
@@ -72,9 +90,8 @@ get_distmat_lat_lon <- function(s) {
 
   for (i in 1:n) {
     d <- 0.5 * c * (sweep(s, 2, s[i, ], "-"))
-    distmat[, i] <- asin(sqrt(sin(d[, 1])^2 +
-      cos(c * s[i, 1]) *
-        (cos(c * s[, 1]) * sin(d[, 2])^2))) / pi
+    h <- sin(d[, 1])^2 + cos(c * s[i, 1]) * cos(c * s[, 1]) * sin(d[, 2])^2
+    distmat[, i] <- asin(sqrt(pmin(pmax(h, 0), 1))) / pi
   }
 
   distmat
@@ -98,6 +115,10 @@ get_cluster_matrix <- function(cluster_values, use_rows = NULL) {
 
 #' @keywords internal
 .normalized_distmat <- function(coords, latlong) {
+  .spur_distance_setup(coords, latlong)$normalized
+}
+
+.spur_distance_setup <- function(coords, latlong) {
   distmat <- if (isTRUE(latlong)) {
     get_distmat_lat_lon(coords)
   } else {
@@ -107,7 +128,7 @@ get_cluster_matrix <- function(cluster_values, use_rows = NULL) {
   if (!is.finite(max_dist) || max_dist <= 0) {
     stop("Distance matrix must contain positive finite distances.")
   }
-  distmat / max_dist
+  list(normalized = distmat / max_dist, max_dist = max_dist)
 }
 
 #' @keywords internal

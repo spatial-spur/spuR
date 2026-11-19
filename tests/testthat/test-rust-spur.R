@@ -6,22 +6,13 @@ make_det_emat_r <- function(q, nrep) {
   matrix(out, nrow = q, ncol = nrep, byrow = TRUE)
 }
 
-bench_df_or_skip <- function() {
-  candidates <- c(
-    "../../../verification/data/bench_200.csv",
-    "../../verification/data/bench_200.csv",
-    "verification/data/bench_200.csv"
-  )
-  found <- candidates[file.exists(candidates)]
-  if (length(found) == 0L) {
-    testthat::skip("bench_200.csv fixture not accessible")
-  }
-  utils::read.csv(found[[1L]])
+read_bench_200 <- function() {
+  utils::read.csv(testthat::test_path("fixtures", "bench_200.csv"))
 }
 
 testthat::test_that("spuR diagnostics match fallback with frozen emat (geodesic and euclidean)", {
   testthat::skip_if_not(is.loaded("wrap__rust_run_spur_i0", PACKAGE = "spuR"), "spuR native Rust library not loaded")
-  df <- bench_df_or_skip()
+  df <- read_bench_200()
   q <- 8L
   nrep <- 1000L
   set.seed(42)
@@ -135,7 +126,7 @@ testthat::test_that("spuR diagnostics match fallback with frozen emat (geodesic 
 
 testthat::test_that("spurhalflife matches fallback with frozen emat and preserves R scaling", {
   testthat::skip_if_not(is.loaded("wrap__rust_run_spur_halflife", PACKAGE = "spuR"), "spuR native Rust library not loaded")
-  df <- bench_df_or_skip()[seq_len(120L), ]
+  df <- read_bench_200()[seq_len(120L), ]
   q <- 6L
   nrep <- 200L
   set.seed(77)
@@ -196,7 +187,7 @@ testthat::test_that("spurhalflife matches fallback with frozen emat and preserve
 
 testthat::test_that("spurtransform parity holds across all 4 transforms and options", {
   testthat::skip_if_not(is.loaded("wrap__rust_run_spur_transform", PACKAGE = "spuR"), "spuR native Rust library not loaded")
-  df <- bench_df_or_skip()[seq_len(60L), ]
+  df <- read_bench_200()[seq_len(60L), ]
   df$s_1[2L] <- df$s_1[1L]
   df$s_2[2L] <- df$s_2[1L]
   df$grp <- rep(c("A", "B", "C", "D"), length.out = nrow(df))
@@ -240,7 +231,7 @@ testthat::test_that("spurtransform parity holds across all 4 transforms and opti
 
 testthat::test_that("spur pipeline is thread-invariant and matches individual rust calls", {
   testthat::skip_if_not(is.loaded("wrap__rust_run_spur_pipeline", PACKAGE = "spuR"), "spuR native Rust library not loaded")
-  df <- bench_df_or_skip()[seq_len(120L), ]
+  df <- read_bench_200()[seq_len(120L), ]
   p1 <- spuR::spur(
     y ~ x1 + x2, data = df, q = 8L, nrep = 400L,
     lon = "s_1", lat = "s_2", seed = 42L, backend = "rust", nthreads = 1L

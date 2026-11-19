@@ -154,3 +154,20 @@ testthat::test_that("input validation for q, nrep, data, and rank deficiency", {
     "rank-deficient"
   )
 })
+testthat::test_that("spurtransform transforms evaluated response and interaction columns", {
+  d <- data.frame(y = exp(1:6), x = c(2, 1, NA, 3, 2, 5), z = c(3, 1, 2, 1, 2, 2),
+                  g = c("a", "a", "a", "b", "b", "b"))
+  backends <- "fallback"
+  if (is.loaded("wrap__rust_run_spur_transform", PACKAGE = "spuR")) backends <- c(backends, "rust")
+  for (backend in backends) {
+    out <- spurtransform(log(y) ~ x:z, d, transformation = "cluster", clustvar = "g",
+                         backend = backend)
+    testthat::expect_identical(names(out), c(names(d), "h_log.y.", "h_x.z"))
+    testthat::expect_equal(out$h_log.y., c(-0.5, 0.5, NA, -1, 0, 1))
+    testthat::expect_equal(out$h_x.z, c(2.5, -2.5, NA, 3 - 17 / 3, 4 - 17 / 3, 10 - 17 / 3))
+    separate <- spurtransform(log(y) ~ x:z, d, transformation = "cluster", clustvar = "g",
+                              backend = backend, separately = TRUE)
+    testthat::expect_equal(separate$h_log.y., rep(c(-1, 0, 1), 2))
+    testthat::expect_equal(separate$h_x.z, out$h_x.z)
+  }
+})

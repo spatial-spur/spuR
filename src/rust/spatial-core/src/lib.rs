@@ -34,6 +34,7 @@ pub enum ErrorKind {
     InvalidInput,
     UnsupportedCase,
     TiedEigenspace,
+    InvalidSampledCovariance,
     CalibrationFailed,
     DegenerateVariance,
     InternalFailure,
@@ -61,6 +62,10 @@ impl CoreError {
 
     pub const fn tied(message: &'static str) -> Self {
         Self::new(ErrorKind::TiedEigenspace, message)
+    }
+
+    pub const fn invalid_sampled_covariance(message: &'static str) -> Self {
+        Self::new(ErrorKind::InvalidSampledCovariance, message)
     }
 
     pub const fn calibration(message: &'static str) -> Self {

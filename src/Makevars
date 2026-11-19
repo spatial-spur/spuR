@@ -4,7 +4,8 @@ STATLIB = $(LIBDIR)/libspur_rust.a
 
 SPATIAL_RUST ?= 1
 CARGO ?= cargo
-OFFLINE_FLAG = $(if $(wildcard rust/vendor),--offline,)
+VENDOR_ARCHIVE = $(wildcard rust/vendor.tar.xz)
+CARGO_VENDOR_FLAGS = $(if $(VENDOR_ARCHIVE),--offline --config target/vendor-config.toml,$(if $(wildcard rust/vendor),--offline,))
 
 ifeq ($(strip $(SPATIAL_RUST)),0)
   RUST_AVAILABLE :=
@@ -43,4 +44,5 @@ $(SHLIB): $(RUST_DEPS)
 .PHONY: $(STATLIB)
 $(STATLIB):
 	"$(CARGO)" --version && rustc --version
-	CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build --release --manifest-path rust/Cargo.toml $(OFFLINE_FLAG) --locked
+	$(if $(VENDOR_ARCHIVE),tar -xf "$(VENDOR_ARCHIVE)" -C rust && mkdir -p "$(TARGET_DIR)" && cp rust/vendor-config.toml "$(TARGET_DIR)/vendor-config.toml",:)
+	cd rust && CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build --release $(CARGO_VENDOR_FLAGS) --locked

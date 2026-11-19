@@ -14,12 +14,15 @@ print.spur_halflife <- function(x, ...) {
   level <- attr(x, "level") %||% 95
   cat(sprintf("Spatial Half-Life %s%% Confidence Interval\n", level))
   cat("---------------------------------------\n")
-  cat(sprintf("Lower bound : %9.4f\n", x$ci_l))
-  if (is.na(x$ci_u)) {
-    cat("Upper bound :       Inf\n")
-  } else {
-    cat(sprintf("Upper bound : %9.4f\n", x$ci_u))
-  }
-  cat("---------------------------------------\n")
+  .print_halflife_bounds(x$ci_l, x$ci_u)
   invisible(x)
+}
+
+.print_halflife_bounds <- function(lower, upper) {
+  if (is.na(lower)) {
+    cat("Confidence set is empty.\n")
+  } else {
+    cat(sprintf("Lower bound : %.6g\n", lower))
+    cat(sprintf("Upper bound : %s\n", if (is.na(upper)) "Inf" else sprintf("%.6g", upper)))
+  }
 }

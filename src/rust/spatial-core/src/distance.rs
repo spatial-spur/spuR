@@ -130,9 +130,11 @@ impl<'a> Distances<'a> {
                 .zip(b)
                 .map(|(left, right)| (left - right).powi(2))
                 .sum::<f64>();
-            if squares.is_finite() {
+            if squares.is_finite() && squares >= f64::MIN_POSITIVE {
                 squares.sqrt()
             } else {
+                // Norms remain representable even when their squares underflow
+                // or overflow. Keep the fast path for ordinary coordinates.
                 a.iter()
                     .zip(b)
                     .fold(0.0_f64, |norm, (left, right)| norm.hypot(left - right))
@@ -187,4 +189,20 @@ pub(crate) fn lower_triangle(distances: &[f64], n: usize) -> Vec<f64> {
         out.extend_from_slice(&row[..i]);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn euclidean_distance_handles_extreme_units() {
+        for scale in [1e-200, 1e-163, 1.0, 1e200] {
+            let coords = [0.0, 0.0, 3.0 * scale, 4.0 * scale];
+            let distances = distance_matrix(&coords, 2, 2, Metric::Euclidean).unwrap();
+            assert!((distances[1] / scale - 5.0).abs() < 2e-15);
+            assert_eq!(distances[1], distances[2]);
+        }
+        assert!(distance_matrix(&[f64::MAX, -f64::MAX], 2, 1, Metric::Euclidean).is_err());
+    }
 }

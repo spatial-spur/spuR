@@ -60,6 +60,7 @@ spur_skip_if_no_stata_or_spur <- local({
   available <- FALSE
 
   function() {
+    testthat::skip_on_cran()
     if (checked && !available) {
       testthat::skip("SPUR Stata package not available in current Stata setup.")
     }

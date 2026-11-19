@@ -1,6 +1,6 @@
 Package: spuR
 Title: Spatial Unit Root Tests and Transformations
-Version: 0.1.2
+Version: 0.1.2.9000
 Authors@R: c(
     person("Paul", "Boll", email = "david.boll@warwick.ac.uk",
            role = c("aut", "cre")),
@@ -21,7 +21,7 @@ Description: Implements low-frequency spatial unit root tests and
     Boll, and Voth (2026) for a practical guide to these methods.
 License: GPL-3
 Encoding: UTF-8
-SystemRequirements: Cargo (Rust's package manager), rustc (optional, for Rust acceleration)
+SystemRequirements: GNU make, Cargo (Rust's package manager), rustc (optional, for Rust acceleration)
 URL: https://github.com/spatial-spur/spuR
 BugReports: https://github.com/spatial-spur/spuR/issues
 Depends:
@@ -29,9 +29,7 @@ Depends:
 Imports:
     stats,
     RSpectra,
-    scpcR (>= 0.1.3)
-Remotes:
-    spatial-spur/scpcR@v0.1.3
+    scpcR (>= 0.1.3.9000)
 Suggests:
     testthat (>= 3.0.0)
 Config/testthat/edition: 3

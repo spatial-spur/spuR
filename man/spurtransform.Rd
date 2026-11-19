@@ -22,10 +22,10 @@ spurtransform(
 )
 }
 \arguments{
-\item{formula}{Formula listing variables to transform. All variables
-in the formula are transformed. Both one-sided (\code{~ y + x1 + x2})
-and two-sided (\code{y ~ x1 + x2}) formulas work, so you can pass your
-analysis formula directly.}
+\item{formula}{One-sided (\code{~ y + x1 + x2}) or two-sided (\code{y ~ x1 + x2})
+formula. The evaluated response and design columns are transformed,
+including interactions and expressions such as \code{log(y)}. The
+intercept is excluded. Evaluated column names are made syntactic.}
 
 \item{data}{A data frame containing variables and coordinates.}
 

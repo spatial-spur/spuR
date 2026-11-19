@@ -49,7 +49,9 @@ nn_matrix <- function(s, latlong = FALSE) {
   } else {
     distmat <- get_distmat_euclidean(s)
   }
-  distmat <- distmat / max(distmat)
+  diameter <- max(distmat)
+  if (diameter == 0) stop("Nearest-neighbor transform requires at least two distinct locations.")
+  distmat <- distmat / diameter
 
   distmat_nozeros <- distmat + (distmat == 0) * 1e10
   rowmins <- apply(distmat_nozeros, 1L, min)
@@ -79,8 +81,7 @@ iso_matrix <- function(s, radius, latlong = FALSE) {
     distmat <- distmat * 3.14159265359 * 6371000.009 * 2
   }
 
-  distmat_nozeros <- distmat + (distmat == 0) * 1e10
-  dist_below_b <- distmat_nozeros <= radius
+  dist_below_b <- distmat > 0 & distmat <= radius
   dist_below_b <- dist_below_b / rowSums(dist_below_b)
 
   iso_mat <- diag(nrow(distmat)) - dist_below_b
@@ -112,29 +113,21 @@ cluster_matrix <- function(cluster) {
 #' @return A numeric matrix.
 #' @keywords internal
 lbm_gls_matrix <- function(s, latlong = FALSE) {
-  distmat <- if (isTRUE(latlong)) {
-    get_distmat_lat_lon(s)
-  } else {
-    get_distmat_euclidean(s)
-  }
-  distmat <- distmat / max(distmat)
+  fit <- .lbm_spectral_factors(.normalized_distmat(s, latlong))
+  tcrossprod(sweep(fit$vectors, 2L, fit$inverse_sqrt, "*"), fit$vectors)
+}
 
-  sigma_lbm_dm <- get_sigma_lbm_dm(distmat)
-
-  eig <- eigen(sigma_lbm_dm, symmetric = TRUE)
-  values <- eig$values
-  vectors <- eig$vectors
-
-  idx <- order(values, decreasing = TRUE)
-  values <- values[idx]
-  vectors <- vectors[, idx, drop = FALSE]
-
-  keep <- values > 1e-10
+.lbm_spectral_factors <- function(distmat) {
+  eig <- eigen(get_sigma_lbm_dm(distmat), symmetric = TRUE)
+  keep <- eig$values > 1e-10
   if (!any(keep)) {
     stop("LBM-GLS covariance has no eigenvalues above 1e-10.")
   }
-  values <- values[keep]
-  vectors <- vectors[, keep, drop = FALSE]
+  list(vectors = eig$vectors[, keep, drop = FALSE], inverse_sqrt = 1 / sqrt(eig$values[keep]))
+}
 
-  vectors %*% diag(1 / sqrt(values), nrow = length(values), ncol = length(values)) %*% t(vectors)
+.apply_lbm_transform <- function(distmat, variables) {
+  fit <- .lbm_spectral_factors(distmat)
+  transformed <- fit$vectors %*% (crossprod(fit$vectors, variables) * fit$inverse_sqrt)
+  sweep(transformed, 2L, colMeans(transformed), "-")
 }

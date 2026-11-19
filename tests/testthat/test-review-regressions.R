@@ -134,3 +134,18 @@ test_that("failed fallback power bracketing terminates explicitly", {
   )
   expect_equal(calls, 201L)
 })
+testthat::test_that("half-life inversion excludes exact simulated equality at the nominal level", {
+  y <- matrix(c(0, 1, 3, 2), ncol = 1L)
+  distances <- as.matrix(stats::dist(0:3)) / 3
+  draws <- matrix(seq_len(200), nrow = 2L)
+  for (alpha in c(0.05, 0.10)) {
+    local({
+      pvalues <- c(alpha, alpha + 0.01, alpha - 0.01, rep(0, 128L))
+      testthat::local_mocked_bindings(c_ci = function(...) pvalues, .package = "spuR")
+      ci <- spur_persistence(y, distances, draws, level = 1 - alpha)
+      testthat::expect_identical(ci$hl_ci_lower, ci$hl_grid_ho[2L])
+      testthat::expect_identical(ci$hl_ci_upper, ci$hl_grid_ho[2L])
+      testthat::expect_identical(ci$pv_mat, pvalues)
+    })
+  }
+})
