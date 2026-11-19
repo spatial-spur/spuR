@@ -30,6 +30,19 @@ extern "C" {
         iwork_len: *const i32,
         status: *mut i32,
     );
+    fn dsyevd_(
+        jobz: *const u8,
+        uplo: *const u8,
+        n: *const i32,
+        a: *mut f64,
+        lda: *const i32,
+        w: *mut f64,
+        work: *mut f64,
+        lwork: *const i32,
+        iwork: *mut i32,
+        liwork: *const i32,
+        info: *mut i32,
+    );
     fn cblas_dgemv(
         order: i32,
         transpose: i32,
@@ -208,36 +221,132 @@ fn has_tied_values(values: &[f64]) -> bool {
 #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
 pub(crate) fn dense_eigenpairs(a: &mut [f64], n: usize, q: usize) -> Result<Eigenpairs, CoreError> {
     let mut values = vec![0.0; n];
+    let n_i32 = n as i32;
+    let mut status = 0;
+
+    if q == n {
+        let mut work_query = 0.0_f64;
+        let mut iwork_query = 0_i32;
+        let neg1 = -1_i32;
+        unsafe {
+            dsyevd_(
+                b"V".as_ptr(),
+                b"L".as_ptr(),
+                &n_i32,
+                a.as_mut_ptr(),
+                &n_i32,
+                values.as_mut_ptr(),
+                &mut work_query,
+                &neg1,
+                &mut iwork_query,
+                &neg1,
+                &mut status,
+            );
+        }
+        if status != 0 {
+            return Err(CoreError::internal(
+                "SCPC basis eigensolver workspace query failed",
+            ));
+        }
+        let lwork = (work_query as usize).max(1 + 6 * n + 2 * n * n);
+        let liwork = (iwork_query as usize).max(3 + 5 * n);
+        let mut work = vec![0.0; lwork];
+        let mut iwork = vec![0; liwork];
+        let lwork_i32 = lwork as i32;
+        let liwork_i32 = liwork as i32;
+        unsafe {
+            dsyevd_(
+                b"V".as_ptr(),
+                b"L".as_ptr(),
+                &n_i32,
+                a.as_mut_ptr(),
+                &n_i32,
+                values.as_mut_ptr(),
+                work.as_mut_ptr(),
+                &lwork_i32,
+                iwork.as_mut_ptr(),
+                &liwork_i32,
+                &mut status,
+            );
+        }
+        if status != 0 {
+            return Err(CoreError::internal(
+                "SCPC basis eigensolver failed to converge",
+            ));
+        }
+        values.reverse();
+        let mut vectors = vec![0.0; n * n];
+        for j in 0..n {
+            vectors[(n - 1 - j) * n..(n - j) * n].copy_from_slice(&a[j * n..(j + 1) * n]);
+        }
+        return Ok(Eigenpairs { values, vectors });
+    }
+
     let mut vectors = vec![0.0; n * q];
     let mut support = vec![0; 2 * q];
-    let mut work = vec![0.0; 26 * n];
-    let mut iwork = vec![0; 10 * n];
-    let n = n as i32;
-    let lower = n - q as i32 + 1;
-    let mut status = 0;
+    let lower = n_i32 - q as i32 + 1;
     let mut found = 0;
+    let mut work_query = 0.0_f64;
+    let mut iwork_query = 0_i32;
+    let neg1 = -1_i32;
     unsafe {
         dsyevr_(
             b"V".as_ptr(),
-            (if q == n as usize { b"A" } else { b"I" }).as_ptr(),
+            b"I".as_ptr(),
             b"L".as_ptr(),
-            &n,
+            &n_i32,
             a.as_mut_ptr(),
-            &n,
+            &n_i32,
             &0.0,
             &0.0,
             &lower,
-            &n,
+            &n_i32,
             &0.0,
             &mut found,
             values.as_mut_ptr(),
             vectors.as_mut_ptr(),
-            &n,
+            &n_i32,
+            support.as_mut_ptr(),
+            &mut work_query,
+            &neg1,
+            &mut iwork_query,
+            &neg1,
+            &mut status,
+        );
+    }
+    if status != 0 {
+        return Err(CoreError::internal(
+            "SCPC basis eigensolver workspace query failed",
+        ));
+    }
+    let lwork = (work_query as usize).max(26 * n);
+    let liwork = (iwork_query as usize).max(10 * n);
+    let mut work = vec![0.0; lwork];
+    let mut iwork = vec![0; liwork];
+    let lwork_i32 = lwork as i32;
+    let liwork_i32 = liwork as i32;
+    unsafe {
+        dsyevr_(
+            b"V".as_ptr(),
+            b"I".as_ptr(),
+            b"L".as_ptr(),
+            &n_i32,
+            a.as_mut_ptr(),
+            &n_i32,
+            &0.0,
+            &0.0,
+            &lower,
+            &n_i32,
+            &0.0,
+            &mut found,
+            values.as_mut_ptr(),
+            vectors.as_mut_ptr(),
+            &n_i32,
             support.as_mut_ptr(),
             work.as_mut_ptr(),
-            &(work.len() as i32),
+            &lwork_i32,
             iwork.as_mut_ptr(),
-            &(iwork.len() as i32),
+            &liwork_i32,
             &mut status,
         );
     }
@@ -248,7 +357,6 @@ pub(crate) fn dense_eigenpairs(a: &mut [f64], n: usize, q: usize) -> Result<Eige
     }
     values.truncate(q);
     values.reverse();
-    let n = n as usize;
     for j in 0..q / 2 {
         let (left, right) = vectors.split_at_mut((q - 1 - j) * n);
         left[j * n..(j + 1) * n].swap_with_slice(&mut right[..n]);
@@ -545,6 +653,56 @@ mod tests {
             }
             assert!(partial_eigenvectors(&matrix, n, q, steps).unwrap().is_none());
             assert!(symmetric_eigenpairs(&matrix, n, q).unwrap().tied);
+        }
+    }
+
+    #[test]
+    fn dense_full_eigenpairs_reconstructs_and_is_orthonormal() {
+        let n = 24usize;
+        let mut a = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                let d = ((i as f64) - (j as f64)).abs() / (n as f64);
+                let v = (-2.0 * d).exp();
+                a[i * n + j] = v;
+                a[j * n + i] = v;
+            }
+        }
+        let orig = a.clone();
+        let pairs = dense_eigenpairs(&mut a, n, n).unwrap();
+        assert_eq!(pairs.values.len(), n);
+        assert_eq!(pairs.vectors.len(), n * n);
+
+        // Descending eigenvalues
+        for w in pairs.values.windows(2) {
+            assert!(w[0] >= w[1] - 1e-14);
+        }
+
+        // Orthonormality V^T V = I_n
+        for i in 0..n {
+            for j in 0..n {
+                let dot: f64 = (0..n)
+                    .map(|k| pairs.vectors[i * n + k] * pairs.vectors[j * n + k])
+                    .sum();
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((dot - expected).abs() < 1e-12, "V'V[{i},{j}]={dot}");
+            }
+        }
+
+        // Reconstruction A = V diag(lambda) V^T
+        for i in 0..n {
+            for j in 0..n {
+                let rec: f64 = (0..n)
+                    .map(|k| {
+                        pairs.values[k] * pairs.vectors[k * n + i] * pairs.vectors[k * n + j]
+                    })
+                    .sum();
+                assert!(
+                    (rec - orig[i * n + j]).abs() < 1e-12,
+                    "recon[{i},{j}]={rec} vs {}",
+                    orig[i * n + j]
+                );
+            }
         }
     }
 }

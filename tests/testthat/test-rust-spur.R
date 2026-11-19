@@ -20,6 +20,7 @@ bench_df_or_skip <- function() {
 }
 
 testthat::test_that("spuR diagnostics match fallback with frozen emat (geodesic and euclidean)", {
+  testthat::skip_if_not(is.loaded("wrap__rust_run_spur_i0", PACKAGE = "spuR"), "spuR native Rust library not loaded")
   df <- bench_df_or_skip()
   q <- 8L
   nrep <- 1000L
@@ -133,6 +134,7 @@ testthat::test_that("spuR diagnostics match fallback with frozen emat (geodesic 
 })
 
 testthat::test_that("spurhalflife matches fallback with frozen emat and preserves R scaling", {
+  testthat::skip_if_not(is.loaded("wrap__rust_run_spur_halflife", PACKAGE = "spuR"), "spuR native Rust library not loaded")
   df <- bench_df_or_skip()[seq_len(120L), ]
   q <- 6L
   nrep <- 200L
@@ -193,6 +195,7 @@ testthat::test_that("spurhalflife matches fallback with frozen emat and preserve
 })
 
 testthat::test_that("spurtransform parity holds across all 4 transforms and options", {
+  testthat::skip_if_not(is.loaded("wrap__rust_run_spur_transform", PACKAGE = "spuR"), "spuR native Rust library not loaded")
   df <- bench_df_or_skip()[seq_len(60L), ]
   df$s_1[2L] <- df$s_1[1L]
   df$s_2[2L] <- df$s_2[1L]
@@ -236,6 +239,7 @@ testthat::test_that("spurtransform parity holds across all 4 transforms and opti
 })
 
 testthat::test_that("spur pipeline is thread-invariant and matches individual rust calls", {
+  testthat::skip_if_not(is.loaded("wrap__rust_run_spur_pipeline", PACKAGE = "spuR"), "spuR native Rust library not loaded")
   df <- bench_df_or_skip()[seq_len(120L), ]
   p1 <- spuR::spur(
     y ~ x1 + x2, data = df, q = 8L, nrep = 400L,
@@ -261,18 +265,20 @@ testthat::test_that("tied eigenspace triggers auto fallback and backend validati
     y_c = sin(2 * pi * k / 16),
     val = sin(k * 1.3) + cos(k * 0.7)
   )
-  ru_i0 <- spuR::spurtest_i0(
-    val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"),
-    q = 8L, nrep = 2000L, seed = 42L, backend = "rust"
-  )
-  auto_i0 <- spuR::spurtest_i0(
-    val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"),
-    q = 8L, nrep = 2000L, seed = 42L, backend = "auto"
-  )
-  testthat::expect_identical(ru_i0$backend, "rust")
-  testthat::expect_true(ru_i0$tied)
-  testthat::expect_identical(auto_i0$backend, "fallback")
-  testthat::expect_true(auto_i0$tied)
+  if (is.loaded("wrap__rust_run_spur_i0", PACKAGE = "spuR")) {
+    ru_i0 <- spuR::spurtest_i0(
+      val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"),
+      q = 8L, nrep = 2000L, seed = 42L, backend = "rust"
+    )
+    auto_i0 <- spuR::spurtest_i0(
+      val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"),
+      q = 8L, nrep = 2000L, seed = 42L, backend = "auto"
+    )
+    testthat::expect_identical(ru_i0$backend, "rust")
+    testthat::expect_true(ru_i0$tied)
+    testthat::expect_identical(auto_i0$backend, "fallback")
+    testthat::expect_true(auto_i0$tied)
+  }
 
   testthat::expect_error(
     spuR::spurtest_i0(val ~ 1, data = df, coords_euclidean = c("x_c", "y_c"), q = 8L, nrep = 2000L, backend = "bogus"),
