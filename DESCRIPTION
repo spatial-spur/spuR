@@ -21,7 +21,7 @@ Description: Implements low-frequency spatial unit root tests and
     Boll, and Voth (2026) for a practical guide to these methods.
 License: GPL-3
 Encoding: UTF-8
-SystemRequirements: GNU make, Cargo (Rust's package manager), rustc (optional, for Rust acceleration)
+SystemRequirements: GNU make, Rust (>= 1.89) and Cargo (optional, for Rust acceleration)
 URL: https://github.com/spatial-spur/spuR
 BugReports: https://github.com/spatial-spur/spuR/issues
 Depends:

@@ -15,12 +15,7 @@ else
   RUST_AVAILABLE := $(shell command -v "$(CARGO)" 2>/dev/null)
 endif
 
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-  RUST_SYS_LIBS = -framework Accelerate -lpthread -ldl -lm
-else
-  RUST_SYS_LIBS = -lpthread -ldl -lm
-endif
+RUST_SYS_LIBS = -lpthread -ldl -lm
 
 ifneq ($(strip $(RUST_AVAILABLE)),)
   RUST_MODE = rust

@@ -14,8 +14,11 @@ guide to these methods can be found in
 
 ## Installation
 
-For this development checkout, install from the workspace root with Cargo on your PATH.
-Set `SPATIAL_RUST=0` for a pure R build; `backend = "fallback"` selects pure R at
+For this development checkout, install from the workspace root with Cargo and
+Rust 1.89 or newer on your PATH. The Rust backend uses OxiBLAS for matrix
+products and dense symmetric eigendecomposition.
+
+Set `SPATIAL_RUST=0` for a pure R build. `backend = "fallback"` selects pure R at
 runtime in either build.
 
 ```sh

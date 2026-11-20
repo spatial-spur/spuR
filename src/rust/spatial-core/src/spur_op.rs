@@ -1003,11 +1003,7 @@ impl<'a> PowQfBase<'a> {
     }
 }
 
-fn select_leading_basis(
-    sigdm: &mut [f64],
-    n: usize,
-    q: usize,
-) -> Result<(Vec<f64>, bool), CoreError> {
+fn select_leading_basis(sigdm: &[f64], n: usize, q: usize) -> Result<(Vec<f64>, bool), CoreError> {
     let eigen = basis::symmetric_eigenpairs(sigdm, n, q)?;
     let lead = eigen.values.first().copied().unwrap_or(0.0);
     let tail = eigen.values.get(q - 1).copied().unwrap_or(0.0);
@@ -1547,8 +1543,7 @@ fn prepare_lbm_basis(
 ) -> Result<(Vec<f64>, bool, Vec<f64>, Vec<f64>), CoreError> {
     let n = geom.n;
     let sigdm_bm = geom.sigma_lbm_dm();
-    let mut sigdm_work = sigdm_bm.clone();
-    let (basis_r, tied) = select_leading_basis(&mut sigdm_work, n, q)?;
+    let (basis_r, tied) = select_leading_basis(&sigdm_bm, n, q)?;
     let mr = col_demean_matrix(&basis_r, n, q);
     let mut sig_r = vec![0.0_f64; n * q];
     linalg::multiply(&sigdm_bm, &basis_r, &mut sig_r, n, n, q, false);
@@ -1573,8 +1568,7 @@ fn prepare_resid_basis(
     }
     let c_bm = geom.get_cbar(RHO_BM)?;
     let sigdm_bm = geom.residual_sigma_bm(c_bm, &qx, k_x);
-    let mut sigdm_work = sigdm_bm.clone();
-    let (basis_r, tied) = select_leading_basis(&mut sigdm_work, n, q)?;
+    let (basis_r, tied) = select_leading_basis(&sigdm_bm, n, q)?;
     let mr = residual_project_matrix(&basis_r, &qx, n, k_x, q);
     let mut sig_r = vec![0.0_f64; n * q];
     linalg::multiply(&sigdm_bm, &basis_r, &mut sig_r, n, n, q, false);
@@ -1803,8 +1797,8 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
         let nrep = req.nrep;
 
         let c_bm = geom.get_cbar(RHO_BM)?;
-        let mut sigdm_bm = geom.kernel_dm(c_bm);
-        let (basis_r, tied) = select_leading_basis(&mut sigdm_bm, n, q)?;
+        let sigdm_bm = geom.kernel_dm(c_bm);
+        let (basis_r, tied) = select_leading_basis(&sigdm_bm, n, q)?;
         let mr = col_demean_matrix(&basis_r, n, q);
         let p_vec = prepare_y_projections(req.y, n, 1, &basis_r, q)?;
 
@@ -2395,8 +2389,8 @@ fn apply_lbmgls_with_geom(
     demean_lbmgls: bool,
 ) -> Result<SpurTransformOutput, CoreError> {
     let n = geom.n;
-    let mut sigdm = geom.sigma_lbm_dm();
-    let pairs = basis::dense_eigenpairs(&mut sigdm, n, n)?;
+    let sigdm = geom.sigma_lbm_dm();
+    let pairs = basis::dense_eigenpairs(&sigdm, n, n)?;
     let keep: Vec<usize> = pairs
         .values
         .iter()
@@ -2671,8 +2665,8 @@ mod tests {
         for (offset, first_is_positive) in [(8.0, true), (1024.0, false)] {
             let a = -1.0;
             let b = 1.0 + offset * f64::EPSILON;
-            let mut covariance = [a * a, a * b, a * b, b * b];
-            let (basis, tied) = select_leading_basis(&mut covariance, 2, 1).unwrap();
+            let covariance = [a * a, a * b, a * b, b * b];
+            let (basis, tied) = select_leading_basis(&covariance, 2, 1).unwrap();
             assert!(!tied);
             assert_eq!(basis[0].is_sign_positive(), first_is_positive);
             assert_eq!(basis[1].is_sign_negative(), first_is_positive);
@@ -3373,8 +3367,8 @@ mod tests {
             // Reference log-sum-exp evaluation without the packed fast path.
             let mut g = SpurGeometry::from_coords(coords_hl, n_hl, 2, Metric::Euclidean).unwrap();
             let c_bm = g.get_cbar(RHO_BM).unwrap();
-            let mut sigdm_bm = g.kernel_dm(c_bm);
-            let (basis_r, _) = select_leading_basis(&mut sigdm_bm, n_hl, q_hl).unwrap();
+            let sigdm_bm = g.kernel_dm(c_bm);
+            let (basis_r, _) = select_leading_basis(&sigdm_bm, n_hl, q_hl).unwrap();
             let mr = col_demean_matrix(&basis_r, n_hl, q_hl);
             let p_vec = prepare_y_projections(&y_hl, n_hl, 1, &basis_r, q_hl).unwrap();
             let neg_ln_half = -(0.5_f64).ln();

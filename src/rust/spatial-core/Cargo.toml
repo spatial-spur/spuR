@@ -2,12 +2,12 @@
 name = "spatial-core"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.89"
 description = "Shared numerical core for spatial SCPC and SPUR"
 license = "MIT"
 
-[features]
-portable = []
-
 [dependencies]
-matrixmultiply = "0.3"
+oxiblas-blas = "=0.2.4"
+oxiblas-lapack = "=0.2.4"
+oxiblas-matrix = "=0.2.4"
 rayon = "1.10"

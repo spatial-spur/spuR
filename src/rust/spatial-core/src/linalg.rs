@@ -1,42 +1,6 @@
 use crate::CoreError;
-
-#[cfg(all(target_vendor = "apple", not(feature = "portable")))]
-#[link(name = "Accelerate", kind = "framework")]
-extern "C" {
-    fn cblas_dgemm(
-        order: i32,
-        trans_a: i32,
-        trans_b: i32,
-        m: i32,
-        n: i32,
-        k: i32,
-        alpha: f64,
-        a: *const f64,
-        lda: i32,
-        b: *const f64,
-        ldb: i32,
-        beta: f64,
-        c: *mut f64,
-        ldc: i32,
-    );
-    fn vvexp(output: *mut f64, input: *const f64, count: *const i32);
-    fn dgeev_(
-        job_left: *const u8,
-        job_right: *const u8,
-        n: *const i32,
-        matrix: *mut f64,
-        lda: *const i32,
-        real: *mut f64,
-        imaginary: *mut f64,
-        left: *mut f64,
-        ld_left: *const i32,
-        right: *mut f64,
-        ld_right: *const i32,
-        workspace: *mut f64,
-        work_len: *const i32,
-        info: *mut i32,
-    );
-}
+use oxiblas_blas::level3::{gemm::gemm_transposed, Trans};
+use oxiblas_matrix::{MatMut, MatRef};
 
 pub(crate) fn exp_scaled(input: &[f64], scale: f64, output: &mut [f64]) {
     debug_assert_eq!(input.len(), output.len());
@@ -44,15 +8,6 @@ pub(crate) fn exp_scaled(input: &[f64], scale: f64, output: &mut [f64]) {
         output.fill(1.0);
         return;
     }
-    #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
-    {
-        for (value, distance) in output.iter_mut().zip(input) {
-            *value = scale * distance;
-        }
-        // Accelerate explicitly supports in-place vector exponential.
-        unsafe { vvexp(output.as_mut_ptr(), output.as_ptr(), &(output.len() as i32)) };
-    }
-    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
     for (value, distance) in output.iter_mut().zip(input) {
         *value = (scale * distance).exp();
     }
@@ -68,51 +23,17 @@ pub(crate) fn multiply(
     n: usize,
     transpose_a: bool,
 ) {
-    debug_assert!(a.len() >= m * k && b.len() >= k * n && c.len() >= m * n);
-    let lda = if transpose_a { m } else { k };
-    #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
-    unsafe {
-        cblas_dgemm(
-            101,
-            if transpose_a { 112 } else { 111 },
-            111,
-            m as i32,
-            n as i32,
-            k as i32,
-            1.0,
-            a.as_ptr(),
-            lda as i32,
-            b.as_ptr(),
-            n as i32,
-            0.0,
-            c.as_mut_ptr(),
-            n as i32,
-        );
-    }
-    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
-    unsafe {
-        let (row_a, col_a) = if transpose_a {
-            (1, lda as isize)
-        } else {
-            (lda as isize, 1)
-        };
-        matrixmultiply::dgemm(
-            m,
-            k,
-            n,
-            1.0,
-            a.as_ptr(),
-            row_a,
-            col_a,
-            b.as_ptr(),
-            n as isize,
-            1,
-            0.0,
-            c.as_mut_ptr(),
-            n as isize,
-            1,
-        );
-    }
+    // A row-major buffer is a column-major view of its transpose. Compute
+    // Cᵀ = Bᵀ Aᵀ directly into the output buffer without copying either input.
+    let b_t = MatRef::from_column_major(b, n, k).expect("right matrix fits its buffer");
+    let c_t = MatMut::from_column_major(c, n, m).expect("output matrix fits its buffer");
+    let (rows, cols, transpose) = if transpose_a {
+        (m, k, Trans::Trans)
+    } else {
+        (k, m, Trans::NoTrans)
+    };
+    let a_view = MatRef::from_column_major(a, rows, cols).expect("left matrix fits its buffer");
+    gemm_transposed(Trans::NoTrans, transpose, 1.0, b_t, a_view, 0.0, c_t);
 }
 
 pub(crate) struct EigenWorkspace {
@@ -120,7 +41,6 @@ pub(crate) struct EigenWorkspace {
     values: Vec<f64>,
     auxiliary: Vec<f64>,
     scratch: Vec<f64>,
-    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
     permutation: Vec<usize>,
 }
 
@@ -130,69 +50,13 @@ impl EigenWorkspace {
             matrix: vec![0.0; n * n],
             values: vec![0.0; n],
             auxiliary: vec![0.0; n],
-            scratch: vec![
-                0.0;
-                if cfg!(all(target_vendor = "apple", not(feature = "portable"))) {
-                    8 * n
-                } else {
-                    n * n
-                }
-            ],
-            #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
+            scratch: vec![0.0; n * n],
             permutation: (0..n).collect(),
         }
     }
 
-    /// Eigenvalues of diag(positive, negative, ...) * Omega.
-    #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
-    pub(crate) fn weighted_eigenvalues(
-        &mut self,
-        omega: &[f64],
-        width: usize,
-        positive: f64,
-        negative: f64,
-    ) -> Result<&[f64], CoreError> {
-        let n = self.values.len();
-        for j in 0..n {
-            for i in 0..n {
-                let scale = if i == 0 { positive } else { negative };
-                self.matrix[j * n + i] = scale * omega[i * width + j];
-            }
-        }
-        let n = n as i32;
-        let work_len = self.scratch.len() as i32;
-        let mut dummy_left = 0.0;
-        let mut dummy_right = 0.0;
-        let mut status = 0;
-        unsafe {
-            dgeev_(
-                b"N".as_ptr(),
-                b"N".as_ptr(),
-                &n,
-                self.matrix.as_mut_ptr(),
-                &n,
-                self.values.as_mut_ptr(),
-                self.auxiliary.as_mut_ptr(),
-                &mut dummy_left,
-                &1,
-                &mut dummy_right,
-                &1,
-                self.scratch.as_mut_ptr(),
-                &work_len,
-                &mut status,
-            );
-        }
-        if status != 0 {
-            return Err(CoreError::internal(
-                "SCPC covariance eigensolver failed to converge",
-            ));
-        }
-        Ok(&self.values)
-    }
-
     /// A pivoted square root turns the quadratic form into a symmetric
-    /// eigenproblem on platforms without Accelerate. This includes singular PSD covariances.
-    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
+    /// eigenproblem, including when the covariance is singular and PSD.
     pub(crate) fn weighted_eigenvalues(
         &mut self,
         omega: &[f64],
@@ -256,24 +120,15 @@ impl EigenWorkspace {
                 self.matrix[j * n + i] = value;
             }
         }
-        symmetric_eigen(&mut self.matrix, &mut self.values, None)?;
+        jacobi_eigenvalues(&mut self.matrix, &mut self.values)?;
         Ok(&self.values)
     }
 }
 
-#[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
-pub(crate) fn symmetric_eigen(
-    a: &mut [f64],
-    values: &mut [f64],
-    mut vectors: Option<&mut [f64]>,
-) -> Result<(), CoreError> {
+// The SCPC probability evaluator solves many small eigenvalues-only problems
+// and reuses its workspace across critical-value trials.
+fn jacobi_eigenvalues(a: &mut [f64], values: &mut [f64]) -> Result<(), CoreError> {
     let n = values.len();
-    if let Some(vectors) = vectors.as_deref_mut() {
-        vectors.fill(0.0);
-        for i in 0..n {
-            vectors[i * n + i] = 1.0;
-        }
-    }
     for _ in 0..64 {
         let mut changed = false;
         for p in 0..n {
@@ -307,14 +162,6 @@ pub(crate) fn symmetric_eigen(
                     a[p * n + k] = a[k * n + p];
                     a[q * n + k] = a[k * n + q];
                 }
-                if let Some(vectors) = vectors.as_deref_mut() {
-                    for k in 0..n {
-                        let left = vectors[p * n + k];
-                        let right = vectors[q * n + k];
-                        vectors[p * n + k] = cosine * left - sine * right;
-                        vectors[q * n + k] = sine * left + cosine * right;
-                    }
-                }
             }
         }
         if !changed {
@@ -327,4 +174,23 @@ pub(crate) fn symmetric_eigen(
     Err(CoreError::internal(
         "SCPC covariance eigensolver failed to converge",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::multiply;
+
+    #[test]
+    fn multiply_respects_row_major_layout_and_transpose() {
+        let right = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut product = [0.0; 6];
+        let expected = [9.0, 12.0, 15.0, 19.0, 26.0, 33.0];
+
+        multiply(&[1.0, 2.0, 3.0, 4.0], &right, &mut product, 2, 2, 3, false);
+        assert_eq!(product, expected);
+        multiply(&[1.0, 3.0, 2.0, 4.0], &right, &mut product, 2, 2, 3, true);
+        assert_eq!(product, expected);
+        multiply(&[], &[], &mut product, 2, 0, 3, false);
+        assert_eq!(product, [0.0; 6]);
+    }
 }
