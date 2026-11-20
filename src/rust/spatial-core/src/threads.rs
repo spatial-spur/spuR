@@ -14,7 +14,7 @@ thread_local! {
 /// Returns `true` while executing inside a single-thread `nthreads = Some(1)` scope.
 ///
 /// Parallel sections check this flag and run sequentially on the calling thread,
-/// avoiding Rayon pool locks that would deadlock after `fork()`.
+/// avoiding Rayon pool locks that may remain held after `fork()`.
 pub fn is_serial() -> bool {
     SERIAL_MODE.with(Cell::get)
 }
@@ -41,8 +41,8 @@ impl Drop for SerialGuard {
 /// Execute `f` using the requested thread budget.
 ///
 /// Setting `nthreads = Some(1)` executes the compiled Rust routine sequentially
-/// directly on the caller thread without locking or spawning Rayon pools, making
-/// single-threaded calls fork-safe even if multi-threaded calls ran previously.
+/// directly on the caller thread without locking or spawning Rayon pools.
+/// Host adapters and numerical providers may impose additional fork restrictions.
 pub fn run_with_threads<R, F>(nthreads: Option<usize>, f: F) -> Result<R, CoreError>
 where
     R: Send,

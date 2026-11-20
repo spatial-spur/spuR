@@ -1635,17 +1635,7 @@ pub fn run_spur_i1_resid(req: &SpurTestRequest<'_>) -> Result<SpurI1Output, Core
 }
 
 #[inline(always)]
-fn fast_neg_half_pow(x: f64, q: usize) -> f64 {
-    if q == 8 {
-        let x2 = x * x;
-        return (x2 * x2).recip();
-    }
-    if q == 15 {
-        let x2 = x * x;
-        let x4 = x2 * x2;
-        let x7 = x4 * x2 * x;
-        return (x7 * x.sqrt()).recip();
-    }
+fn half_power(x: f64, q: usize) -> f64 {
     let mut m = q >> 1;
     let mut acc = 1.0_f64;
     let mut base = x;
@@ -1659,17 +1649,101 @@ fn fast_neg_half_pow(x: f64, q: usize) -> f64 {
     if (q & 1) != 0 {
         acc *= x.sqrt();
     }
-    acc.recip()
+    acc
 }
 
 fn halflife_tile_size(q: usize, p_pairs: usize, nrep: usize) -> (usize, bool) {
-    // Packed pair products dominate scratch for large q. If even one packed
-    // draw would exceed the budget, use the factor-based path for every draw.
-    let base_per_draw = 2 * q + HL_HA_LEN + 3;
+    // Bound both the shared packed coefficient bank and per-job draw scratch.
+    let base_per_draw = 2 * q;
     let budget = MAX_HALFLIFE_TILE_BYTES / size_of::<f64>();
-    let packed = base_per_draw + p_pairs <= budget;
-    let per_draw = base_per_draw + if packed { p_pairs } else { 0 };
+    let packed_width = base_per_draw + p_pairs + HL_HA_LEN + 2;
+    let packed = p_pairs <= budget / HL_HA_LEN && packed_width <= budget;
+    let per_draw = if packed { packed_width } else { base_per_draw };
     ((budget / per_draw).clamp(1, TILE_COLS).min(nrep), packed)
+}
+
+struct HalfLifeScratch {
+    tile_e: Vec<f64>,
+    e_tile: Vec<f64>,
+    u_tile: Vec<f64>,
+    q_tile: Vec<f64>,
+    sum_ha_over_ho: Vec<f64>,
+    col_sq: Vec<f64>,
+    xc_obs: Vec<f64>,
+}
+
+impl HalfLifeScratch {
+    fn new(q: usize, max_tile: usize, packed_pairs: Option<usize>) -> Self {
+        Self {
+            tile_e: vec![0.0; q * max_tile],
+            e_tile: vec![0.0; q * max_tile],
+            u_tile: vec![0.0; packed_pairs.unwrap_or(0) * max_tile],
+            q_tile: vec![0.0; packed_pairs.map_or(0, |_| HL_HA_LEN * max_tile)],
+            sum_ha_over_ho: vec![0.0; packed_pairs.map_or(0, |_| max_tile)],
+            col_sq: vec![0.0; packed_pairs.map_or(0, |_| max_tile)],
+            xc_obs: vec![0.0; q],
+        }
+    }
+}
+
+fn halflife_cancellation_bound(matrix: &[f64], p_pairs: usize) -> f64 {
+    // Sum of absolute quadratic-form terms is bounded by ||A||_F * ||z||².
+    let scale = matrix.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    let scaled_frobenius = matrix
+        .iter()
+        .map(|v| (v / scale).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    scale * (8.0 * f64::EPSILON * (p_pairs as f64) * scaled_frobenius)
+}
+
+#[inline(always)]
+fn add_halflife_likelihood_terms(
+    sum: &mut [f64],
+    forms: &[f64],
+    inv_norms: &[f64],
+    determinant_ratio: f64,
+    power: impl Fn(f64) -> f64,
+) {
+    for ((total, &form), &inv_norm) in sum.iter_mut().zip(forms).zip(inv_norms) {
+        let denominator = power(form * inv_norm);
+        // Check before reciprocal. Non-normal powers send this draw to the
+        // log-space calculation, even if the other alternatives are normal.
+        let term = if denominator <= f64::MIN_POSITIVE.recip() {
+            determinant_ratio * denominator.recip()
+        } else {
+            f64::NAN
+        };
+        *total += term;
+    }
+}
+
+#[inline(never)]
+fn halflife_log_draw_sum(
+    alternatives: &[OmegaPairFactor],
+    packed_forms: &[f64],
+    draws: &[f64],
+    cols: usize,
+    c: usize,
+    q: f64,
+    log_null_density: f64,
+) -> Result<f64, CoreError> {
+    let mut log_ha = [0.0; HL_HA_LEN];
+    for (j, ha) in alternatives.iter().enumerate() {
+        let form = if packed_forms.is_empty() {
+            let value = quadratic_form_from_upper(&ha.ch_omi.upper, draws, cols, c);
+            if !value.is_finite() || value <= 0.0 {
+                return Err(CoreError::degenerate(
+                    "half-life simulation draw has an invalid covariance quadratic form",
+                ));
+            }
+            value
+        } else {
+            packed_forms[j * cols + c]
+        };
+        log_ha[j] = ha.ch_omi.log_sqrt_det - 0.5 * q * form.ln();
+    }
+    Ok(log_sum_exp(&log_ha) - log_null_density)
 }
 
 fn quadratic_form_from_upper(upper: &[f64], draws: &[f64], cols: usize, c: usize) -> f64 {
@@ -1825,6 +1899,7 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                 "half-life simulation draws must have finite positive squared norms",
             ));
         }
+        let emat_inv: Vec<f64> = emat_sq.iter().map(|value| value.recip()).collect();
 
         let p_pairs = q * (q + 1) / 2;
         let (max_tile, packed) = halflife_tile_size(q, p_pairs, nrep);
@@ -1841,16 +1916,24 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                         kp += 1;
                     }
                 }
-                // Sum of absolute terms is bounded by ||A||_F * ||z||².
-                // Flag positive forms too when cancellation can dominate.
-                let frob = ha.om_inv.iter().map(|v| v * v).sum::<f64>().sqrt();
-                cancellation_scale.push(8.0 * f64::EPSILON * (p_pairs as f64) * frob);
+                cancellation_scale.push(halflife_cancellation_bound(&ha.om_inv, p_pairs));
             }
         }
 
-        let eval_null_hl = |ho: &OmegaPairFactor| -> Result<usize, CoreError> {
-            let mut xc_obs = vec![0.0_f64; q];
-            linalg::multiply(&ho.ch_omi.upper, &p_vec, &mut xc_obs, q, q, 1, false);
+        let make_scratch = || HalfLifeScratch::new(q, max_tile, packed.then_some(p_pairs));
+        let eval_null_hl = |scratch: &mut HalfLifeScratch,
+                            ho: &OmegaPairFactor|
+         -> Result<usize, CoreError> {
+            let HalfLifeScratch {
+                tile_e,
+                e_tile,
+                u_tile,
+                q_tile,
+                sum_ha_over_ho,
+                col_sq,
+                xc_obs,
+            } = scratch;
+            linalg::multiply(&ho.ch_omi.upper, &p_vec, xc_obs, q, q, 1, false);
             let qnorm_obs: f64 = xc_obs.iter().map(|&v| v * v).sum();
             if !qnorm_obs.is_finite() || qnorm_obs <= 0.0 {
                 return Err(CoreError::degenerate(
@@ -1861,10 +1944,9 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
             let log_obs_sum = log_sum_exp(&ha_x_log) - log_ho_obs;
             let obs_sum = log_obs_sum.exp();
 
-            let det_ratios: Vec<f64> = ha_factors
-                .iter()
-                .map(|ha| (ha.ch_omi.log_sqrt_det - ho.ch_omi.log_sqrt_det).exp())
-                .collect();
+            let det_ratios: [f64; HL_HA_LEN] = std::array::from_fn(|j| {
+                (ha_factors[j].ch_omi.log_sqrt_det - ho.ch_omi.log_sqrt_det).exp()
+            });
             let use_fast_pow = packed
                 && q <= 60
                 && obs_sum.is_finite()
@@ -1874,49 +1956,42 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                     .all(|&v| v.is_finite() && v > 1e-150 && v < 1e150);
 
             let mut exceed = 0usize;
-            let mut tile_e = vec![0.0_f64; q * max_tile];
-            let mut e_tile = vec![0.0_f64; q * max_tile];
-            let mut u_tile = vec![0.0_f64; if packed { p_pairs * max_tile } else { 0 }];
-            let mut q_tile = vec![0.0_f64; if packed { HL_HA_LEN * max_tile } else { 0 }];
-            let mut inv_q_ho = vec![0.0_f64; if use_fast_pow { max_tile } else { 0 }];
-            let mut sum_ha_over_ho = vec![0.0_f64; if use_fast_pow { max_tile } else { 0 }];
-            let mut col_sq = vec![0.0_f64; if packed { max_tile } else { 0 }];
-
             for start in (0..nrep).step_by(max_tile) {
                 let cols = (nrep - start).min(max_tile);
-                for r in 0..q {
-                    tile_e[r * cols..(r + 1) * cols]
-                        .copy_from_slice(&req.emat[r * nrep + start..r * nrep + start + cols]);
+                let e_tile = &mut e_tile[..q * cols];
+                for (dst, row) in tile_e[..q * cols]
+                    .chunks_exact_mut(cols)
+                    .zip(req.emat.chunks_exact(nrep))
+                {
+                    dst.copy_from_slice(&row[start..start + cols]);
                 }
 
                 // e_tile = L_ho * tile_e has covariance om_ho and exact null quadratic form ||tile_e||^2.
                 linalg::multiply(
                     &ho.ch_om.lower,
                     &tile_e[..q * cols],
-                    &mut e_tile[..q * cols],
+                    e_tile,
                     q,
                     q,
                     cols,
                     false,
                 );
 
+                let emat_inv = &emat_inv[start..start + cols];
                 if packed {
                     col_sq[..cols].fill(0.0);
-                    let mut kp = 0usize;
-                    for b in 0..q {
-                        let row_b = &e_tile[b * cols..(b + 1) * cols];
-                        for a in 0..=b {
-                            let row_a = &e_tile[a * cols..(a + 1) * cols];
-                            let dst = &mut u_tile[kp * cols..(kp + 1) * cols];
-                            for c in 0..cols {
-                                dst[c] = row_a[c] * row_b[c];
+                    let mut product_rows = u_tile[..p_pairs * cols].chunks_exact_mut(cols);
+                    for (b, row_b) in e_tile.chunks_exact(cols).enumerate() {
+                        for (a, row_a) in e_tile.chunks_exact(cols).take(b + 1).enumerate() {
+                            let dst = product_rows.next().unwrap();
+                            for ((product, &left), &right) in dst.iter_mut().zip(row_a).zip(row_b) {
+                                *product = left * right;
                             }
                             if a == b {
                                 for (sq, &term) in col_sq[..cols].iter_mut().zip(dst.iter()) {
                                     *sq += term;
                                 }
                             }
-                            kp += 1;
                         }
                     }
                     linalg::multiply(
@@ -1928,108 +2003,85 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                         cols,
                         false,
                     );
-                    for j in 0..HL_HA_LEN {
-                        let row = &mut q_tile[j * cols..(j + 1) * cols];
+                    if use_fast_pow {
+                        sum_ha_over_ho[..cols].fill(0.0);
+                    }
+                    let max_norm = col_sq[..cols].iter().fold(0.0_f64, |max, &norm| {
+                        if norm > 0.0 { max.max(norm) } else { f64::INFINITY }
+                    });
+                    for (j, row) in q_tile[..HL_HA_LEN * cols]
+                        .chunks_exact_mut(cols)
+                        .enumerate()
+                    {
                         let thresh = cancellation_scale[j];
-                        // The normal case needs only the reduction. A second
-                        // pass repairs suspect forms without branching on each
-                        // simulation draw in the common path.
-                        let needs_repair = row
-                            .iter()
-                            .zip(&col_sq[..cols])
-                            .fold(false, |bad, (&form, &norm)| {
-                                bad | !form.is_finite() | (form <= thresh * norm)
-                            });
-                        if !needs_repair {
-                            continue;
-                        }
-                        for c in 0..cols {
-                            let mut form = row[c];
-                            if !form.is_finite() || form <= thresh * col_sq[c] {
-                                form = quadratic_form_from_upper(
-                                    &ha_factors[j].ch_omi.upper,
-                                    &e_tile[..q * cols],
-                                    cols,
-                                    c,
-                                );
-                                if !form.is_finite() || form <= 0.0 {
-                                    return Err(CoreError::degenerate(
-                                        "half-life simulation draw has an invalid covariance quadratic form",
-                                    ));
+                        // Screen against the largest draw norm. If this bound
+                        // fails, use each draw's own norm before repairing it.
+                        let bound = thresh * max_norm;
+                        let needs_repair = row.iter().fold(false, |bad, &form| {
+                            bad | !form.is_finite() | !(form > bound)
+                        });
+                        if needs_repair {
+                            for (c, (form, &norm)) in row.iter_mut().zip(col_sq.iter()).enumerate()
+                            {
+                                if !form.is_finite() || !(norm > 0.0 && *form > thresh * norm) {
+                                    *form = quadratic_form_from_upper(
+                                        &ha_factors[j].ch_omi.upper,
+                                        e_tile,
+                                        cols,
+                                        c,
+                                    );
+                                    if !form.is_finite() || *form <= 0.0 {
+                                        return Err(CoreError::degenerate(
+                                            "half-life simulation draw has an invalid covariance quadratic form",
+                                        ));
+                                    }
                                 }
-                                row[c] = form;
+                            }
+                        }
+                        if use_fast_pow {
+                            let sum = &mut sum_ha_over_ho[..cols];
+                            let coeff = det_ratios[j];
+                            // Select the common exponents outside the per-draw loop.
+                            match q {
+                                8 => {
+                                    add_halflife_likelihood_terms(sum, row, emat_inv, coeff, |x| {
+                                        let x2 = x * x;
+                                        x2 * x2
+                                    })
+                                }
+                                15 => {
+                                    add_halflife_likelihood_terms(sum, row, emat_inv, coeff, |x| {
+                                        let x2 = x * x;
+                                        let x4 = x2 * x2;
+                                        let x7 = x4 * x2 * x;
+                                        x7 * x.sqrt()
+                                    })
+                                }
+                                _ => {
+                                    add_halflife_likelihood_terms(sum, row, emat_inv, coeff, |x| {
+                                        half_power(x, q)
+                                    })
+                                }
                             }
                         }
                     }
                 }
 
-                let log_draw_sum = |c: usize| -> Result<f64, CoreError> {
-                    let log_ho = ho.ch_omi.log_sqrt_det - 0.5 * q_f * emat_sq[start + c].ln();
-                    let mut log_ha = [0.0; HL_HA_LEN];
-                    if packed {
-                        for (j, ha) in ha_factors.iter().enumerate() {
-                            let q_ha = q_tile[j * cols + c];
-                            log_ha[j] = ha.ch_omi.log_sqrt_det - 0.5 * q_f * q_ha.ln();
-                        }
+                let q_tile = &q_tile[..if packed { HL_HA_LEN * cols } else { 0 }];
+                for (c, &norm) in emat_sq[start..start + cols].iter().enumerate() {
+                    let exceeds = if use_fast_pow
+                        && sum_ha_over_ho[c].is_finite()
+                        && sum_ha_over_ho[c] >= f64::MIN_POSITIVE
+                        && emat_inv[c].is_finite()
+                    {
+                        sum_ha_over_ho[c] > obs_sum
                     } else {
-                        for (j, ha) in ha_factors.iter().enumerate() {
-                            let q_ha = quadratic_form_from_upper(
-                                &ha.ch_omi.upper,
-                                &e_tile[..q * cols],
-                                cols,
-                                c,
-                            );
-                            if !q_ha.is_finite() || q_ha <= 0.0 {
-                                return Err(CoreError::degenerate(
-                                    "half-life simulation draw has an invalid covariance quadratic form",
-                                ));
-                            }
-                            log_ha[j] = ha.ch_omi.log_sqrt_det - 0.5 * q_f * q_ha.ln();
-                        }
-                    }
-                    Ok(log_sum_exp(&log_ha) - log_ho)
-                };
-
-                if use_fast_pow {
-                    for c in 0..cols {
-                        inv_q_ho[c] = emat_sq[start + c].recip();
-                    }
-                    sum_ha_over_ho[..cols].fill(0.0);
-                    for j in 0..HL_HA_LEN {
-                        let coeff = det_ratios[j];
-                        let row = &q_tile[j * cols..(j + 1) * cols];
-                        for c in 0..cols {
-                            // Each form and original draw norm was validated.
-                            // A non-normal power marks this draw for log-space
-                            // recomputation, even if other terms are normal.
-                            let ratio = row[c] * inv_q_ho[c];
-                            let pow = fast_neg_half_pow(ratio, q);
-                            let term = if pow >= f64::MIN_POSITIVE {
-                                coeff * pow
-                            } else {
-                                f64::NAN
-                            };
-                            sum_ha_over_ho[c] += term;
-                        }
-                    }
-                    for c in 0..cols {
-                        let exceeds = if sum_ha_over_ho[c].is_finite()
-                            && sum_ha_over_ho[c] >= f64::MIN_POSITIVE
-                            && inv_q_ho[c].is_finite()
-                        {
-                            sum_ha_over_ho[c] > obs_sum
-                        } else {
-                            log_draw_sum(c)? > log_obs_sum
-                        };
-                        if exceeds {
-                            exceed += 1;
-                        }
-                    }
-                } else {
-                    for c in 0..cols {
-                        if log_draw_sum(c)? > log_obs_sum {
-                            exceed += 1;
-                        }
+                        let log_ho = ho.ch_omi.log_sqrt_det - 0.5 * q_f * norm.ln();
+                        halflife_log_draw_sum(&ha_factors, q_tile, e_tile, cols, c, q_f, log_ho)?
+                            > log_obs_sum
+                    };
+                    if exceeds {
+                        exceed += 1;
                     }
                 }
             }
@@ -2037,14 +2089,16 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
         };
 
         let exceedances = if is_serial() {
+            let mut scratch = make_scratch();
             ho_factors
                 .iter()
-                .map(eval_null_hl)
+                .map(|ho| eval_null_hl(&mut scratch, ho))
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             ho_factors
                 .par_iter()
-                .map(eval_null_hl)
+                .with_min_len(4)
+                .map_init(make_scratch, eval_null_hl)
                 .collect::<Result<Vec<_>, _>>()?
         };
 
@@ -2182,35 +2236,17 @@ fn neighbor_transform(
         SpurTransformKind::Nn {
             exclude_zero_distances,
         } => {
-            // Preserve the previous normalization before equality checks. For
-            // all-colocated data, every off-diagonal distance remains zero.
-            let max_in_row =
-                |i: usize| (0..i).try_fold(0.0_f64, |max, j| Ok(max.max(distance(i, j)?)));
-            let diameter = if let Some(matrix) = &dense {
-                matrix.iter().copied().fold(0.0, f64::max)
-            } else if is_serial() || n < 64 {
-                (0..n).try_fold(0.0_f64, |max, i| Ok(max.max(max_in_row(i)?)))?
-            } else {
-                (0..n)
-                    .into_par_iter()
-                    .map(max_in_row)
-                    .try_reduce(|| 0.0_f64, |a, b| Ok(a.max(b)))?
-            };
-            if exclude_zero_distances && diameter == 0.0 {
-                return Err(CoreError::invalid_input(
-                    "all coordinates are identical; normalization requires distinct locations",
-                ));
-            }
-            let scale = if diameter > 0.0 { diameter } else { 1.0 };
             transform_by_neighbors(req, |i, neighbors| {
                 let mut nearest = f64::INFINITY;
                 for j in 0..n {
                     if i == j {
                         continue;
                     }
-                    let mut d = distance(i, j)? / scale;
+                    // Comparing raw distances preserves distinctions that can
+                    // disappear when dividing by a much larger diameter.
+                    let d = distance(i, j)?;
                     if exclude_zero_distances && d == 0.0 {
-                        d = 1e10;
+                        continue;
                     }
                     if d < nearest {
                         nearest = d;
@@ -2219,6 +2255,11 @@ fn neighbor_transform(
                     if d == nearest {
                         neighbors.push(j);
                     }
+                }
+                if neighbors.is_empty() {
+                    return Err(CoreError::invalid_input(
+                        "nearest-neighbor transform requires distinct locations when excluding zero distances",
+                    ));
                 }
                 Ok(())
             })
@@ -2245,10 +2286,17 @@ pub fn run_spur_transform(
     req: &SpurTransformRequest<'_>,
 ) -> Result<SpurTransformOutput, CoreError> {
     let n = req.n;
-    if n < 2 {
-        return Err(CoreError::invalid_input(
-            "spatial transform requires at least 2 observations",
-        ));
+    let min_n = if matches!(req.kind, SpurTransformKind::Cluster) {
+        1
+    } else {
+        2
+    };
+    if n < min_n {
+        return Err(CoreError::invalid_input(if min_n == 1 {
+            "cluster transform requires at least one observation"
+        } else {
+            "spatial transform requires at least 2 observations"
+        }));
     }
     if let Some(y) = req.y {
         if req.n_y == 0 || y.len() != checked_len(&[n, req.n_y])? {
@@ -2467,7 +2515,11 @@ mod tests {
     use crate::ErrorKind;
 
     fn load_bench_200_spur() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-        let text = include_str!("../tests/fixtures/bench_200.csv");
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bench_200.csv"
+        ))
+        .expect("fixture csv");
         let mut y = Vec::new();
         let mut x_in = Vec::new();
         let mut coords = Vec::new();
@@ -2565,6 +2617,16 @@ mod tests {
             .unwrap_err();
             assert_eq!(err.kind(), ErrorKind::InvalidInput);
         }
+        assert_eq!(
+            compare(SpurTransformRequest {
+                coords: Some(&[0.0, 1e-200, 1e160]),
+                n: 3,
+                kind: nn_excluded,
+                y: Some(&[1.0, 3.0, 5.0]),
+                ..base
+            }),
+            vec![-2.0, 2.0, 3.0]
+        );
         let coords_many: Vec<f64> = (0..80).flat_map(|i| [i as f64, (i % 5) as f64]).collect();
         let y_many: Vec<f64> = (0..160).map(|i| (i as f64).sin()).collect();
         for kind in [nn, iso] {
@@ -2583,6 +2645,28 @@ mod tests {
     }
 
     #[test]
+    fn cluster_transform_allows_one_observation() {
+        for return_matrix in [false, true] {
+            let result = run_spur_transform(&SpurTransformRequest {
+                coords: None,
+                n: 1,
+                d: 0,
+                metric: Metric::Euclidean,
+                kind: SpurTransformKind::Cluster,
+                cluster_id: Some(&[0]),
+                y: Some(&[2.0, -3.0]),
+                n_y: 2,
+                return_matrix,
+                demean_lbmgls: false,
+                nthreads: Some(1),
+            })
+            .unwrap();
+            assert_eq!(result.matrix, return_matrix.then(|| vec![0.0]));
+            assert_eq!(result.transformed.unwrap(), [0.0; 2]);
+        }
+    }
+
+    #[test]
     fn spur_basis_orientation_uses_the_first_nearly_maximal_entry() {
         for (offset, first_is_positive) in [(8.0, true), (1024.0, false)] {
             let a = -1.0;
@@ -2597,12 +2681,15 @@ mod tests {
 
     #[test]
     fn halflife_worker_scratch_and_likelihood_terms_are_stable() {
-        for q in [4, 64, 500, 1200] {
+        for q in [4, 64, 500, 1000, 1200] {
             let pairs = q * (q + 1) / 2;
             let (cols, packed) = halflife_tile_size(q, pairs, 10_000);
             assert!(cols <= TILE_COLS);
-            assert_eq!(packed, q <= 500);
-            let tile_doubles = cols * (2 * q + HL_HA_LEN + 3 + if packed { pairs } else { 0 });
+            assert_eq!(packed, q <= 64);
+            if packed {
+                assert!(pairs * HL_HA_LEN * size_of::<f64>() <= MAX_HALFLIFE_TILE_BYTES);
+            }
+            let tile_doubles = cols * (2 * q + if packed { pairs + HL_HA_LEN + 2 } else { 0 });
             assert!(tile_doubles * size_of::<f64>() <= MAX_HALFLIFE_TILE_BYTES);
         }
         let upper = [1.0, -1.0, 0.0, 1e-7];
@@ -2611,6 +2698,7 @@ mod tests {
         assert!((form / 1e-14 - 1.0).abs() < 4.0 * f64::EPSILON);
         let log_total = log_sum_exp(&[1000.0, 1000.0]);
         assert!((log_total - 1000.0 - 2.0_f64.ln()).abs() < 1e-13);
+        assert!(halflife_cancellation_bound(&[1e308, 1e308], 1).is_finite());
     }
 
     #[test]
@@ -3282,7 +3370,7 @@ mod tests {
             })
             .unwrap();
 
-            // Reference log-sum-exp evaluation without W_ha / fast_neg_half_pow
+            // Reference log-sum-exp evaluation without the packed fast path.
             let mut g = SpurGeometry::from_coords(coords_hl, n_hl, 2, Metric::Euclidean).unwrap();
             let c_bm = g.get_cbar(RHO_BM).unwrap();
             let mut sigdm_bm = g.kernel_dm(c_bm);
@@ -3388,11 +3476,11 @@ mod tests {
         assert!((hl_orig.ci_upper - hl_tiny.ci_upper).abs() < 1e-12);
         assert!((hl_tiny.max_dist - hl_orig.max_dist * 1e-12).abs() < 1e-22);
 
-        // 5. fast_neg_half_pow overflows ratio^(q/2) -> 0.0 at q=60, ratio=1e11; verify
-        // underflow guard forces log-space fallback instead of zeroing a dominant term.
-        let pow_underflow = fast_neg_half_pow(1e11, 60);
-        assert_eq!(pow_underflow, 0.0);
-        assert!(pow_underflow < f64::MIN_POSITIVE);
+        // A large ratio can underflow its reciprocal power despite a nonzero
+        // weighted term. The fast path must mark that draw for log-space repair.
+        let mut sums = [0.0];
+        add_halflife_likelihood_terms(&mut sums, &[1e11], &[1.0], 1e140, |x| half_power(x, 60));
+        assert!(sums[0].is_nan());
         let dominant_log = 140.0_f64 * 10.0_f64.ln() - 30.0 * (1e11_f64).ln();
         let secondary_log = 0.0_f64 - 30.0 * (1e7_f64).ln();
         let true_log_sum = log_sum_exp(&[dominant_log, secondary_log]);

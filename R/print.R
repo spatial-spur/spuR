@@ -1,6 +1,7 @@
 #' @export
 print.spur_test <- function(x, ...) {
-  type <- attr(x, "test_type") %||% "SPUR"
+  type <- attr(x, "test_type")
+  if (is.null(type)) type <- "SPUR"
   cat(sprintf("Spatial %s Test\n", type))
   cat("---------------------------------------\n")
   cat(sprintf("Test statistic : %9.4f\n", x$teststat))
@@ -11,7 +12,8 @@ print.spur_test <- function(x, ...) {
 
 #' @export
 print.spur_halflife <- function(x, ...) {
-  level <- attr(x, "level") %||% 95
+  level <- attr(x, "level")
+  if (is.null(level)) level <- 95
   cat(sprintf("Spatial Half-Life %s%% Confidence Interval\n", level))
   cat("---------------------------------------\n")
   .print_halflife_bounds(x$ci_l, x$ci_u)

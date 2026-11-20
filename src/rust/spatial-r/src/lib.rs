@@ -952,10 +952,8 @@ pub fn run_spur_transform_r(
     demean_lbmgls: bool,
     nthreads: Nullable<i32>,
 ) -> extendr_api::Result<List> {
-    if n < 2 {
-        return Err(Error::Other("transform requires n >= 2".into()));
-    }
-    let n_usize = n as usize;
+    let n_usize = usize::try_from(n)
+        .map_err(|_| Error::Other("transform requires a nonnegative sample size".into()))?;
     let nthreads_usize = parse_r_nthreads(nthreads)?;
     let tr_kind = match kind {
         "nn" => SpurTransformKind::Nn {

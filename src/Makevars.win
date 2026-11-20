@@ -9,7 +9,9 @@ STATLIB = $(LIBDIR)/libspur_rust.a
 SPATIAL_RUST ?= 1
 CARGO ?= cargo
 VENDOR_ARCHIVE = $(wildcard rust/vendor.tar.xz)
-CARGO_VENDOR_FLAGS = $(if $(VENDOR_ARCHIVE),--offline --config target/vendor-config.toml,$(if $(wildcard rust/vendor),--offline,))
+VENDOR_DIR = $(wildcard rust/vendor)
+VENDOR_CONFIG = $(wildcard rust/vendor-config.toml)
+CARGO_VENDOR_FLAGS = $(if $(VENDOR_ARCHIVE)$(VENDOR_DIR),--offline $(if $(VENDOR_CONFIG),--config target/vendor-config.toml),)
 
 ifeq ($(strip $(SPATIAL_RUST)),0)
   RUST_AVAILABLE :=
@@ -44,5 +46,6 @@ $(SHLIB): $(RUST_DEPS)
 .PHONY: $(STATLIB)
 $(STATLIB):
 	"$(CARGO)" --version && rustc --version
-	$(if $(VENDOR_ARCHIVE),tar -xf "$(VENDOR_ARCHIVE)" -C rust && mkdir -p "$(TARGET_DIR)" && cp rust/vendor-config.toml "$(TARGET_DIR)/vendor-config.toml",:)
+	$(if $(VENDOR_ARCHIVE),tar -xf "$(VENDOR_ARCHIVE)" -C rust,:)
+	$(if $(VENDOR_CONFIG),mkdir -p "$(TARGET_DIR)" && cp "$(VENDOR_CONFIG)" "$(TARGET_DIR)/vendor-config.toml",:)
 	cd rust && CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build --release --target $(WIN_TARGET) $(CARGO_VENDOR_FLAGS) --locked

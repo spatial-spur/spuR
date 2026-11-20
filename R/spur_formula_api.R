@@ -829,8 +829,9 @@ spurtransform <- function(formula,
   if (transformation == "iso" && is.null(radius)) {
     stop("Radius missing.")
   }
-  if (transformation == "iso" && radius <= 0) {
-    stop("Radius must be positive.")
+  if (transformation == "iso" &&
+      (!is.numeric(radius) || length(radius) != 1L || !is.finite(radius) || radius <= 0)) {
+    stop("Radius must be positive and finite.")
   }
 
   if (transformation != "cluster" && !is.null(clustvar)) {
@@ -843,7 +844,8 @@ spurtransform <- function(formula,
     stop("clustvar was not found in data.")
   }
 
-  if (!is.character(prefix) || length(prefix) != 1L || !nzchar(prefix) || make.names(prefix) != prefix) {
+  if (!is.character(prefix) || length(prefix) != 1L || is.na(prefix) ||
+      !nzchar(prefix) || make.names(prefix) != prefix) {
     stop("prefix must be a valid name prefix.")
   }
 
@@ -871,6 +873,7 @@ spurtransform <- function(formula,
     if (!is.null(cluster_group)) use_rows <- use_rows & !is.na(cluster_group)
     if (!any(use_rows)) {
       for (term in colnames(y_mat)) warning(sprintf("No valid observations for variable: %s", term))
+      result[output_names[columns]] <- rep(list(rep(NA_real_, nrow(data))), length(columns))
       next
     }
 
@@ -884,7 +887,8 @@ spurtransform <- function(formula,
       list(coords = NULL, latlong = FALSE)
     }
     cluster <- cluster_group[use_rows]
-    transformed <- if (use_rust_path && (nrow(y_mat) >= 2L || identical(backend_resolved, "rust"))) {
+    transformed <- if (use_rust_path &&
+        (transformation == "cluster" || nrow(y_mat) >= 2L || identical(backend_resolved, "rust"))) {
       .transform_vars_rust(y_mat, coord_info, transformation, radius, cluster, nthreads_resolved)
     } else if (transformation == "lbmgls") {
       .apply_lbm_transform(.normalized_distmat(coord_info$coords, coord_info$latlong), y_mat)

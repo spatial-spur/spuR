@@ -1,3 +1,33 @@
+testthat::test_that("transformation validation is consistent across available backends", {
+  backends <- "fallback"
+  if (is.loaded("wrap__rust_run_spur_transform", PACKAGE = "spuR")) {
+    backends <- c(backends, "rust")
+  }
+  for (backend in backends) {
+    d <- data.frame(y = 4, group = "a", h_y = 99)
+    one <- spurtransform(~y, d, transformation = "cluster", clustvar = "group",
+                         replace = TRUE, backend = backend)
+    testthat::expect_identical(one$h_y, 0)
+
+    d$y <- NA_real_
+    testthat::expect_warning(
+      none <- spurtransform(~y, d, transformation = "cluster", clustvar = "group",
+                            replace = TRUE, backend = backend),
+      "No valid observations"
+    )
+    testthat::expect_identical(none$h_y, NA_real_)
+    testthat::expect_error(
+      spurtransform(~y, d, transformation = "cluster", clustvar = "group",
+                    prefix = NA_character_, backend = backend),
+      "valid name prefix"
+    )
+    testthat::expect_error(
+      spurtransform(~y, d, transformation = "iso", radius = Inf, backend = backend),
+      "positive and finite"
+    )
+  }
+})
+
 testthat::test_that("canonical formula APIs run across test variants", {
   df <- spur_fixture_data(n = 180L)
 

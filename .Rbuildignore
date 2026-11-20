@@ -4,7 +4,9 @@
 ^\.DS_Store$
 ^\.claude$
 ^\.github$
-^docs/\.pages$
+^docs$
+^assets$
+^CITATION\.(bib|cff)$
 ^scpcR-dev$
 ^data-raw$
 ^src/.*\.o$
