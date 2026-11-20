@@ -77,8 +77,24 @@ impl EigenWorkspace {
             let p = (k..n)
                 .max_by(|&a, &b| self.auxiliary[a].total_cmp(&self.auxiliary[b]))
                 .expect("pivot range is nonempty");
-            if self.auxiliary[p] <= 0.0 {
-                if self.auxiliary[k..].iter().any(|&value| value < -tolerance) {
+            if self.auxiliary[p] <= tolerance {
+                // A roundoff-sized positive pivot can amplify noise when used
+                // as a divisor. Stop only if the whole remaining Schur block
+                // is within tolerance, including its off-diagonal entries.
+                let negligible = self.auxiliary[k..]
+                    .iter()
+                    .all(|value| value.abs() <= tolerance)
+                    && (k..n).all(|i| {
+                        (k..i).all(|j| {
+                            let product: f64 = (0..k)
+                                .map(|l| self.scratch[i * n + l] * self.scratch[j * n + l])
+                                .sum();
+                            let residual =
+                                omega[self.permutation[i] * width + self.permutation[j]] - product;
+                            residual.abs() <= tolerance
+                        })
+                    });
+                if !negligible {
                     return Err(CoreError::invalid_input(
                         "SCPC covariance is not positive semidefinite",
                     ));
@@ -178,7 +194,7 @@ fn jacobi_eigenvalues(a: &mut [f64], values: &mut [f64]) -> Result<(), CoreError
 
 #[cfg(test)]
 mod tests {
-    use super::multiply;
+    use super::{multiply, EigenWorkspace};
 
     #[test]
     fn multiply_respects_row_major_layout_and_transpose() {
@@ -192,5 +208,23 @@ mod tests {
         assert_eq!(product, expected);
         multiply(&[], &[], &mut product, 2, 0, 3, false);
         assert_eq!(product, [0.0; 6]);
+    }
+
+    #[test]
+    fn weighted_eigenvalues_stop_at_roundoff_pivots() {
+        let eps = f64::EPSILON;
+        let mut covariance = [1.0, 0.0, 0.0, 0.0, eps, 16.0 * eps, 0.0, 16.0 * eps, 0.0];
+        let mut workspace = EigenWorkspace::new(3);
+        let values = workspace
+            .weighted_eigenvalues(&covariance, 3, 1.0, -1.0)
+            .unwrap();
+        assert_eq!(values, [1.0, 0.0, 0.0]);
+
+        // Roundoff-sized diagonal entries can conceal an indefinite block.
+        covariance[5] = 1e-3;
+        covariance[7] = 1e-3;
+        assert!(workspace
+            .weighted_eigenvalues(&covariance, 3, 1.0, -1.0)
+            .is_err());
     }
 }
