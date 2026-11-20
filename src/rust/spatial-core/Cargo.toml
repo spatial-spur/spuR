@@ -6,11 +6,11 @@ rust-version = "1.89"
 description = "Shared numerical core for spatial SCPC and SPUR"
 license = "MIT"
 
-[features]
-sme2 = ["oxiblas-blas/sme2"]
-
 [dependencies]
 oxiblas-blas = "=0.2.4"
 oxiblas-lapack = "=0.2.4"
 oxiblas-matrix = "=0.2.4"
 rayon = "1.10"
+
+[target.'cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux", target_os = "android")))'.dependencies]
+oxiblas-blas = { version = "=0.2.4", features = ["sme2"] }

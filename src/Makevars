@@ -3,9 +3,7 @@ LIBDIR = $(TARGET_DIR)/release
 STATLIB = $(LIBDIR)/libspur_rust.a
 
 SPATIAL_RUST ?= 1
-SPATIAL_SME2 ?= 0
 CARGO ?= cargo
-CARGO_FEATURE_FLAGS = $(if $(filter 1,$(strip $(SPATIAL_SME2))),--features sme2)
 VENDOR_ARCHIVE = $(wildcard rust/vendor.tar.xz)
 VENDOR_DIR = $(wildcard rust/vendor)
 VENDOR_CONFIG = $(wildcard rust/vendor-config.toml)
@@ -20,7 +18,7 @@ endif
 RUST_SYS_LIBS = -lpthread -ldl -lm
 
 ifneq ($(strip $(RUST_AVAILABLE)),)
-  RUST_MODE = rust$(if $(CARGO_FEATURE_FLAGS),-sme2)
+  RUST_MODE = rust
   PKG_CFLAGS = -DSPATIAL_USE_RUST
   PKG_LIBS = $(STATLIB) $(RUST_SYS_LIBS)
   RUST_DEPS = $(STATLIB)
@@ -45,4 +43,4 @@ $(STATLIB):
 	"$(CARGO)" --version && rustc --version
 	$(if $(VENDOR_ARCHIVE),tar -xf "$(VENDOR_ARCHIVE)" -C rust,:)
 	$(if $(VENDOR_CONFIG),mkdir -p "$(TARGET_DIR)" && cp "$(VENDOR_CONFIG)" "$(TARGET_DIR)/vendor-config.toml",:)
-	cd rust && CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build --release $(CARGO_FEATURE_FLAGS) $(CARGO_VENDOR_FLAGS) --locked
+	cd rust && CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build --release $(CARGO_VENDOR_FLAGS) --locked

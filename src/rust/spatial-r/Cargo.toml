@@ -12,7 +12,6 @@ crate-type = ["staticlib", "rlib"]
 [features]
 default = ["exports"]
 exports = []
-sme2 = ["spatial-core/sme2"]
 
 [dependencies]
 extendr-api = { version = "0.7", features = ["result_condition"] }
