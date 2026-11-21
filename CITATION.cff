@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use spuR, please cite Becker, Boll and Voth 2026 and Müller & Watson 2024."
 title: "spuR: Spatial Unit Root Tests and Transformations"
 version: "0.1.2"
-license: GPL-3.0-only
+license: MIT
 repository-code: "https://github.com/spatial-spur/spuR"
 url: "https://github.com/spatial-spur/spuR"
 abstract: "R implementation of low-frequency spatial unit root tests and spatial transformations."

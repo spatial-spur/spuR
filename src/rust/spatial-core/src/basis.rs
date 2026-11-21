@@ -366,18 +366,61 @@ pub(crate) fn dense_eigenpairs(a: &mut [f64], n: usize, q: usize) -> Result<Eige
 
 #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
 pub(crate) fn dense_eigenpairs(a: &mut [f64], n: usize, q: usize) -> Result<Eigenpairs, CoreError> {
-    let mut values = vec![0.0; n];
-    let mut vectors = vec![0.0; n * n];
-    linalg::symmetric_eigen(a, &mut values, Some(&mut vectors))?;
-    let mut order: Vec<_> = (0..n).collect();
-    order.sort_unstable_by(|&i, &j| values[j].total_cmp(&values[i]));
-    Ok(Eigenpairs {
-        values: order[..q].iter().map(|&i| values[i]).collect(),
-        vectors: order[..q]
-            .iter()
-            .flat_map(|&i| vectors[i * n..(i + 1) * n].iter().copied())
-            .collect(),
-    })
+    if q > n || a.len() < checked_len(&[n, n])? {
+        return Err(CoreError::invalid_input(
+            "symmetric eigenproblem dimensions do not match",
+        ));
+    }
+    if n == 0 || q == 0 {
+        return Ok(Eigenpairs {
+            values: Vec::new(),
+            vectors: Vec::new(),
+        });
+    }
+    if n == 1 {
+        return Ok(Eigenpairs {
+            values: vec![a[0]],
+            vectors: vec![1.0],
+        });
+    }
+
+    let par = linalg::faer_par();
+    let a_view = faer::MatRef::from_row_major_slice(&a[..n * n], n, n);
+    let mut u = faer::Mat::<f64>::zeros(n, n);
+    let mut s = faer::diag::Diag::<f64>::zeros(n);
+    let req = faer::linalg::evd::self_adjoint_evd_scratch::<f64>(
+        n,
+        faer::linalg::evd::ComputeEigenvectors::Yes,
+        par,
+        faer::prelude::default(),
+    );
+    let mut mem = faer::dyn_stack::MemBuffer::new(req);
+    faer::linalg::evd::self_adjoint_evd(
+        a_view,
+        s.as_mut(),
+        Some(u.as_mut()),
+        par,
+        faer::dyn_stack::MemStack::new(&mut mem),
+        faer::prelude::default(),
+    )
+    .map_err(|_| CoreError::internal("SCPC basis eigensolver failed to converge"))?;
+
+    let diag = s.column_vector();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_unstable_by(|&i, &j| diag[j].total_cmp(&diag[i]));
+    let values: Vec<f64> = order[..q].iter().map(|&idx| diag[idx]).collect();
+    let mut vectors = Vec::with_capacity(q * n);
+    for &idx in &order[..q] {
+        let col = u.col(idx);
+        if let Some(slice) = col.try_as_col_major().map(|c| c.as_slice()) {
+            vectors.extend_from_slice(slice);
+        } else {
+            for row in 0..n {
+                vectors.push(col[row]);
+            }
+        }
+    }
+    Ok(Eigenpairs { values, vectors })
 }
 
 fn multiply_vector(a: &[f64], x: &[f64], y: &mut [f64]) {

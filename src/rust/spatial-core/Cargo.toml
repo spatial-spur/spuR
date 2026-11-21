@@ -6,8 +6,11 @@ description = "Shared numerical core for spatial SCPC and SPUR"
 license = "MIT"
 
 [features]
-portable = []
+portable = ["dep:faer"]
 
 [dependencies]
-matrixmultiply = "0.3"
+faer = { version = "0.24", default-features = false, features = ["std"], optional = true }
 rayon = "1.10"
+
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
+faer = { version = "0.24", default-features = false, features = ["std"] }
