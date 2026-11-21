@@ -61,25 +61,40 @@ pub fn normalize_coords(
                 *mean /= n as f64;
             }
             let mut centered = vec![0.0_f64; n * d];
+            let mut max_abs = 0.0_f64;
             for (dst, src) in centered.chunks_exact_mut(d).zip(coords.chunks_exact(d)) {
                 for c in 0..d {
-                    dst[c] = src[c] - means[c];
-                }
-            }
-            let mut cov = vec![0.0_f64; d * d];
-            linalg::multiply(&centered, &centered, &mut cov, d, n, d, true);
-            let eigen = basis::symmetric_eigenpairs(&cov, d, d)?;
-
-            // eigen.vectors stores each eigenvector r in [r * d .. (r + 1) * d].
-            // Build rot_t (d x d) where column r is eigenvector r: rot[c * d + r] = vectors[r * d + c].
-            let mut rot = vec![0.0_f64; d * d];
-            for r in 0..d {
-                for c in 0..d {
-                    rot[c * d + r] = eigen.vectors[r * d + c];
+                    let v = src[c] - means[c];
+                    dst[c] = v;
+                    max_abs = max_abs.max(v.abs());
                 }
             }
             let mut rotated = vec![0.0_f64; n * d];
-            linalg::multiply(&centered, &rot, &mut rotated, n, d, d, false);
+            if max_abs > 0.0 && max_abs.is_finite() {
+                let inv_scale = max_abs.recip();
+                if inv_scale.is_finite() {
+                    for v in &mut centered {
+                        *v *= inv_scale;
+                    }
+                } else {
+                    for v in &mut centered {
+                        *v /= max_abs;
+                    }
+                }
+                let mut cov = vec![0.0_f64; d * d];
+                linalg::multiply(&centered, &centered, &mut cov, d, n, d, true);
+                let eigen = basis::symmetric_eigenpairs(&cov, d, d)?;
+
+                // eigen.vectors stores each eigenvector r in [r * d .. (r + 1) * d].
+                // Build rot_t (d x d) where column r is eigenvector r: rot[c * d + r] = vectors[r * d + c].
+                let mut rot = vec![0.0_f64; d * d];
+                for r in 0..d {
+                    for c in 0..d {
+                        rot[c * d + r] = eigen.vectors[r * d + c];
+                    }
+                }
+                linalg::multiply(&centered, &rot, &mut rotated, n, d, d, false);
+            }
 
             let mut max_col0 = f64::NEG_INFINITY;
             let mut max_abs_col0 = 0.0_f64;
@@ -131,7 +146,9 @@ pub fn normalize_coords(
             }
             Ok((out, perm))
         }
-        Metric::GreatCircleFractionLatLon | Metric::GreatCircle { .. } | Metric::GreatCircleFractionLonLat => {
+        Metric::GreatCircleFractionLatLon
+        | Metric::GreatCircle { .. }
+        | Metric::GreatCircleFractionLonLat => {
             if d != 2 {
                 return Err(CoreError::invalid_input(
                     "geographic normalization requires 2 coordinate columns",
@@ -320,7 +337,7 @@ pub fn landmark_basis(
             .collect();
         Ok(project_landmarks(
             &distance, n, subset, &weights, q, decay[0],
-        ))
+        )?)
     };
 
     let projected: Vec<Vec<f64>> = if crate::threads::is_serial() || request.samples == 1 {
@@ -364,7 +381,7 @@ fn project_landmarks(
     weights: &[f64],
     q: usize,
     decay: f64,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, CoreError> {
     let m = subset.len();
     let mut projected = vec![0.0; n * q];
     let mut d = vec![0.0; ROW_TILE.min(n) * m];
@@ -374,7 +391,13 @@ fn project_landmarks(
         for (row, distances) in d[..rows * m].chunks_exact_mut(m).enumerate() {
             let i = block_index * ROW_TILE + row;
             for (value, &j) in distances.iter_mut().zip(subset) {
-                *value = distance.pair(i, j);
+                let dij = distance.pair(i, j);
+                if !dij.is_finite() {
+                    return Err(CoreError::invalid_input(
+                        "non-finite pairwise distance in Nystrom landmark projection",
+                    ));
+                }
+                *value = dij;
             }
         }
         linalg::exp_scaled(&d[..rows * m], -decay, &mut kernel[..rows * m]);
@@ -394,7 +417,7 @@ fn project_landmarks(
             }
         }
     }
-    projected
+    Ok(projected)
 }
 
 fn combine_landmarks(
@@ -599,6 +622,11 @@ impl SampledPairs {
             for i in 0..n {
                 for j in 0..i {
                     let d = distance.pair(i, j);
+                    if !d.is_finite() {
+                        return Err(CoreError::invalid_input(
+                            "non-finite pairwise distance in sampled SCPC pairs",
+                        ));
+                    }
                     distances[i * n + j] = d;
                     distances[j * n + i] = d;
                 }
@@ -618,13 +646,31 @@ impl SampledPairs {
         let distances: Vec<f64> = if crate::threads::is_serial() || count < 8192 {
             chain
                 .windows(2)
-                .map(|pair| distance.pair(pair[0], pair[1]))
-                .collect()
+                .map(|pair| {
+                    let d = distance.pair(pair[0], pair[1]);
+                    if d.is_finite() {
+                        Ok(d)
+                    } else {
+                        Err(CoreError::invalid_input(
+                            "non-finite pairwise distance in sampled SCPC pairs",
+                        ))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?
         } else {
             chain
                 .par_windows(2)
-                .map(|pair| distance.pair(pair[0], pair[1]))
-                .collect()
+                .map(|pair| {
+                    let d = distance.pair(pair[0], pair[1]);
+                    if d.is_finite() {
+                        Ok(d)
+                    } else {
+                        Err(CoreError::invalid_input(
+                            "non-finite pairwise distance in sampled SCPC pairs",
+                        ))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?
         };
 
         Ok(Self {
@@ -867,8 +913,16 @@ mod tests {
         // Check column-space projector P_approx == P_exact on columns 1..=3
         let mut p_approx = vec![0.0; n * n];
         let mut p_exact = vec![0.0; n * n];
-        let a_sub: Vec<f64> = lb.weights.chunks_exact(4).flat_map(|r| r[1..].iter().copied()).collect();
-        let e_sub: Vec<f64> = exact.weights.chunks_exact(4).flat_map(|r| r[1..].iter().copied()).collect();
+        let a_sub: Vec<f64> = lb
+            .weights
+            .chunks_exact(4)
+            .flat_map(|r| r[1..].iter().copied())
+            .collect();
+        let e_sub: Vec<f64> = exact
+            .weights
+            .chunks_exact(4)
+            .flat_map(|r| r[1..].iter().copied())
+            .collect();
         let mut a_sub_t = vec![0.0; 3 * n];
         let mut e_sub_t = vec![0.0; 3 * n];
         for i in 0..n {
@@ -881,6 +935,20 @@ mod tests {
         linalg::multiply(&e_sub, &e_sub_t, &mut p_exact, n, 3, n, false);
         for (a, b) in p_approx.iter().zip(&p_exact) {
             assert!((a - b).abs() < 1e-7, "projector diff a={a}, b={b}");
+        }
+    }
+
+    #[test]
+    fn normalize_coords_is_scale_invariant_at_extreme_magnitudes() {
+        let base = vec![-1.5, 0.25, 0.0, -0.75, 2.0, 1.5, -0.5, 2.25, 1.25, -1.0];
+        let (norm_ref, perm_ref) = normalize_coords(&base, 5, 2, Metric::Euclidean).unwrap();
+        for factor in [1e-200_f64, 1e200_f64] {
+            let scaled: Vec<f64> = base.iter().map(|&v| v * factor).collect();
+            let (norm, perm) = normalize_coords(&scaled, 5, 2, Metric::Euclidean).unwrap();
+            assert_eq!(perm, perm_ref);
+            for (a, b) in norm.iter().zip(&norm_ref) {
+                assert!(a.is_finite() && (a - b).abs() < 1e-12, "a={a}, b={b}");
+            }
         }
     }
 }

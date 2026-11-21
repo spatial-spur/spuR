@@ -2012,7 +2012,11 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                         sum_ha_over_ho[..cols].fill(0.0);
                     }
                     let max_norm = col_sq[..cols].iter().fold(0.0_f64, |max, &norm| {
-                        if norm > 0.0 { max.max(norm) } else { f64::INFINITY }
+                        if norm > 0.0 {
+                            max.max(norm)
+                        } else {
+                            f64::INFINITY
+                        }
                     });
                     for (j, row) in q_tile[..HL_HA_LEN * cols]
                         .chunks_exact_mut(cols)
@@ -2322,35 +2326,48 @@ pub fn run_spur_transform(
             if cid.len() != n {
                 return Err(CoreError::invalid_input("cluster_id length mismatch"));
             }
-            let max_c = cid.iter().copied().max().unwrap_or(0) + 1;
-            let mut counts = vec![0usize; max_c];
-            for &g in cid {
-                counts[g] += 1;
+            let mut group_map = std::collections::HashMap::new();
+            let mut group_idx = Vec::with_capacity(n);
+            let mut counts = Vec::new();
+            for &raw_id in cid {
+                let next_idx = group_map.len();
+                let idx = *group_map.entry(raw_id).or_insert(next_idx);
+                if idx == counts.len() {
+                    counts.push(1usize);
+                } else {
+                    counts[idx] += 1;
+                }
+                group_idx.push(idx);
             }
-            let transformed = req.y.map(|y| {
+            let n_groups = counts.len();
+            let transformed = if let Some(y) = req.y {
                 let ny = req.n_y;
-                let mut sums = vec![0.0_f64; max_c * ny];
-                for (i, &g) in cid.iter().enumerate() {
+                let sums_len = checked_len(&[n_groups, ny])?;
+                let out_len = checked_len(&[n, ny])?;
+                let mut sums = vec![0.0_f64; sums_len];
+                for (i, &g) in group_idx.iter().enumerate() {
                     for col in 0..ny {
                         sums[g * ny + col] += y[i * ny + col];
                     }
                 }
-                let mut out = vec![0.0_f64; n * ny];
-                for (i, &g) in cid.iter().enumerate() {
+                let mut out = vec![0.0_f64; out_len];
+                for (i, &g) in group_idx.iter().enumerate() {
                     let inv_cnt = (counts[g] as f64).recip();
                     for col in 0..ny {
                         out[i * ny + col] = y[i * ny + col] - sums[g * ny + col] * inv_cnt;
                     }
                 }
-                out
-            });
+                Some(out)
+            } else {
+                None
+            };
             let matrix = if req.return_matrix {
-                let mut mat = vec![0.0_f64; n * n];
+                let mut mat = vec![0.0_f64; checked_len(&[n, n])?];
                 for i in 0..n {
-                    let gi = cid[i];
+                    let gi = group_idx[i];
                     let w = (counts[gi] as f64).recip();
                     for j in 0..n {
-                        if cid[j] == gi {
+                        if group_idx[j] == gi {
                             mat[i * n + j] = -w;
                         }
                     }
@@ -3491,5 +3508,28 @@ mod tests {
         let true_log_sum = log_sum_exp(&[dominant_log, secondary_log]);
         assert!(true_log_sum > -200.0 * 10.0_f64.ln());
         assert!(true_log_sum - secondary_log > 40.0);
+
+        // Sparse and extreme cluster IDs must map cleanly without OOM or overflow.
+        let y_cl = [1.0, 3.0, 10.0, 20.0];
+        let out_cl = run_spur_transform(&SpurTransformRequest {
+            kind: SpurTransformKind::Cluster,
+            n: 4,
+            d: 0,
+            metric: Metric::Euclidean,
+            coords: None,
+            y: Some(&y_cl),
+            n_y: 1,
+            cluster_id: Some(&[usize::MAX, 1_000_000_000, usize::MAX, 1_000_000_000]),
+            return_matrix: true,
+            demean_lbmgls: false,
+            nthreads: Some(1),
+        })
+        .unwrap();
+        let tr = out_cl.transformed.unwrap();
+        assert!((tr[0] - (-4.5)).abs() < 1e-12);
+        assert!((tr[1] - (-8.5)).abs() < 1e-12);
+        assert!((tr[2] - 4.5).abs() < 1e-12);
+        assert!((tr[3] - 8.5).abs() < 1e-12);
+        assert!(out_cl.matrix.is_some());
     }
 }

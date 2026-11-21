@@ -6,8 +6,7 @@ use crate::covariance;
 use crate::distance::{distance_matrix, lower_triangle, Metric};
 use crate::linalg::{self, EigenWorkspace};
 use crate::nystrom::{
-    is_psd_prefix_grid, landmark_basis, sampled_covariance_grid, SampledPairs,
-    LandmarkRequest,
+    is_psd_prefix_grid, landmark_basis, sampled_covariance_grid, LandmarkRequest, SampledPairs,
 };
 use crate::quadrature::RULE;
 use crate::student_t::{ln_gamma, student_t_ppf};
@@ -167,9 +166,11 @@ fn angular_product(cos2: f64, ratios: &[f64], logs: &[f64]) -> f64 {
     if cos2 <= 0.0 {
         return 0.0;
     }
-    let product: f64 = ratios.iter().map(|value| cos2 / (cos2 + value)).product();
-    if product >= f64::MIN_POSITIVE {
-        return product.sqrt();
+    if !ratios.iter().any(|&v| !v.is_finite()) {
+        let product: f64 = ratios.iter().map(|value| cos2 / (cos2 + value)).product();
+        if product >= f64::MIN_POSITIVE {
+            return product.sqrt();
+        }
     }
     let log_cos = cos2.ln();
     (-0.5
@@ -272,34 +273,14 @@ impl ProbabilityWorkspace {
 
     /// Evaluate tail-stable adaptive angular/complement rejection probability.
     fn evaluate(&mut self, omega: &[f64], width: usize, cv: f64) -> Result<f64, CoreError> {
-        if !cv.is_finite() {
-            return Err(CoreError::invalid_input("SCPC critical value must be finite"));
-        }
-        if cv < 0.0 {
-            return Ok(1.0);
-        }
-        if let Some(p) = self.eigensolver.singular_or_bivariate_probability(omega, width, cv)?
-        {
+        if let Some(p) = self.eigensolver.rejection_eigen_ratios(
+            omega,
+            width,
+            cv,
+            &mut self.ratios,
+            &mut self.logs,
+        )? {
             return Ok(p);
-        }
-        let (positive, negative) = if cv > 1.0 {
-            (cv.recip().powi(2), -1.0)
-        } else {
-            (1.0, -cv.powi(2))
-        };
-        let eigenvalues = self
-            .eigensolver
-            .weighted_eigenvalues(omega, width, positive, negative)?;
-        let max_positive = eigenvalues.iter().copied().fold(0.0, f64::max);
-        if !max_positive.is_finite() || max_positive <= 0.0 {
-            return Ok(0.0);
-        }
-        self.ratios.clear();
-        self.logs.clear();
-        let max_pos_ln = max_positive.ln();
-        for &value in eigenvalues.iter().filter(|&&value| value < 0.0) {
-            self.ratios.push(-value / max_positive);
-            self.logs.push((-value).ln() - max_pos_ln);
         }
         if self.ratios.is_empty() {
             return Ok(1.0);
@@ -365,30 +346,38 @@ impl ProbabilityWorkspace {
         let mut active = 0usize;
         let mut cv0 = student_t_ppf(1.0 - 0.5 * level, q)? / root_q;
         let mut cv1 = cv0;
+        let mut converged = false;
 
         for _ in 0..=grid_count + 4 {
             if rp <= level {
+                converged = true;
                 break;
             }
             let omega = &omegas[active * matrix_size..(active + 1) * matrix_size];
             cv1 = cv0;
+            let mut p_upper = self.evaluate(omega, width, cv1)?;
             for iter in 0..1024 {
-                if self.evaluate(omega, width, cv1)? > level {
+                if p_upper > level {
                     cv0 = cv1;
                     cv1 += if iter < 32 { step } else { cv1 };
+                    if !cv1.is_finite() {
+                        return Err(CoreError::calibration(
+                            "SCPC critical value could not be bracketed",
+                        ));
+                    }
+                    p_upper = self.evaluate(omega, width, cv1)?;
                 } else {
                     break;
                 }
             }
-            if self.evaluate(omega, width, cv1)? > level {
+            if p_upper > level {
                 return Err(CoreError::calibration(
                     "SCPC critical value could not be bracketed",
                 ));
             }
 
-            let mut p_upper = self.evaluate(omega, width, cv1)?;
             while cv1 - cv0 > tol {
-                let mid = 0.5 * (cv0 + cv1);
+                let mid = cv0 + 0.5 * (cv1 - cv0);
                 if mid == cv0 || mid == cv1 {
                     break;
                 }
@@ -403,11 +392,17 @@ impl ProbabilityWorkspace {
 
             let (max_p, max_i) = self.maximum(omegas, width, cv1, Some((p_upper, active)))?;
             if max_i == active {
+                converged = true;
                 break;
             }
             active = max_i;
             rp = max_p;
             cv0 = cv1;
+        }
+        if !converged {
+            return Err(CoreError::calibration(
+                "SCPC critical value calibration did not converge across scale grid",
+            ));
         }
         Ok(cv1 * root_q)
     }
@@ -440,13 +435,21 @@ fn scaled_norm(values: impl Iterator<Item = f64> + Clone) -> f64 {
     if scale == 0.0 || !scale.is_finite() {
         return scale;
     }
-    scale * values.map(|value| (value / scale).powi(2)).sum::<f64>().sqrt()
+    scale
+        * values
+            .map(|value| (value / scale).powi(2))
+            .sum::<f64>()
+            .sqrt()
 }
 
 /// SCPC probabilities are homogeneous in all columns of a coefficient's W.
 /// Equilibrate them together before forming the quadratic covariance grid.
 fn normalize_covariance_basis(mut weights: Vec<f64>) -> Vec<f64> {
-    let scale = weights.iter().copied().map(f64::abs).fold(0.0_f64, f64::max);
+    let scale = weights
+        .iter()
+        .copied()
+        .map(f64::abs)
+        .fold(0.0_f64, f64::max);
     if scale > 0.0 {
         for value in &mut weights {
             *value /= scale;
@@ -836,17 +839,43 @@ fn validate_common_inputs(
 }
 
 fn build_scale_grid(c0: f64, cmax: f64) -> Vec<f64> {
-    let nc = ((cmax / c0).ln() / CGRID_FAC.ln()).ceil().max(2.0) as usize;
+    let raw_nc = if c0 > 0.0 && cmax > c0 && c0.is_finite() && cmax.is_finite() {
+        let ratio = cmax / c0;
+        let log_ratio = if ratio.is_finite() {
+            ratio.ln()
+        } else {
+            cmax.ln() - c0.ln()
+        };
+        (log_ratio / CGRID_FAC.ln()).ceil()
+    } else {
+        2.0
+    };
+    let nc = if raw_nc.is_finite() {
+        raw_nc.clamp(2.0, 1_000_000.0) as usize
+    } else {
+        2
+    };
     let mut scales = Vec::with_capacity(nc);
     let mut c = c0;
     for _ in 0..nc {
+        if !c.is_finite() {
+            break;
+        }
         scales.push(c);
         c *= CGRID_FAC;
+    }
+    if scales.is_empty() {
+        scales.push(c0);
     }
     scales
 }
 
-fn trim_basis_columns(weights: &[f64], n: usize, full_width: usize, width: usize) -> Result<Vec<f64>, CoreError> {
+fn trim_basis_columns(
+    weights: &[f64],
+    n: usize,
+    full_width: usize,
+    width: usize,
+) -> Result<Vec<f64>, CoreError> {
     let mut wfin = vec![0.0; checked_len(&[n, width])?];
     for (dst, src) in wfin
         .chunks_exact_mut(width)
@@ -984,11 +1013,9 @@ fn finalize_scpc_output(
             row[4] = coef[j] - cv * se_vec[j];
             row[5] = coef[j] + cv * se_vec[j];
 
-            if let (Some(out_cvs), Some(uncond_cvs), Some(c_cvs)) = (
-                scpccvs.as_mut(),
-                cvs_uncond.as_ref(),
-                cond_cvs.as_ref(),
-            ) {
+            if let (Some(out_cvs), Some(uncond_cvs), Some(c_cvs)) =
+                (scpccvs.as_mut(), cvs_uncond.as_ref(), cond_cvs.as_ref())
+            {
                 let row = &mut out_cvs[j * 4..(j + 1) * 4];
                 for idx in 0..4 {
                     row[idx] = uncond_cvs[idx].max(c_cvs[idx]);
@@ -1097,7 +1124,8 @@ pub fn run_exact_scpc(req: &ExactScpcRequest<'_>) -> Result<ExactScpcOutput, Cor
                     req.proj_u,
                     req.proj_v,
                     req.proj_rank,
-                ).map(normalize_covariance_basis)
+                )
+                .map(normalize_covariance_basis)
             })?;
             let wx_refs: Vec<&[f64]> = wx_list.iter().map(Vec::as_slice).collect();
             let widths = vec![width; k_use];
@@ -1212,7 +1240,14 @@ pub fn run_approx_scpc(req: &ApproxScpcRequest<'_>) -> Result<ExactScpcOutput, C
             let xjs = req.xjs.expect("validated conditional xjs");
             // All reported coefficients use the same sample, starting immediately
             // after the unconditional grid. Their order or selection cannot change it.
-            let pairs = SampledPairs::new(req.coords, n, req.d, req.metric, req.pair_count, state_after_uncond)?;
+            let pairs = SampledPairs::new(
+                req.coords,
+                n,
+                req.d,
+                req.metric,
+                req.pair_count,
+                state_after_uncond,
+            )?;
             let grids = map_indices(k_use, |j| {
                 let wx = build_conditional_basis(
                     &wfin,
@@ -1355,11 +1390,7 @@ mod tests {
     }
 
     fn load_bench_csv(name: &str) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-        let path = format!(
-            "{}/tests/fixtures/{}",
-            env!("CARGO_MANIFEST_DIR"),
-            name
-        );
+        let path = format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name);
         let text = std::fs::read_to_string(path).expect("fixture csv");
         let mut y = Vec::new();
         let mut x = Vec::new();
@@ -1379,7 +1410,10 @@ mod tests {
         (y, x, coords)
     }
 
-    fn prepare_bench_ols(y: &[f64], x: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, usize) {
+    fn prepare_bench_ols(
+        y: &[f64],
+        x: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, usize) {
         let n = y.len();
         let p = 3usize;
         let mut xtx = vec![0.0; p * p];
@@ -1404,8 +1438,9 @@ mod tests {
             let yhat: f64 = (0..p).map(|k| x[i * p + k] * coef[k]).sum();
             let resid = y[i] - yhat;
             for j in 0..p {
-                let x_dir: f64 =
-                    (0..p).map(|k| (n as f64) * inv_xtx[j * p + k] * x[i * p + k]).sum();
+                let x_dir: f64 = (0..p)
+                    .map(|k| (n as f64) * inv_xtx[j * p + k] * x[i * p + k])
+                    .sum();
                 xj[i * p + j] = x_dir;
                 xjs[i * p + j] = if x_dir > 0.0 {
                     1.0
@@ -1433,9 +1468,20 @@ mod tests {
         let expected = [1.0, a, 0.5, -a, 0.5, a, 1.0, -a];
         for scale in [1.0, 1e160, 1e-200] {
             let weights = build_conditional_basis(
-                &w, 4, 1, None, None, &x.map(|v| v * scale), &sign, 1, 0,
-                Some(&projection), Some(&projection), 2,
-            ).unwrap();
+                &w,
+                4,
+                1,
+                None,
+                None,
+                &x.map(|v| v * scale),
+                &sign,
+                1,
+                0,
+                Some(&projection),
+                Some(&projection),
+                2,
+            )
+            .unwrap();
             for (got, expected) in weights.iter().zip(expected) {
                 assert!((got / scale - expected).abs() < 1e-12);
             }
@@ -1552,6 +1598,16 @@ mod tests {
     }
 
     #[test]
+    fn rejection_probability_is_invariant_to_large_finite_covariance_scale() {
+        let mut ws = ProbabilityWorkspace::new(2);
+        let scale = 1.4e308;
+        let omega = [scale, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, scale];
+        let expected = 1.0 - 1.0 / 2.0_f64.sqrt();
+        let actual = ws.evaluate(&omega, 3, 1.0).unwrap();
+        assert!((actual - expected).abs() < 1e-12);
+    }
+
+    #[test]
     fn exact_scpc_matches_release_score_statistics_and_is_scale_invariant() {
         let (y, x, coords) = load_bench_csv("bench_200.csv");
         let n = y.len();
@@ -1602,7 +1658,10 @@ mod tests {
         ];
         for (row, expected) in out_euclid.scpcstats.chunks_exact(6).zip(expected_stats) {
             for (got, exp) in row.iter().zip(expected) {
-                assert!((got - exp).abs() <= 1e-3 * exp.abs().max(1.0), "got={got}, exp={exp}");
+                assert!(
+                    (got - exp).abs() <= 1e-3 * exp.abs().max(1.0),
+                    "got={got}, exp={exp}"
+                );
             }
         }
         // Check 5% CV reuse consistency between scpcstats CI and scpccvs[, 2]
@@ -1667,11 +1726,20 @@ mod tests {
         .unwrap();
         assert_eq!(out_ys.q, out_euclid.q);
         for j in 0..3 {
-            assert!((out_ys.scpcstats[j * 6 + 1] - out_euclid.scpcstats[j * 6 + 1] * y_scale).abs() < 1e-22);
+            assert!(
+                (out_ys.scpcstats[j * 6 + 1] - out_euclid.scpcstats[j * 6 + 1] * y_scale).abs()
+                    < 1e-22
+            );
             assert!((out_ys.scpcstats[j * 6 + 2] - out_euclid.scpcstats[j * 6 + 2]).abs() < 1e-10);
             assert!((out_ys.scpcstats[j * 6 + 3] - out_euclid.scpcstats[j * 6 + 3]).abs() < 1e-10);
-            assert!((out_ys.scpcstats[j * 6 + 4] - out_euclid.scpcstats[j * 6 + 4] * y_scale).abs() < 1e-22);
-            assert!((out_ys.scpcstats[j * 6 + 5] - out_euclid.scpcstats[j * 6 + 5] * y_scale).abs() < 1e-22);
+            assert!(
+                (out_ys.scpcstats[j * 6 + 4] - out_euclid.scpcstats[j * 6 + 4] * y_scale).abs()
+                    < 1e-22
+            );
+            assert!(
+                (out_ys.scpcstats[j * 6 + 5] - out_euclid.scpcstats[j * 6 + 5] * y_scale).abs()
+                    < 1e-22
+            );
         }
 
         // Coordinate rescaling (`coords * 1e-6`) preserves q, se, t, p and scales c0 by 1e6
@@ -1800,7 +1868,10 @@ mod tests {
         for (row, expected) in out.scpcstats.chunks_exact(6).zip(expected_stats) {
             assert!((row[0] - expected[0]).abs() < 1e-12);
             for (got, exp) in row.iter().zip(expected) {
-                assert!((got - exp).abs() <= 2e-3 * exp.abs().max(1.0), "got={got}, exp={exp}");
+                assert!(
+                    (got - exp).abs() <= 2e-3 * exp.abs().max(1.0),
+                    "got={got}, exp={exp}"
+                );
             }
         }
     }
@@ -1871,7 +1942,11 @@ mod tests {
         let xjs_int: Vec<f64> = (0..m_obs)
             .map(|i| {
                 let d = sq_sum_int[cl_id[i]].sqrt();
-                if d > 0.0 { xj_int[i] / d } else { 0.0 }
+                if d > 0.0 {
+                    xj_int[i] / d
+                } else {
+                    0.0
+                }
             })
             .collect();
         let q_int = modified_gram_schmidt(&x_int, m_obs, 2);
@@ -1904,7 +1979,11 @@ mod tests {
 
         // Case 2: No intercept (y ~ x - 1)
         let denom_noint: f64 = x_obs.iter().map(|v| v * v).sum();
-        let beta_noint: f64 = x_obs.iter().zip(y_obs.iter()).map(|(xv, yv)| xv * yv).sum::<f64>()
+        let beta_noint: f64 = x_obs
+            .iter()
+            .zip(y_obs.iter())
+            .map(|(xv, yv)| xv * yv)
+            .sum::<f64>()
             / denom_noint;
         let mut s_cl_no = vec![0.0; g_sites];
         for i in 0..m_obs {
@@ -1915,7 +1994,10 @@ mod tests {
             .iter()
             .map(|sg| (g_sites as f64) * (sg / denom_noint) + beta_noint)
             .collect();
-        let xj_no: Vec<f64> = x_obs.iter().map(|xv| (g_sites as f64) * (xv / denom_noint)).collect();
+        let xj_no: Vec<f64> = x_obs
+            .iter()
+            .map(|xv| (g_sites as f64) * (xv / denom_noint))
+            .collect();
         let mut sq_sum_no = vec![0.0; g_sites];
         for i in 0..m_obs {
             sq_sum_no[cl_id[i]] += xj_no[i] * xj_no[i];
@@ -1923,7 +2005,11 @@ mod tests {
         let xjs_no: Vec<f64> = (0..m_obs)
             .map(|i| {
                 let d = sq_sum_no[cl_id[i]].sqrt();
-                if d > 0.0 { xj_no[i] / d } else { 0.0 }
+                if d > 0.0 {
+                    xj_no[i] / d
+                } else {
+                    0.0
+                }
             })
             .collect();
         let q_no = modified_gram_schmidt(&x_obs, m_obs, 1);
@@ -2077,37 +2163,36 @@ mod tests {
             x_full_dum[i * (2 + n_fe) + 1] = w[i];
             x_full_dum[i * (2 + n_fe) + 2 + fe_id[i]] = 1.0;
         }
-        let solve_ols = |x_mat: &[f64], y_vec: &[f64], p_cols: usize| -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-            let mut xtx = vec![0.0; p_cols * p_cols];
-            let mut xty = vec![0.0; p_cols];
-            for i in 0..n_obs {
-                for r in 0..p_cols {
-                    xty[r] += x_mat[i * p_cols + r] * y_vec[i];
-                    for c in 0..p_cols {
-                        xtx[r * p_cols + c] += x_mat[i * p_cols + r] * x_mat[i * p_cols + c];
+        let solve_ols =
+            |x_mat: &[f64], y_vec: &[f64], p_cols: usize| -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+                let mut xtx = vec![0.0; p_cols * p_cols];
+                let mut xty = vec![0.0; p_cols];
+                for i in 0..n_obs {
+                    for r in 0..p_cols {
+                        xty[r] += x_mat[i * p_cols + r] * y_vec[i];
+                        for c in 0..p_cols {
+                            xtx[r * p_cols + c] += x_mat[i * p_cols + r] * x_mat[i * p_cols + c];
+                        }
                     }
                 }
-            }
-            let inv = invert_symmetric(&xtx, p_cols);
-            let mut beta = xty.clone();
-            let mut a = xtx;
-            solve_linear(&mut a, &mut beta, p_cols);
-            let bread: Vec<f64> = inv.iter().map(|v| v * (n_obs as f64)).collect();
-            let mut res = vec![0.0; n_obs];
-            for i in 0..n_obs {
-                let fit: f64 = (0..p_cols).map(|c| x_mat[i * p_cols + c] * beta[c]).sum();
-                res[i] = y_vec[i] - fit;
-            }
-            (beta, bread, res)
-        };
+                let inv = invert_symmetric(&xtx, p_cols);
+                let mut beta = xty.clone();
+                let mut a = xtx;
+                solve_linear(&mut a, &mut beta, p_cols);
+                let bread: Vec<f64> = inv.iter().map(|v| v * (n_obs as f64)).collect();
+                let mut res = vec![0.0; n_obs];
+                for i in 0..n_obs {
+                    let fit: f64 = (0..p_cols).map(|c| x_mat[i * p_cols + c] * beta[c]).sum();
+                    res[i] = y_vec[i] - fit;
+                }
+                (beta, bread, res)
+            };
         let (beta_dm, bread_dm, res_dm) = solve_ols(&x_dm, &y_dm, 2);
         let mut wj_ols_u = vec![0.0; n_obs * 2];
         let mut xj_ols = vec![0.0; n_obs * 2];
         for i in 0..n_obs {
             for j in 0..2 {
-                let bdot: f64 = (0..2)
-                    .map(|c| bread_dm[j * 2 + c] * x_dm[i * 2 + c])
-                    .sum();
+                let bdot: f64 = (0..2).map(|c| bread_dm[j * 2 + c] * x_dm[i * 2 + c]).sum();
                 wj_ols_u[i * 2 + j] = (n_obs as f64) * res_dm[i] * bdot + beta_dm[j];
                 xj_ols[i * 2 + j] = (n_obs as f64) * bdot;
             }
@@ -2159,10 +2244,19 @@ mod tests {
         })
         .unwrap();
         assert_eq!(out_fe_ols.q, out_dum_ols.q);
-        for (a, b) in out_fe_ols.scpcstats.iter().zip(out_dum_ols.scpcstats.iter()) {
+        for (a, b) in out_fe_ols
+            .scpcstats
+            .iter()
+            .zip(out_dum_ols.scpcstats.iter())
+        {
             assert!((a - b).abs() < 1e-11, "uncl fe ols stats a={a}, b={b}");
         }
-        for (a, b) in out_fe_ols.scpccvs.unwrap().iter().zip(out_dum_ols.scpccvs.unwrap().iter()) {
+        for (a, b) in out_fe_ols
+            .scpccvs
+            .unwrap()
+            .iter()
+            .zip(out_dum_ols.scpccvs.unwrap().iter())
+        {
             assert!((a - b).abs() < 1e-11, "uncl fe ols cvs a={a}, b={b}");
         }
 
@@ -2209,7 +2303,11 @@ mod tests {
                 let sq_ols_c = &sq_ols_c;
                 (0..2).map(move |j| {
                     let d = sq_ols_c[cl_id[i] * 2 + j].sqrt();
-                    if d > 0.0 { xj_ols_c[i * 2 + j] / d } else { 0.0 }
+                    if d > 0.0 {
+                        xj_ols_c[i * 2 + j] / d
+                    } else {
+                        0.0
+                    }
                 })
             })
             .collect();
@@ -2256,7 +2354,11 @@ mod tests {
             nthreads: Some(2),
         })
         .unwrap();
-        for (a, b) in out_fe_ols_c.scpcstats.iter().zip(out_dum_ols_c.scpcstats.iter()) {
+        for (a, b) in out_fe_ols_c
+            .scpcstats
+            .iter()
+            .zip(out_dum_ols_c.scpcstats.iter())
+        {
             assert!((a - b).abs() < 1e-11, "cl fe ols stats a={a}, b={b}");
         }
 
@@ -2271,7 +2373,10 @@ mod tests {
             z_full_dum[i * (2 + n_fe) + 1] = w[i];
             z_full_dum[i * (2 + n_fe) + 2 + fe_id[i]] = 1.0;
         }
-        let build_iv_proj = |x_mat: &[f64], z_mat: &[f64], p_cols: usize| -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let build_iv_proj = |x_mat: &[f64],
+                             z_mat: &[f64],
+                             p_cols: usize|
+         -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
             let qz = modified_gram_schmidt(z_mat, n_obs, p_cols);
             let rz = qz.len() / n_obs;
             let mut qzt_x = vec![0.0; rz * p_cols];
@@ -2312,7 +2417,9 @@ mod tests {
         }
         for g in 0..g_sites {
             for j in 0..2 {
-                let dot: f64 = (0..2).map(|c| a_inv_dm[j * 2 + c] * s_cl_iv[g * 2 + c]).sum();
+                let dot: f64 = (0..2)
+                    .map(|c| a_inv_dm[j * 2 + c] * s_cl_iv[g * 2 + c])
+                    .sum();
                 wj_iv_c[g * 2 + j] = (g_sites as f64) * dot + beta_iv[j];
             }
         }
@@ -2341,7 +2448,11 @@ mod tests {
                 let sq_iv_c = &sq_iv_c;
                 (0..2).map(move |j| {
                     let d = sq_iv_c[cl_id[i] * 2 + j].sqrt();
-                    if d > 0.0 { xj_iv_c[i * 2 + j] / d } else { 0.0 }
+                    if d > 0.0 {
+                        xj_iv_c[i * 2 + j] / d
+                    } else {
+                        0.0
+                    }
                 })
             })
             .collect();
@@ -2390,10 +2501,19 @@ mod tests {
         })
         .unwrap();
         assert_eq!(out_fe_iv_c.q, out_dum_iv_c.q);
-        for (a, b) in out_fe_iv_c.scpcstats.iter().zip(out_dum_iv_c.scpcstats.iter()) {
+        for (a, b) in out_fe_iv_c
+            .scpcstats
+            .iter()
+            .zip(out_dum_iv_c.scpcstats.iter())
+        {
             assert!((a - b).abs() < 1e-11, "cl fe iv stats a={a}, b={b}");
         }
-        for (a, b) in out_fe_iv_c.scpccvs.unwrap().iter().zip(out_dum_iv_c.scpccvs.unwrap().iter()) {
+        for (a, b) in out_fe_iv_c
+            .scpccvs
+            .unwrap()
+            .iter()
+            .zip(out_dum_iv_c.scpccvs.unwrap().iter())
+        {
             assert!((a - b).abs() < 1e-11, "cl fe iv cvs a={a}, b={b}");
         }
     }
@@ -2483,7 +2603,8 @@ mod tests {
         let (coef, wj, xj, xjs, q_mat, proj_rank) = prepare_bench_ols(&y, &x);
 
         for metric in [Metric::Euclidean, Metric::GreatCircleFractionLonLat] {
-            let (coords_norm, perm) = crate::nystrom::normalize_coords(&coords, n, 2, metric).unwrap();
+            let (coords_norm, perm) =
+                crate::nystrom::normalize_coords(&coords, n, 2, metric).unwrap();
             let wj_p = permute_rows(&wj, &perm, p);
             let xj_p = permute_rows(&xj, &perm, p);
             let xjs_p = permute_rows(&xjs, &perm, p);
@@ -2548,7 +2669,11 @@ mod tests {
             assert!((out_1.c0 - out_4.c0).abs() < 1e-12);
             assert!((out_1.cmax - out_4.cmax).abs() < 1e-12);
             assert!((out_1.cvfin - out_4.cvfin).abs() < 1e-12);
-            for (row1, row4) in out_1.scpcstats.chunks_exact(6).zip(out_4.scpcstats.chunks_exact(6)) {
+            for (row1, row4) in out_1
+                .scpcstats
+                .chunks_exact(6)
+                .zip(out_4.scpcstats.chunks_exact(6))
+            {
                 assert!(row1[1] > 0.0 && row1[4] < row1[0] && row1[0] < row1[5]);
                 assert!(row1[3] >= 0.0 && row1[3] <= 1.0);
                 for (&a, &b) in row1.iter().zip(row4.iter()) {
@@ -2566,10 +2691,20 @@ mod tests {
             }
             for c in 0..=out_1.q {
                 let width = out_1.q + 1;
-                let column = out_1.wfin.chunks_exact(width).zip(out_4.wfin.chunks_exact(width));
-                let sign = column.clone().map(|(a, b)| a[c] * b[c]).sum::<f64>().signum();
+                let column = out_1
+                    .wfin
+                    .chunks_exact(width)
+                    .zip(out_4.wfin.chunks_exact(width));
+                let sign = column
+                    .clone()
+                    .map(|(a, b)| a[c] * b[c])
+                    .sum::<f64>()
+                    .signum();
                 for (a, b) in column {
-                    assert!((a[c] - sign * b[c]).abs() < 1e-12, "approx basis direction {c}");
+                    assert!(
+                        (a[c] - sign * b[c]).abs() < 1e-12,
+                        "approx basis direction {c}"
+                    );
                 }
             }
         }
@@ -2764,20 +2899,44 @@ mod tests {
         // Independent quadrature for this covariance gives 0.07143375445 at
         // the previous IV cutoff. The corrected cutoff must control size.
         let conditional = build_conditional_basis(
-            &out_iv.wfin, n, out_iv.q, None, None, &xj, &xjs, 2, 1,
-            Some(&v_iv), Some(&x_full), 2,
-        ).unwrap();
+            &out_iv.wfin,
+            n,
+            out_iv.q,
+            None,
+            None,
+            &xj,
+            &xjs,
+            2,
+            1,
+            Some(&v_iv),
+            Some(&x_full),
+            2,
+        )
+        .unwrap();
         let dist = distance_matrix(&coords, n, 1, Metric::Euclidean).unwrap();
         let omega = covariance_grids(&dist, n, &[&conditional], &[out_iv.q + 1], &[out_iv.c0])
-            .unwrap().remove(0);
+            .unwrap()
+            .remove(0);
         let mut probability = ProbabilityWorkspace::new(out_iv.q);
         let root_q = (out_iv.q as f64).sqrt();
-        let old_p = probability.evaluate(&omega, out_iv.q + 1, 14.50861818 / root_q).unwrap();
-        assert!((old_p - 0.07143375445).abs() < 1e-8, "old rejection probability {old_p}");
-        let corrected_p = probability.evaluate(
-            &omega, out_iv.q + 1, out_iv.scpccvs.as_ref().unwrap()[6] / root_q,
-        ).unwrap();
-        assert!(corrected_p <= 0.05, "corrected rejection probability {corrected_p}");
+        let old_p = probability
+            .evaluate(&omega, out_iv.q + 1, 14.50861818 / root_q)
+            .unwrap();
+        assert!(
+            (old_p - 0.07143375445).abs() < 1e-8,
+            "old rejection probability {old_p}"
+        );
+        let corrected_p = probability
+            .evaluate(
+                &omega,
+                out_iv.q + 1,
+                out_iv.scpccvs.as_ref().unwrap()[6] / root_q,
+            )
+            .unwrap();
+        assert!(
+            corrected_p <= 0.05,
+            "corrected rejection probability {corrected_p}"
+        );
 
         // Genuinely oblique IV projection: M = I - U V', check build_conditional_basis == D_xjs M' D_xj B_q
         // U = [1, x], V = P_Z X (X' P_Z X)^{-1} where X is oblique to Z
@@ -2830,5 +2989,135 @@ mod tests {
             let exp_i = m_t_rx_i * xjs[i * 2 + 1];
             assert!((basis_got[i * 2 + 1] - exp_i).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn probability_workspace_handles_equicorrelated_zero_cv_and_extreme_scales() {
+        // 1. Equicorrelated 5x5 covariance (rho = 0.5) across extreme cv values.
+        let n5 = 5usize;
+        let mut eq = vec![0.5_f64; n5 * n5];
+        for i in 0..n5 {
+            eq[i * n5 + i] = 1.0;
+        }
+        let mut ws5 = ProbabilityWorkspace::new(n5 - 1);
+        assert_eq!(ws5.evaluate(&eq, n5, 0.0).unwrap(), 1.0);
+
+        // Exact SCPC integral references for 5x5 equicorrelated covariance (rho = 0.5).
+        // Analytical DPR1 eigenvalues: mu0=2.5 (w0=0.4), mu1..3=0.5 (w=0), s=0.6.
+        let prob_refs = [
+            (1.0_f64, 9.98925194663871224e-02_f64),
+            (1e-6_f64, 1.0_f64 - 1.28265778655618448e-06_f64),
+        ];
+        for (cv, expected) in prob_refs {
+            let got = ws5.evaluate(&eq, n5, cv).unwrap();
+            let err = if cv < 1.0 {
+                ((1.0 - got) - (1.0 - expected)).abs() / (1.0 - expected)
+            } else {
+                (got - expected).abs() / expected
+            };
+            assert!(
+                err < 1e-8,
+                "cv={cv}: got={got}, expected={expected}, rel={err}"
+            );
+        }
+        // Check eigenvalue ratios directly across 24 orders of magnitude (1e-12 to 1e12).
+        let mut r_buf = Vec::new();
+        let mut l_buf = Vec::new();
+        for cv in [1e-12_f64, 1e-10, 1e-8, 1.0, 1e8, 1e10, 1e12] {
+            assert!(ws5
+                .eigensolver
+                .rejection_eigen_ratios(&eq, n5, cv, &mut r_buf, &mut l_buf)
+                .unwrap()
+                .is_none());
+            assert_eq!(r_buf.len(), 4);
+            let a2 = cv * cv;
+            let (s_eq, w_eq, mu_eq) = (0.6_f64, 0.4_f64, 2.5_f64);
+            // Solve quadratic for lambda_pos and eta analytically:
+            let b_lam = a2 * mu_eq - 1.0;
+            let c_lam = -s_eq * a2 * mu_eq;
+            let lam_ref = if a2 * mu_eq < 1e-6 {
+                1.0 - w_eq * a2 * mu_eq
+            } else if a2 * mu_eq > 1e10 {
+                s_eq + w_eq / (a2 * mu_eq)
+            } else {
+                let disc = (b_lam * b_lam - 4.0 * c_lam).sqrt();
+                if b_lam <= 0.0 {
+                    0.5 * (-b_lam + disc)
+                } else {
+                    (-2.0 * c_lam) / (b_lam + disc)
+                }
+            };
+            let eta_ref = if a2 < 1e-8 {
+                s_eq * mu_eq
+            } else if a2 > 1e10 {
+                mu_eq - w_eq / a2
+            } else {
+                let b_e = 1.0 - a2 * mu_eq;
+                let c_e = -s_eq * mu_eq;
+                let d_e = (b_e * b_e - 4.0 * a2 * c_e).sqrt();
+                if b_e <= 0.0 {
+                    (a2 * mu_eq - 1.0 + d_e) / (2.0 * a2)
+                } else {
+                    (-2.0 * c_e) / (b_e + d_e)
+                }
+            };
+            let log_r0_ref = 2.0 * cv.ln() + eta_ref.ln() - lam_ref.ln();
+            let log_rd_ref = 2.0 * cv.ln() + (0.5_f64).ln() - lam_ref.ln();
+            let mut l_sorted = l_buf.clone();
+            l_sorted.sort_by(|a, b| a.total_cmp(b));
+            for i in 0..3 {
+                assert!(
+                    (l_sorted[i] - log_rd_ref).abs() < 1e-12,
+                    "cv={cv} rd mismatch"
+                );
+            }
+            assert!(
+                (l_sorted[3] - log_r0_ref).abs() < 1e-12,
+                "cv={cv} r0 mismatch"
+            );
+        }
+        // Very large tail cv=1e8 still integrates cleanly (> 0 or tail bounded).
+        assert!(ws5.evaluate(&eq, n5, 1e8).unwrap() < 1e-12);
+
+        // 2. Correlated 10x10 SPD matrix at cv == 0.0 -> exact 1.0.
+        let n10 = 10usize;
+        let mut spd10 = vec![0.0_f64; n10 * n10];
+        for i in 0..n10 {
+            for j in 0..n10 {
+                spd10[i * n10 + j] = (-0.25 * ((i as f64) - (j as f64)).abs()).exp();
+            }
+        }
+        let mut ws10 = ProbabilityWorkspace::new(n10 - 1);
+        assert_eq!(ws10.evaluate(&spd10, n10, 0.0).unwrap(), 1.0);
+
+        // 3. Extreme diagonal scale disparity diag(1e200, 1e-120, 1e-120) at cv = 1e160 -> 1 - 1/sqrt(2).
+        let mut ws3 = ProbabilityWorkspace::new(2);
+        let p_diag = ws3
+            .evaluate(
+                &[1e200, 0.0, 0.0, 0.0, 1e-120, 0.0, 0.0, 0.0, 1e-120],
+                3,
+                1e160,
+            )
+            .unwrap();
+        let expected_diag = 1.0 - std::f64::consts::FRAC_1_SQRT_2;
+        assert!((p_diag - expected_diag).abs() < 1e-12, "p_diag={p_diag}");
+
+        // 4. Rank-1 extreme scale disparity v = (2^400, 2^-400, 2^-400).
+        let hi = 2.0_f64.powi(400);
+        let lo = 2.0_f64.powi(-400);
+        let v = [hi, lo, lo];
+        let mut r1 = [0.0_f64; 9];
+        for i in 0..3 {
+            for j in 0..3 {
+                r1[i * 3 + j] = v[i] * v[j];
+            }
+        }
+        let thresh = (hi / lo) / 2.0_f64.sqrt();
+        assert_eq!(ws3.evaluate(&r1, 3, 0.5 * thresh).unwrap(), 1.0);
+        assert_eq!(ws3.evaluate(&r1, 3, 2.0 * thresh).unwrap(), 0.0);
+
+        // 5. build_scale_grid must not panic when cmax / c0 > f64::MAX.
+        let grid = build_scale_grid(1e-200, 1e200);
+        assert!(grid.len() > 2 && grid.iter().all(|&v| v.is_finite()));
     }
 }

@@ -75,7 +75,9 @@ pub fn scpc_basis(
     q: usize,
 ) -> Result<ScpcBasis, CoreError> {
     if q == 0 || q >= n || n > i32::MAX as usize / 26 || distances.len() != checked_len(&[n, n])? {
-        return Err(CoreError::invalid_input("SCPC basis dimensions do not match"));
+        return Err(CoreError::invalid_input(
+            "SCPC basis dimensions do not match",
+        ));
     }
     if !scale.is_finite() || scale < 0.0 {
         return Err(CoreError::invalid_input(
@@ -221,7 +223,8 @@ fn has_tied_values(values: &[f64]) -> bool {
 #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
 pub(crate) fn dense_eigenpairs(a: &mut [f64], n: usize, q: usize) -> Result<Eigenpairs, CoreError> {
     let mut values = vec![0.0; n];
-    let n_i32 = n as i32;
+    let n_i32 = i32::try_from(n)
+        .map_err(|_| CoreError::invalid_input("matrix dimension exceeds LAPACK i32 range"))?;
     let mut status = 0;
 
     if q == n {
@@ -250,10 +253,14 @@ pub(crate) fn dense_eigenpairs(a: &mut [f64], n: usize, q: usize) -> Result<Eige
         }
         let lwork = (work_query as usize).max(1 + 6 * n + 2 * n * n);
         let liwork = (iwork_query as usize).max(3 + 5 * n);
+        let lwork_i32 = i32::try_from(lwork).map_err(|_| {
+            CoreError::invalid_input("eigensolver workspace exceeds LAPACK i32 limit")
+        })?;
+        let liwork_i32 = i32::try_from(liwork).map_err(|_| {
+            CoreError::invalid_input("eigensolver integer workspace exceeds LAPACK i32 limit")
+        })?;
         let mut work = vec![0.0; lwork];
         let mut iwork = vec![0; liwork];
-        let lwork_i32 = lwork as i32;
-        let liwork_i32 = liwork as i32;
         unsafe {
             dsyevd_(
                 b"V".as_ptr(),
@@ -321,10 +328,13 @@ pub(crate) fn dense_eigenpairs(a: &mut [f64], n: usize, q: usize) -> Result<Eige
     }
     let lwork = (work_query as usize).max(26 * n);
     let liwork = (iwork_query as usize).max(10 * n);
+    let lwork_i32 = i32::try_from(lwork)
+        .map_err(|_| CoreError::invalid_input("eigensolver workspace exceeds LAPACK i32 limit"))?;
+    let liwork_i32 = i32::try_from(liwork).map_err(|_| {
+        CoreError::invalid_input("eigensolver integer workspace exceeds LAPACK i32 limit")
+    })?;
     let mut work = vec![0.0; lwork];
     let mut iwork = vec![0; liwork];
-    let lwork_i32 = lwork as i32;
-    let liwork_i32 = liwork as i32;
     unsafe {
         dsyevr_(
             b"V".as_ptr(),
@@ -685,7 +695,9 @@ mod tests {
         for (i, &v) in [10.0, 9.0, 8.0].iter().enumerate() {
             matrix[i * n + i] = v;
         }
-        assert!(partial_eigenvectors(&matrix, n, q, steps).unwrap().is_some());
+        assert!(partial_eigenvectors(&matrix, n, q, steps)
+            .unwrap()
+            .is_some());
         assert!(!symmetric_eigenpairs(&matrix, n, q).unwrap().tied);
 
         // Ties within the retained prefix and across its cutoff both force
@@ -694,7 +706,9 @@ mod tests {
             for (i, &v) in leading.iter().enumerate() {
                 matrix[i * n + i] = v;
             }
-            assert!(partial_eigenvectors(&matrix, n, q, steps).unwrap().is_none());
+            assert!(partial_eigenvectors(&matrix, n, q, steps)
+                .unwrap()
+                .is_none());
             assert!(symmetric_eigenpairs(&matrix, n, q).unwrap().tied);
         }
     }
@@ -736,9 +750,7 @@ mod tests {
         for i in 0..n {
             for j in 0..n {
                 let rec: f64 = (0..n)
-                    .map(|k| {
-                        pairs.values[k] * pairs.vectors[k * n + i] * pairs.vectors[k * n + j]
-                    })
+                    .map(|k| pairs.values[k] * pairs.vectors[k * n + i] * pairs.vectors[k * n + j])
                     .sum();
                 assert!(
                     (rec - orig[i * n + j]).abs() < 1e-12,

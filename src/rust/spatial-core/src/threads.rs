@@ -8,6 +8,47 @@ use std::sync::{Arc, Mutex};
 
 static CACHED_POOL: Mutex<Option<(u32, usize, Arc<ThreadPool>)>> = Mutex::new(None);
 static POOL_OWNER_PID: AtomicU32 = AtomicU32::new(0);
+#[cfg(all(target_vendor = "apple", not(feature = "portable")))]
+static ACCELERATE_OWNER_PID: AtomicU32 = AtomicU32::new(0);
+
+pub const MAX_THREADS: usize = 1024;
+
+pub fn validate_nthreads(nthreads: Option<usize>) -> Result<(), CoreError> {
+    if nthreads.is_some_and(|n| !(1..=MAX_THREADS).contains(&n)) {
+        return Err(CoreError::invalid_input(
+            "thread count must be between 1 and 1024",
+        ));
+    }
+    Ok(())
+}
+
+pub fn inherited_accelerate_state() -> bool {
+    #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
+    {
+        let owner = ACCELERATE_OWNER_PID.load(Ordering::Acquire);
+        owner != 0 && owner != std::process::id()
+    }
+    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
+    false
+}
+
+pub(crate) fn check_native_process() -> Result<(), CoreError> {
+    #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
+    {
+        let _ = ACCELERATE_OWNER_PID.compare_exchange(
+            0,
+            std::process::id(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        if inherited_accelerate_state() {
+            return Err(CoreError::unsupported(
+                "Accelerate was used before this process forked. Use a fresh process or the host fallback.",
+            ));
+        }
+    }
+    Ok(())
+}
 
 thread_local! {
     static SERIAL_MODE: Cell<bool> = const { Cell::new(false) };
@@ -19,7 +60,7 @@ thread_local! {
 /// Parallel sections check this flag and run sequentially on the calling thread,
 /// avoiding Rayon pool locks and dead worker threads after `fork()`.
 pub fn is_serial() -> bool {
-    SERIAL_MODE.with(Cell::get)
+    SERIAL_MODE.with(Cell::get) || is_forked_after_pool_init()
 }
 
 /// Returns `true` when this process is a forked child of a parent process that
@@ -60,21 +101,17 @@ where
     R: Send,
     F: FnOnce() -> R + Send,
 {
-    if matches!(nthreads, Some(0)) {
-        return Err(CoreError::invalid_input("thread count must be at least 1"));
-    }
+    validate_nthreads(nthreads)?;
+    check_native_process()?;
     if matches!(nthreads, Some(1)) || is_forked_after_pool_init() {
         let _guard = SerialGuard::enter(true);
         return Ok(f());
     }
 
     let current_pid = std::process::id();
-    if let Err(owner) = POOL_OWNER_PID.compare_exchange(
-        0,
-        current_pid,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    ) {
+    if let Err(owner) =
+        POOL_OWNER_PID.compare_exchange(0, current_pid, Ordering::AcqRel, Ordering::Acquire)
+    {
         if owner != current_pid {
             let _guard = SerialGuard::enter(true);
             return Ok(f());
@@ -101,7 +138,9 @@ where
                     ThreadPoolBuilder::new()
                         .num_threads(count)
                         .build()
-                        .map_err(|_| CoreError::internal("failed to initialize Rayon thread pool"))?,
+                        .map_err(|_| {
+                            CoreError::internal("failed to initialize Rayon thread pool")
+                        })?,
                 );
                 *guard = Some((current_pid, count, Arc::clone(&built)));
                 built
@@ -150,7 +189,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn post_fork_child_degrades_to_serial_without_deadlocking_warmed_pool() {
+    fn child_of_a_warmed_process_obeys_the_provider_fork_policy() {
         extern "C" {
             fn fork() -> i32;
             fn _exit(status: i32) -> !;
@@ -158,8 +197,7 @@ mod tests {
         }
 
         // Warm both the cached multi-thread pool and verify owner PID tracking in parent.
-        let parent_threads =
-            run_with_threads(Some(2), || rayon::current_num_threads()).unwrap();
+        let parent_threads = run_with_threads(Some(2), || rayon::current_num_threads()).unwrap();
         assert_eq!(parent_threads, 2);
         assert!(!is_forked_after_pool_init());
 
@@ -167,14 +205,22 @@ mod tests {
         assert!(pid >= 0, "fork() failed");
         if pid == 0 {
             let ok = is_forked_after_pool_init()
-                && matches!(run_with_threads(Some(2), is_serial), Ok(true))
-                && matches!(run_with_threads(Some(4), is_serial), Ok(true))
-                && matches!(run_with_threads(None, is_serial), Ok(true));
+                && [None, Some(1), Some(2)].into_iter().all(|nthreads| {
+                    let out = run_with_threads(nthreads, is_serial);
+                    if inherited_accelerate_state() {
+                        matches!(out, Err(err) if err.kind() == crate::ErrorKind::UnsupportedCase)
+                    } else {
+                        matches!(out, Ok(true))
+                    }
+                });
             unsafe { _exit(if ok { 0 } else { 1 }) };
         }
         let mut status: i32 = -1;
         let waited = unsafe { waitpid(pid, &mut status, 0) };
         assert_eq!(waited, pid);
-        assert_eq!(status, 0, "forked child exited with non-zero status: {status}");
+        assert_eq!(
+            status, 0,
+            "forked child exited with non-zero status: {status}"
+        );
     }
 }

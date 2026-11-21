@@ -115,33 +115,31 @@
   }
 
   if (length(formula) == 2L) {
-    rhs_vars <- all.vars(formula[[2L]])
-    if (length(rhs_vars) != 1L) {
-      stop("`formula` must reference exactly one variable.")
-    }
-    var <- rhs_vars[[1L]]
+    eval_formula <- stats::as.formula(call("~", formula[[2L]]), env = environment(formula))
   } else if (length(formula) == 3L) {
-    lhs_vars <- all.vars(formula[[2L]])
-    rhs_vars <- all.vars(formula[[3L]])
-    if (length(lhs_vars) != 1L || length(rhs_vars) != 0L) {
+    if (length(all.vars(formula[[3L]])) != 0L ||
+        !identical(deparse(formula[[3L]]), "1")) {
       stop(sprintf(
         "For %s use a single-variable formula like `y ~ 1` or `~ y`.",
         fn_name
       ))
     }
-    var <- lhs_vars[[1L]]
+    eval_formula <- stats::as.formula(call("~", formula[[2L]]), env = environment(formula))
   } else {
     stop("`formula` must be one-sided (`~ y`) or two-sided (`y ~ 1`).")
   }
 
-  if (!var %in% names(data)) {
-    stop("The variable specified in `formula` does not exist in data.")
+  mf <- stats::model.frame(formula = eval_formula, data = data, na.action = stats::na.pass)
+  if (ncol(mf) != 1L) {
+    stop("`formula` must reference a single evaluated response.")
   }
-  if (!is.numeric(data[[var]])) {
+  values <- mf[[1L]]
+  if (!is.numeric(values) || (!is.null(dim(values)) && ncol(values) != 1L)) {
     stop("The variable specified in `formula` must be numeric.")
   }
+  values <- as.numeric(values)
 
-  list(var = var, use_rows = !is.na(data[[var]]))
+  list(values = values, var = names(mf)[[1L]], use_rows = !is.na(values))
 }
 
 #' @keywords internal
@@ -254,7 +252,7 @@ spurtest_i0 <- function(formula,
     verbose = verbose
   )
 
-  y <- as.matrix(data[[parsed$var]][parsed$use_rows])
+  y <- as.matrix(parsed$values[parsed$use_rows])
   if (q >= nrow(y)) {
     stop("`q` must be less than the number of observations.")
   }
@@ -352,7 +350,7 @@ spurtest_i1 <- function(formula,
     verbose = verbose
   )
 
-  y <- as.matrix(data[[parsed$var]][parsed$use_rows])
+  y <- as.matrix(parsed$values[parsed$use_rows])
   if (q >= nrow(y)) {
     stop("`q` must be less than the number of observations.")
   }
@@ -670,7 +668,7 @@ spurhalflife <- function(formula,
     verbose = verbose
   )
 
-  z <- as.matrix(data[[parsed$var]][parsed$use_rows])
+  z <- as.matrix(parsed$values[parsed$use_rows])
   if (q >= nrow(z)) {
     stop("`q` must be less than the number of observations.")
   }

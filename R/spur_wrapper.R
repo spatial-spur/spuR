@@ -246,10 +246,10 @@ spur <- function(formula,
     stop("`formula` for spur() must be two-sided, e.g. `y ~ x1 + x2`.")
   }
 
-  depvar <- all.vars(formula[[2L]])
-  if (length(depvar) != 1L) {
-    stop("`formula` for spur() must have exactly one dependent variable.")
+  if (length(all.vars(formula[[2L]])) < 1L) {
+    stop("`formula` for spur() must have a dependent variable expression.")
   }
+  depvar <- paste(deparse(formula[[2L]]), collapse = "")
 
   # Both diagnostics and regressions use the levels fit's estimation sample.
   # Transform the evaluated response and design, including formula expressions.
@@ -262,7 +262,7 @@ spur <- function(formula,
   if (!is.null(stats::model.offset(mf))) stop("Offsets are not supported by spur().")
   design <- stats::model.matrix(levels_model)
   has_intercept <- "(Intercept)" %in% colnames(design)
-  x_in <- if (has_intercept) design else cbind("(Intercept)" = 1, design)
+  x_in <- design
   resid_dof <- nrow(x_in) - ncol(x_in)
   if (q > resid_dof) {
     stop(sprintf(

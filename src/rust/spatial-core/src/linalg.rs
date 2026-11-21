@@ -73,10 +73,16 @@ pub(crate) fn exp_scaled(input: &[f64], scale: f64, output: &mut [f64]) {
     }
     #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
     {
-        for (value, distance) in output.iter_mut().zip(input) {
-            *value = scale * distance;
+        for (out_chunk, in_chunk) in output
+            .chunks_mut(i32::MAX as usize)
+            .zip(input.chunks(i32::MAX as usize))
+        {
+            for (value, distance) in out_chunk.iter_mut().zip(in_chunk) {
+                *value = scale * distance;
+            }
+            let count = out_chunk.len() as i32;
+            unsafe { vvexp(out_chunk.as_mut_ptr(), out_chunk.as_ptr(), &count) };
         }
-        unsafe { vvexp(output.as_mut_ptr(), output.as_ptr(), &(output.len() as i32)) };
     }
     #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
     {
@@ -140,23 +146,57 @@ pub(crate) fn multiply(
     #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
     {
         let lda = if transpose_a { m } else { k };
-        unsafe {
-            cblas_dgemm(
-                101,
-                if transpose_a { 112 } else { 111 },
-                111,
-                m as i32,
-                n as i32,
-                k as i32,
-                1.0,
-                a.as_ptr(),
-                lda as i32,
-                b.as_ptr(),
-                n as i32,
-                0.0,
-                c.as_mut_ptr(),
-                n as i32,
-            );
+        if let (Ok(m_i32), Ok(n_i32), Ok(k_i32), Ok(lda_i32)) = (
+            i32::try_from(m),
+            i32::try_from(n),
+            i32::try_from(k),
+            i32::try_from(lda),
+        ) {
+            unsafe {
+                cblas_dgemm(
+                    101,
+                    if transpose_a { 112 } else { 111 },
+                    111,
+                    m_i32,
+                    n_i32,
+                    k_i32,
+                    1.0,
+                    a.as_ptr(),
+                    lda_i32,
+                    b.as_ptr(),
+                    n_i32,
+                    0.0,
+                    c.as_mut_ptr(),
+                    n_i32,
+                );
+            }
+        } else {
+            c[..m * n].fill(0.0);
+            if transpose_a {
+                for l in 0..k {
+                    let a_row = &a[l * m..(l + 1) * m];
+                    let b_row = &b[l * n..(l + 1) * n];
+                    for i in 0..m {
+                        let a_val = a_row[i];
+                        let c_row = &mut c[i * n..(i + 1) * n];
+                        for j in 0..n {
+                            c_row[j] += a_val * b_row[j];
+                        }
+                    }
+                }
+            } else {
+                for i in 0..m {
+                    let a_row = &a[i * k..(i + 1) * k];
+                    let c_row = &mut c[i * n..(i + 1) * n];
+                    for l in 0..k {
+                        let a_val = a_row[l];
+                        let b_row = &b[l * n..(l + 1) * n];
+                        for j in 0..n {
+                            c_row[j] += a_val * b_row[j];
+                        }
+                    }
+                }
+            }
         }
     }
     #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
@@ -245,54 +285,380 @@ fn one_factor_probability(omega: &[f64], n: usize, width: usize, cv: f64) -> Opt
     if omega[0] <= 0.0 || omega[0] * omega[width + 1] != omega[width] * omega[width] {
         return None;
     }
-    let magnitude = (0..n).map(|i| omega[i * width + i]).fold(0.0, f64::max);
-    let exponent = magnitude.log2().floor().clamp(-1022.0, 1023.0) as i32;
-    let scale = 2.0_f64.powi(exponent);
-    let first = omega[0] / scale;
+    let exp_half = |v: f64| -> i32 {
+        if v <= 0.0 || !v.is_finite() {
+            0
+        } else {
+            (v.log2().floor() as i32).div_euclid(2)
+        }
+    };
+    let e0 = exp_half(omega[0]);
+    let s0 = 2.0_f64.powi(-e0);
+    let first = (omega[0] * s0) * s0;
+    if !first.is_finite() || first <= 0.0 {
+        return None;
+    }
+    let mut denom_max_e = i32::MIN;
     for i in 1..n {
+        let diag_i = omega[i * width + i];
+        if diag_i < 0.0 || !diag_i.is_finite() {
+            return None;
+        }
+        let ei = exp_half(diag_i);
+        denom_max_e = denom_max_e.max(ei);
+        let si = 2.0_f64.powi(-ei);
+        let left = (omega[i * width] * s0) * si;
         for j in 1..=i {
-            let sample = omega[i * width + j] / scale;
-            let left = omega[i * width] / scale;
-            let right = omega[j * width] / scale;
-            if sample * scale != omega[i * width + j]
-                || left * scale != omega[i * width]
-                || right * scale != omega[j * width]
-                || first * scale != omega[0]
+            let diag_j = omega[j * width + j];
+            if diag_j < 0.0 || !diag_j.is_finite() {
+                return None;
+            }
+            let ej = exp_half(diag_j);
+            let sj = 2.0_f64.powi(-ej);
+            let sample = (omega[i * width + j] * si) * sj;
+            let right = (omega[j * width] * s0) * sj;
+            if !sample.is_finite()
+                || !left.is_finite()
+                || !right.is_finite()
                 || !equal_products(first, sample, left, right)
             {
                 return None;
             }
         }
     }
-    let denominator: f64 = (1..n).map(|i| omega[i * width + i] / scale).sum();
-    let positive = if cv > 1.0 {
-        (first / cv) / cv > denominator
+    let sd = 2.0_f64.powi(-denom_max_e);
+    let denominator: f64 = (1..n).map(|i| (omega[i * width + i] * sd) * sd).sum();
+    if !denominator.is_finite() || denominator <= 0.0 {
+        return None;
+    }
+    let log_thresh = 0.5 * (first.ln() - denominator.ln())
+        + ((e0 - denom_max_e) as f64) * std::f64::consts::LN_2;
+    Some(if cv == 0.0 || cv.ln() < log_thresh {
+        1.0
     } else {
-        first > (denominator * cv) * cv
+        0.0
+    })
+}
+
+fn log_sum_exp(iter: impl Iterator<Item = f64> + Clone) -> f64 {
+    let max_val = iter.clone().fold(f64::NEG_INFINITY, f64::max);
+    if !max_val.is_finite() {
+        return max_val;
+    }
+    max_val + iter.map(|x| (x - max_val).exp()).sum::<f64>().ln()
+}
+
+#[inline]
+fn log1p_exp(x: f64) -> f64 {
+    if x > 0.0 {
+        x + (-x).exp().ln_1p()
+    } else {
+        x.exp().ln_1p()
+    }
+}
+
+/// Solve `H(u) = s * e^{-u} + sum w_j / (e^u + a_j) - 1 = 0` for `u = ln(lambda_pos) <= 0`.
+/// Returns `Ok(None)` if `s == 0` and `alpha^2 >= sum w_j / mu_j` (no positive eigenvalue).
+fn solve_lambda_pos_ln(
+    active: &[(f64, f64)],
+    s: f64,
+    two_ln_alpha: f64,
+) -> Result<Option<f64>, CoreError> {
+    if active.is_empty() {
+        return Ok(if s > 0.0 { Some(s.ln()) } else { None });
+    }
+    if s == 0.0 {
+        let ln_g0_over_alpha_sq = log_sum_exp(
+            active
+                .iter()
+                .map(|&(mu, w)| w.ln() - two_ln_alpha - mu.ln()),
+        );
+        if !ln_g0_over_alpha_sq.is_finite() || ln_g0_over_alpha_sq <= 0.0 {
+            return Ok(None);
+        }
+    }
+
+    let eval_h = |u: f64| -> (f64, f64) {
+        let s_term = if s > 0.0 { (s.ln() - u).exp() } else { 0.0 };
+        let mut sum_t = 0.0_f64;
+        let mut sum_tp = 0.0_f64;
+        for &(mu, w) in active {
+            let log_a = two_ln_alpha + mu.ln();
+            let diff = log_a - u;
+            let t = (w.ln() - u - log1p_exp(diff)).exp();
+            let p = if diff > 700.0 {
+                0.0
+            } else if diff < -700.0 {
+                1.0
+            } else {
+                (1.0 + diff.exp()).recip()
+            };
+            sum_t += t;
+            sum_tp += t * p;
+        }
+        (s_term + sum_t - 1.0, -(s_term + sum_tp))
     };
-    Some(if positive { 1.0 } else { 0.0 })
+
+    let mut u_hi = 0.0_f64;
+    let (h_hi, _) = eval_h(u_hi);
+    if h_hi >= 0.0 {
+        return Ok(Some(0.0));
+    }
+
+    let mut u_lo = if s > 0.0 {
+        let lo = s.ln();
+        let (h_lo, _) = eval_h(lo);
+        if h_lo <= 0.0 {
+            return Ok(Some(lo));
+        }
+        lo
+    } else {
+        let min_log_a = active
+            .iter()
+            .map(|&(mu, _)| two_ln_alpha + mu.ln())
+            .fold(f64::INFINITY, f64::min);
+        let floor_u = min_log_a - 64.0;
+        let mut u = min_log_a.min(0.0) - 1.0;
+        let mut step = 1.0;
+        loop {
+            let (h_lo, _) = eval_h(u);
+            if h_lo > 0.0 {
+                break u;
+            }
+            if u <= floor_u || step > 1e12 {
+                return Ok(None);
+            }
+            u -= step;
+            step *= 2.0;
+        }
+    };
+
+    let mut u = 0.5 * (u_lo + u_hi);
+    for _ in 0..128 {
+        if (u_hi - u_lo) <= 1e-15 {
+            break;
+        }
+        let (h, dh) = eval_h(u);
+        if h == 0.0 {
+            return Ok(Some(u));
+        }
+        if h > 0.0 {
+            u_lo = u;
+        } else {
+            u_hi = u;
+        }
+        let next = if dh != 0.0 && dh.is_finite() {
+            u - h / dh
+        } else {
+            f64::NAN
+        };
+        if next.is_finite() && next > u_lo && next < u_hi {
+            u = next;
+        } else {
+            u = 0.5 * (u_lo + u_hi);
+        }
+    }
+    Ok(Some(0.5 * (u_lo + u_hi)))
+}
+
+/// Solve the negative root `eta in (a, b)` of
+/// `-s / eta + sum_{j} w_j / (mu_j - eta) = alpha^2` with shifted coordinates
+/// around `mid = 0.5 * (a + b)` so poles at `a` and `b` never cancel.
+fn solve_eta_interval(
+    active: &[(f64, f64)],
+    s: f64,
+    two_ln_alpha: f64,
+    a: f64,
+    k: usize,
+) -> Result<f64, CoreError> {
+    let b = active[k].0;
+    let log_rhs = two_ln_alpha + b.ln();
+    if log_rhs > 100.0 {
+        return Ok(b);
+    }
+    let rhs = if log_rhs < -745.0 { 0.0 } else { log_rhs.exp() };
+    let a_hat = a / b;
+    let half = 0.5 * (1.0 - a_hat);
+    if half <= 0.0 {
+        return Ok(b);
+    }
+    let mid_hat = 0.5 * (a_hat + 1.0);
+
+    let eval_direct = |u: f64| -> f64 {
+        let mut val = if s > 0.0 { -s / u } else { 0.0 };
+        for &(mu, w) in active {
+            val += w / (mu / b - u);
+        }
+        val - rhs
+    };
+
+    if eval_direct(mid_hat) >= 0.0 {
+        // Root lies in (a_hat, mid_hat]; parameterize by t = eta_hat - a_hat in (0, half].
+        let pole_w = if a == 0.0 { s } else { active[k - 1].1 };
+        let eval_near_a = |t: f64| -> (f64, f64, f64) {
+            let mut non_pole = if a > 0.0 && s > 0.0 {
+                -s / (a_hat + t)
+            } else {
+                0.0
+            };
+            let mut deriv = if s > 0.0 {
+                let d = a_hat + t;
+                s / (d * d)
+            } else {
+                0.0
+            };
+            for (j, &(mu, w)) in active.iter().enumerate() {
+                if a > 0.0 && j + 1 == k {
+                    continue;
+                }
+                let denom = if j < k {
+                    -((a - mu) / b + t)
+                } else {
+                    (mu - a) / b - t
+                };
+                non_pole += w / denom;
+                deriv += w / (denom * denom);
+            }
+            let pole = -pole_w / t;
+            deriv += pole_w / (t * t);
+            (pole + non_pole - rhs, non_pole - rhs, deriv)
+        };
+
+        let (_, r_half, _) = eval_near_a(half);
+        let mut t_lo = if r_half > 0.0 {
+            (0.5 * pole_w / r_half)
+                .min(0.5 * half)
+                .max(f64::MIN_POSITIVE)
+        } else {
+            half * 1e-6
+        };
+        for _ in 0..128 {
+            let (f_lo, _, _) = eval_near_a(t_lo);
+            if f_lo < 0.0 || t_lo <= f64::MIN_POSITIVE {
+                break;
+            }
+            t_lo *= 0.25;
+        }
+        let mut t_hi = half;
+        let mut t = (0.5 * (t_lo + t_hi)).min(t_lo.sqrt() * t_hi.sqrt().max(t_lo));
+        if !(t > t_lo && t < t_hi) {
+            t = 0.5 * (t_lo + t_hi);
+        }
+        for _ in 0..128 {
+            if (t_hi - t_lo) <= 1e-15 * (a_hat + t_hi) {
+                break;
+            }
+            let (f, _, df) = eval_near_a(t);
+            if f == 0.0 {
+                return Ok(b * (a_hat + t));
+            }
+            if f < 0.0 {
+                t_lo = t;
+            } else {
+                t_hi = t;
+            }
+            let next = if df > 0.0 && df.is_finite() {
+                t - f / df
+            } else {
+                f64::NAN
+            };
+            if next.is_finite() && next > t_lo && next < t_hi {
+                t = next;
+            } else if t_lo > 0.0 && t_hi / t_lo > 16.0 {
+                t = t_lo.sqrt() * t_hi.sqrt();
+            } else {
+                t = 0.5 * (t_lo + t_hi);
+            }
+        }
+        let eta_hat = a_hat + 0.5 * (t_lo + t_hi);
+        Ok(b * eta_hat)
+    } else {
+        // Root lies in (mid_hat, 1.0); parameterize by t = 1.0 - eta_hat in (0, half).
+        let pole_w = active[k].1;
+        let eval_near_b = |t: f64| -> (f64, f64) {
+            let mut val = if s > 0.0 { -s / (1.0 - t) } else { 0.0 };
+            let mut deriv = if s > 0.0 {
+                let d = 1.0 - t;
+                -s / (d * d)
+            } else {
+                0.0
+            };
+            for (j, &(mu, w)) in active.iter().enumerate() {
+                if j == k {
+                    val += pole_w / t;
+                    deriv -= pole_w / (t * t);
+                } else if j < k {
+                    let denom = (1.0 - mu / b) - t;
+                    val -= w / denom;
+                    deriv -= w / (denom * denom);
+                } else {
+                    let denom = (mu / b - 1.0) + t;
+                    val += w / denom;
+                    deriv -= w / (denom * denom);
+                }
+            }
+            (val - rhs, deriv)
+        };
+
+        let mut t_lo = 0.0_f64;
+        let mut t_hi = half;
+        let mut t = if rhs > 0.0 {
+            let est = (pole_w / rhs).clamp(1e-16, 0.5 * half);
+            est
+        } else {
+            0.5 * half
+        };
+        for _ in 0..128 {
+            if (t_hi - t_lo) <= 1e-15 {
+                break;
+            }
+            let (f, df) = eval_near_b(t);
+            if f == 0.0 {
+                return Ok(b * (1.0 - t));
+            }
+            if f > 0.0 {
+                t_lo = t;
+            } else {
+                t_hi = t;
+            }
+            let next = if df < 0.0 && df.is_finite() {
+                t - f / df
+            } else {
+                f64::NAN
+            };
+            if next.is_finite() && next > t_lo && next < t_hi {
+                t = next;
+            } else {
+                t = 0.5 * (t_lo + t_hi);
+            }
+        }
+        Ok(b * (1.0 - 0.5 * (t_lo + t_hi)))
+    }
 }
 
 pub(crate) struct EigenWorkspace {
+    n: usize,
     matrix: Vec<f64>,
-    values: Vec<f64>,
     auxiliary: Vec<f64>,
     scratch: Vec<f64>,
-    permutation: Vec<usize>,
-    diag_scale: Vec<f64>,
-    corr: Vec<f64>,
+    coupling: Vec<f64>,
+    terms: Vec<(f64, f64)>,
+    active: Vec<(f64, f64)>,
+    deflated: Vec<f64>,
 }
 
 impl EigenWorkspace {
     pub(crate) fn new(n: usize) -> Self {
+        let q = n.saturating_sub(1);
         Self {
-            matrix: vec![0.0; n * n],
-            values: vec![0.0; n],
-            auxiliary: vec![0.0; n],
-            scratch: vec![0.0; n * n],
-            permutation: (0..n).collect(),
-            diag_scale: vec![0.0; n],
-            corr: vec![0.0; n * n],
+            n,
+            matrix: vec![0.0; q * q],
+            auxiliary: vec![0.0; q],
+            scratch: vec![0.0; q * q],
+            coupling: vec![0.0; q],
+            terms: Vec::with_capacity(q),
+            active: Vec::with_capacity(q),
+            deflated: Vec::with_capacity(q),
         }
     }
 
@@ -302,7 +668,7 @@ impl EigenWorkspace {
         width: usize,
         cv: f64,
     ) -> Result<Option<f64>, CoreError> {
-        let n = self.values.len();
+        let n = self.n;
         let mut active = (1..n).filter(|&i| omega[i * width + i] != 0.0);
         let j = active.next().unwrap_or(1);
         if n > 2
@@ -338,20 +704,30 @@ impl EigenWorkspace {
         if (b - transpose).abs() > 64.0 * f64::EPSILON * a.abs().max(d.abs()).max(b.abs()) {
             return Err(CoreError::invalid_input("SCPC covariance is not symmetric"));
         }
-        bivariate_rejection(a, b + 0.5 * (transpose - b), d, cv).map(Some)
+        bivariate_rejection(a, b.midpoint(transpose), d, cv).map(Some)
     }
 
-    /// Factor Omega = L L' before diagonalizing the symmetric L' D L.
-    pub(crate) fn weighted_eigenvalues(
+    /// Equilibrate Omega into a 2-block Schur complement / DPR1 problem and return
+    /// either an exact closed-form probability (`Ok(Some(p))`) or the dimensionless
+    /// eigenvalue ratios and log-ratios needed for tail-stable integration (`Ok(None)`).
+    pub(crate) fn rejection_eigen_ratios(
         &mut self,
         omega: &[f64],
         width: usize,
-        positive: f64,
-        negative: f64,
-    ) -> Result<&[f64], CoreError> {
-        let n = self.values.len();
+        cv: f64,
+        ratios: &mut Vec<f64>,
+        logs: &mut Vec<f64>,
+    ) -> Result<Option<f64>, CoreError> {
+        ratios.clear();
+        logs.clear();
+        if !cv.is_finite() {
+            return Err(CoreError::invalid_input(
+                "SCPC critical value must be finite",
+            ));
+        }
+        let n = self.n;
         if n == 0 {
-            return Ok(&self.values);
+            return Ok(Some(0.0));
         }
         for i in 0..n {
             for j in 0..n {
@@ -363,9 +739,9 @@ impl EigenWorkspace {
             }
         }
 
-        let pos_diag = omega[0];
-        let neg_max_diag = (1..n).map(|i| omega[i * width + i]).fold(0.0_f64, f64::max);
-        let overall_max_diag = pos_diag.max(neg_max_diag);
+        let raw_pos_diag = omega[0];
+        let raw_neg_max_diag = (1..n).map(|i| omega[i * width + i]).fold(0.0_f64, f64::max);
+        let overall_max_diag = raw_pos_diag.max(raw_neg_max_diag);
         let global_tol = 32.0 * (n as f64) * f64::EPSILON * overall_max_diag;
 
         for i in 0..n {
@@ -385,227 +761,235 @@ impl EigenWorkspace {
                     }
                 }
             }
-            self.values.fill(0.0);
-            return Ok(&self.values);
+            return Ok(Some(0.0));
         }
 
-        if pos_diag < -global_tol || (1..n).any(|i| omega[i * width + i] < -global_tol) {
+        if raw_pos_diag < -global_tol || (1..n).any(|i| omega[i * width + i] < -global_tol) {
             return Err(CoreError::invalid_input(
                 "SCPC covariance is not positive semidefinite",
             ));
         }
 
-        let s0 = if pos_diag > 0.0 { pos_diag.sqrt() } else { 0.0 };
-        let s_neg = if neg_max_diag > 0.0 {
-            neg_max_diag.sqrt()
-        } else {
-            0.0
-        };
+        let pos_diag = raw_pos_diag.max(0.0);
+        let neg_max_diag = raw_neg_max_diag.max(0.0);
+        let base_tol = 32.0 * (n as f64) * f64::EPSILON;
 
-        self.diag_scale[0] = s0;
-        for i in 1..n {
-            self.diag_scale[i] = s_neg;
+        if neg_max_diag == 0.0 {
+            for i in 1..n {
+                for j in 0..=i {
+                    let sym = omega[i * width + j].midpoint(omega[j * width + i]);
+                    if sym.abs() > global_tol {
+                        return Err(CoreError::invalid_input(
+                            "SCPC covariance is not positive semidefinite",
+                        ));
+                    }
+                }
+            }
+            if cv < 0.0 {
+                return Ok(Some(1.0));
+            }
+            return Ok(Some(if pos_diag > 0.0 { 1.0 } else { 0.0 }));
         }
 
-        let neg_tol = 32.0 * (n as f64) * f64::EPSILON;
-        self.corr.fill(0.0);
-        let mut build_ok = true;
-        for i in 0..n {
-            let si = self.diag_scale[i];
-            if si == 0.0 {
-                for j in 0..=i {
-                    if omega[i * width + j].abs() > global_tol {
-                        build_ok = false;
-                        break;
-                    }
+        let q = n - 1;
+        if n == 2 {
+            if cv < 0.0 {
+                return Ok(Some(1.0));
+            }
+            let sym01 = omega[1].midpoint(omega[width]);
+            return bivariate_rejection(pos_diag, sym01, omega[width + 1].max(0.0), cv).map(Some);
+        }
+
+        // Fast exact-atom checks when cv >= 0 and all entries are strictly valid.
+        if cv < 0.0 {
+            // Still validate PSD below when n >= 3 before short-circuiting.
+        } else if let Some(p) = self.singular_or_bivariate_probability(omega, width, cv)? {
+            return Ok(Some(p));
+        }
+
+        let s_neg = neg_max_diag.sqrt();
+        for i in 0..q {
+            for j in 0..=i {
+                let sym =
+                    omega[(i + 1) * width + (j + 1)].midpoint(omega[(j + 1) * width + (i + 1)]);
+                let val = (sym / s_neg) / s_neg;
+                if !val.is_finite() {
+                    return Err(CoreError::invalid_input(
+                        "SCPC covariance normalization overflowed",
+                    ));
+                }
+                self.matrix[i * q + j] = val;
+                self.matrix[j * q + i] = val;
+            }
+        }
+        symmetric_eigen(
+            &mut self.matrix[..q * q],
+            &mut self.auxiliary[..q],
+            Some(&mut self.scratch[..q * q]),
+        )?;
+
+        for &mu in &self.auxiliary[..q] {
+            if mu < -base_tol && (mu * s_neg) * s_neg < -global_tol {
+                return Err(CoreError::invalid_input(
+                    "SCPC covariance is not positive semidefinite",
+                ));
+            }
+        }
+
+        if pos_diag == 0.0 {
+            for j in 0..q {
+                let sym0 = omega[j + 1].midpoint(omega[(j + 1) * width]);
+                if sym0.abs() > global_tol {
+                    return Err(CoreError::invalid_input(
+                        "SCPC covariance is not positive semidefinite",
+                    ));
+                }
+            }
+            return Ok(Some(if cv < 0.0 { 1.0 } else { 0.0 }));
+        }
+
+        let s0 = pos_diag.sqrt();
+        for i in 0..q {
+            let sym = omega[(i + 1) * width].midpoint(omega[i + 1]);
+            let r_i = (sym / s0) / s_neg;
+            if !r_i.is_finite() {
+                return Err(CoreError::invalid_input(
+                    "SCPC covariance normalization overflowed",
+                ));
+            }
+            self.coupling[i] = r_i;
+        }
+
+        self.terms.clear();
+        let f1 = 1.0 + global_tol / pos_diag;
+        for j in 0..q {
+            let mu = self.auxiliary[j];
+            let proj: f64 = (0..q)
+                .map(|k| self.scratch[j * q + k] * self.coupling[k])
+                .sum();
+            let proj_sq = proj * proj;
+            if mu <= base_tol {
+                let f2 = mu.max(0.0) + global_tol / neg_max_diag;
+                if f1.is_finite() && f2.is_finite() && proj_sq > f1 * f2 {
+                    return Err(CoreError::invalid_input(
+                        "SCPC covariance is not positive semidefinite",
+                    ));
                 }
                 continue;
             }
-            for j in 0..=i {
-                let sj = self.diag_scale[j];
-                let entry = omega[i * width + j];
-                if sj == 0.0 {
-                    if entry.abs() > global_tol {
-                        build_ok = false;
-                        break;
-                    }
-                } else {
-                    let c_ij = (entry / si) / sj;
-                    if !c_ij.is_finite() {
-                        build_ok = false;
-                        break;
-                    }
-                    self.corr[i * n + j] = c_ij;
-                    self.corr[j * n + i] = c_ij;
-                }
+            let w = proj_sq / mu;
+            if w > 1.0 + base_tol {
+                return Err(CoreError::invalid_input(
+                    "SCPC covariance is not positive semidefinite",
+                ));
             }
-        }
-        if !build_ok {
-            return self.repair_roundoff(omega, width, positive, negative, overall_max_diag);
+            self.terms.push((mu, w));
         }
 
-        let run_pivoted_chol = |corr: &[f64],
-                                scratch: &mut [f64],
-                                permutation: &mut [usize],
-                                auxiliary: &mut [f64]|
-         -> Result<usize, ()> {
-            scratch.fill(0.0);
-            for i in 0..n {
-                permutation[i] = i;
-                auxiliary[i] = corr[i * n + i];
-            }
-            let mut rank = 0;
-            for k in 0..n {
-                let p = (k..n)
-                    .max_by(|&a, &b| auxiliary[a].total_cmp(&auxiliary[b]))
-                    .expect("pivot range is nonempty");
-                if auxiliary[p] <= 0.0 {
-                    let negligible = auxiliary[k..].iter().all(|value| value.abs() <= neg_tol)
-                        && (k..n).all(|i| {
-                            (k..i).all(|j| {
-                                let product: f64 = (0..k)
-                                    .map(|l| scratch[i * n + l] * scratch[j * n + l])
-                                    .sum();
-                                let residual = corr[permutation[i] * n + permutation[j]] - product;
-                                residual.abs() <= neg_tol
-                            })
-                        });
-                    if !negligible {
-                        return Err(());
-                    }
-                    break;
-                }
-                permutation.swap(k, p);
-                auxiliary.swap(k, p);
-                for j in 0..k {
-                    scratch.swap(k * n + j, p * n + j);
-                }
-                let root = auxiliary[k].sqrt();
-                scratch[k * n + k] = root;
-                for i in k + 1..n {
-                    let product: f64 = (0..k)
-                        .map(|j| scratch[i * n + j] * scratch[k * n + j])
-                        .sum();
-                    let value = (corr[permutation[i] * n + permutation[k]] - product) / root;
-                    scratch[i * n + k] = value;
-                    auxiliary[i] -= value * value;
-                }
-                rank += 1;
-            }
-            Ok(rank)
-        };
-
-        let rank = match run_pivoted_chol(
-            &self.corr,
-            &mut self.scratch,
-            &mut self.permutation,
-            &mut self.auxiliary,
-        ) {
-            Ok(r) => r,
-            Err(()) => {
-                return self.repair_roundoff(omega, width, positive, negative, overall_max_diag)
-            }
-        };
-
-        if rank == 1 && n > 2 {
-            // The exact one-factor boundary was checked above. A second
-            // representable direction may be lost in a rounded Cholesky pivot.
-            return self.repair_roundoff(omega, width, positive, negative, overall_max_diag);
-        }
-
-        let s0_w = if self.diag_scale[0] > 0.0 {
-            self.diag_scale[0] * positive.abs().sqrt()
-        } else {
-            0.0
-        };
-        let sneg_w = if s_neg > 0.0 {
-            s_neg * negative.abs().sqrt()
-        } else {
-            0.0
-        };
-        let w_scale = s0_w.max(sneg_w);
-        if w_scale == 0.0 {
-            self.values.fill(0.0);
-            return Ok(&self.values);
-        }
-        let pos_norm = if self.diag_scale[0] > 0.0 {
-            let r = s0_w / w_scale;
-            r * r * positive.signum()
-        } else {
-            0.0
-        };
-        let neg_norm = if s_neg > 0.0 {
-            let r = sneg_w / w_scale;
-            r * r * negative.signum()
-        } else {
-            0.0
-        };
-
-        self.matrix.fill(0.0);
-        for i in 0..rank {
-            for j in i..rank {
-                let value = (j..n)
-                    .map(|k| {
-                        let weight = if self.permutation[k] == 0 {
-                            pos_norm
-                        } else {
-                            neg_norm
-                        };
-                        self.scratch[k * n + i] * weight * self.scratch[k * n + j]
-                    })
-                    .sum();
-                self.matrix[i * n + j] = value;
-                self.matrix[j * n + i] = value;
-            }
-        }
-        symmetric_eigen(&mut self.matrix, &mut self.values, None)?;
-        Ok(&self.values)
-    }
-
-    // A PSD block can acquire a negative eigenvalue at roundoff scale in the
-    // covariance multiplication. Judge that residual in the original units.
-    fn repair_roundoff(
-        &mut self,
-        omega: &[f64],
-        width: usize,
-        positive: f64,
-        negative: f64,
-        scale: f64,
-    ) -> Result<&[f64], CoreError> {
-        let n = self.values.len();
-        for i in 0..n {
-            for j in 0..n {
-                self.corr[i * n + j] = omega[i * width + j] / scale;
-            }
-        }
-        symmetric_eigen(&mut self.corr, &mut self.values, Some(&mut self.scratch))?;
-        if self
-            .values
-            .iter()
-            .any(|&v| v < -32.0 * n as f64 * f64::EPSILON)
-        {
+        let w_sum: f64 = self.terms.iter().map(|&(_, w)| w).sum();
+        if w_sum > 1.0 + base_tol {
             return Err(CoreError::invalid_input(
                 "SCPC covariance is not positive semidefinite",
             ));
         }
-        for value in &mut self.values {
-            *value = value.max(0.0).sqrt();
-        }
-        // The Jacobi solver stores one eigenvector per row.
-        for i in 0..n {
-            for j in i..n {
-                let inner: f64 = (1..n)
-                    .map(|k| self.scratch[i * n + k] * self.scratch[j * n + k])
+        let mut s = (1.0 - w_sum).max(0.0);
+        if w_sum > 1.0 - 1e-12 && w_sum <= 1.0 + base_tol {
+            // Recompute Schur complement without sqrt(pos_diag) rounding when w_sum ~ 1.0
+            let mut b_quad = 0.0_f64;
+            for j in 0..q {
+                let mu = self.auxiliary[j];
+                if mu <= base_tol {
+                    continue;
+                }
+                let raw_proj: f64 = (0..q)
+                    .map(|k| {
+                        let sym = omega[(k + 1) * width].midpoint(omega[k + 1]);
+                        self.scratch[j * q + k] * (sym / s_neg)
+                    })
                     .sum();
-                let v = (positive * self.scratch[i * n] * self.scratch[j * n] + negative * inner)
-                    * self.values[i]
-                    * self.values[j];
-                self.matrix[i * n + j] = v;
-                self.matrix[j * n + i] = v;
+                b_quad += (raw_proj * raw_proj) / mu;
+            }
+            if b_quad.is_finite() {
+                let diff = pos_diag - b_quad;
+                if diff > 0.0 {
+                    s = (diff / pos_diag).min(1.0);
+                } else if diff / pos_diag >= -base_tol {
+                    s = 0.0;
+                }
             }
         }
-        symmetric_eigen(&mut self.matrix, &mut self.values, None)?;
-        Ok(&self.values)
+        if w_sum > 0.0 && (w_sum > 1.0 || w_sum > 1.0 - s) {
+            let target = if w_sum > 1.0 { 1.0 } else { 1.0 - s };
+            let scale = target / w_sum;
+            for (_, w) in &mut self.terms {
+                *w *= scale;
+            }
+        }
+
+        if cv <= 0.0 {
+            return Ok(Some(1.0));
+        }
+
+        self.terms.sort_by(|a, b| a.0.total_cmp(&b.0));
+        self.deflated.clear();
+        self.active.clear();
+        for &(mu, w) in &self.terms {
+            if w <= 1e-30 {
+                self.deflated.push(mu);
+            } else if let Some(last) = self.active.last_mut() {
+                if mu - last.0 <= 32.0 * f64::EPSILON * mu {
+                    let w_tot = last.1 + w;
+                    let mu_merged = (last.1 * last.0 + w * mu) / w_tot;
+                    let mu_defl = (w * last.0 + last.1 * mu) / w_tot;
+                    last.0 = mu_merged;
+                    last.1 = w_tot;
+                    self.deflated.push(mu_defl);
+                } else {
+                    self.active.push((mu, w));
+                }
+            } else {
+                self.active.push((mu, w));
+            }
+        }
+
+        let two_ln_alpha = 2.0 * (cv.ln() + 0.5 * (neg_max_diag.ln() - pos_diag.ln()));
+        let Some(ln_lambda_pos) = solve_lambda_pos_ln(&self.active, s, two_ln_alpha)? else {
+            return Ok(Some(0.0));
+        };
+
+        if !self.active.is_empty() {
+            let m = self.active.len();
+            if s > 0.0 {
+                let eta0 = solve_eta_interval(&self.active, s, two_ln_alpha, 0.0, 0)?;
+                if eta0 > 0.0 {
+                    let log_r = two_ln_alpha + eta0.ln() - ln_lambda_pos;
+                    logs.push(log_r);
+                    ratios.push(log_r.exp());
+                }
+            }
+            for k in 1..m {
+                let a = self.active[k - 1].0;
+                let eta_k = solve_eta_interval(&self.active, s, two_ln_alpha, a, k)?;
+                if eta_k > 0.0 {
+                    let log_r = two_ln_alpha + eta_k.ln() - ln_lambda_pos;
+                    logs.push(log_r);
+                    ratios.push(log_r.exp());
+                }
+            }
+        }
+        for &eta in &self.deflated {
+            if eta > 0.0 {
+                let log_r = two_ln_alpha + eta.ln() - ln_lambda_pos;
+                logs.push(log_r);
+                ratios.push(log_r.exp());
+            }
+        }
+
+        if logs.is_empty() {
+            return Ok(Some(1.0));
+        }
+
+        Ok(None)
     }
 }
 
@@ -751,74 +1135,164 @@ mod tests {
     }
 
     #[test]
-    fn covariance_eigenfactor_preserves_weighted_quadratic_form() {
-        let omega = [1.0, 0.3, 0.2, 0.3, 0.6, 0.4, 0.2, 0.4, 0.9];
-        let weights = [0.7, -0.4, -0.4];
-        let mut ws = EigenWorkspace::new(3);
-        let eig = ws.repair_roundoff(&omega, 3, weights[0], weights[1], 1.0).unwrap();
-        let mut trace = 0.0;
-        let mut trace_squared = 0.0;
-        for i in 0..3 {
-            trace += weights[i] * omega[i * 3 + i];
-            for j in 0..3 {
-                trace_squared += weights[i] * weights[j] * omega[i * 3 + j].powi(2);
-            }
-        }
-        assert!((eig.iter().sum::<f64>() - trace).abs() < 1e-13);
-        assert!((eig.iter().map(|v| v * v).sum::<f64>() - trace_squared).abs() < 1e-13);
-    }
+    fn rejection_eigen_ratios_handles_zero_cv_scale_disparity_and_indefiniteness() {
+        let mut ratios = Vec::new();
+        let mut logs = Vec::new();
 
-    #[test]
-    fn weighted_eigenvalues_handles_scale_disparity_roundoff_and_indefiniteness() {
+        // 1. Scale disparity IV and FE blocks produce non-trivial pos and neg modes.
         let cov_iv = [1.0, 5e6, 5e6, 1e14];
         let mut ws2 = EigenWorkspace::new(2);
-        let eigs = ws2
-            .weighted_eigenvalues(&cov_iv, 2, 1.0, -1.0)
-            .unwrap()
-            .to_vec();
-        let max_pos = eigs.iter().copied().fold(0.0, f64::max);
-        assert!(max_pos > 0.0, "scaled IV dropped positive block: {eigs:?}");
-        assert!(
-            eigs.iter().any(|&v| v < 0.0),
-            "scaled IV dropped negative block: {eigs:?}"
+        assert!(matches!(
+            ws2.rejection_eigen_ratios(&cov_iv, 2, 1.0, &mut ratios, &mut logs),
+            Ok(Some(p)) if p > 0.0 && p < 1.0
+        ));
+        assert!(matches!(
+            ws2.rejection_eigen_ratios(&[1.0, 0.0, 0.0, 1e14], 2, 1.0, &mut ratios, &mut logs),
+            Ok(Some(p)) if p > 0.0 && p < 1e-6
+        ));
+        assert!(matches!(
+            ws2.rejection_eigen_ratios(&[1e14, 0.0, 0.0, 1.0], 2, 1.0, &mut ratios, &mut logs),
+            Ok(Some(p)) if p > 0.999999 && p < 1.0
+        ));
+
+        // 2. Correlated 10x10 SPD matrix at cv == 0.0 must return exact 1.0 (zero Jacobi roundoff).
+        let n10 = 10usize;
+        let mut omega10 = vec![0.0_f64; n10 * n10];
+        for i in 0..n10 {
+            for j in 0..n10 {
+                omega10[i * n10 + j] = (-0.35 * ((i as f64) - (j as f64)).abs()).exp();
+            }
+        }
+        let mut ws10 = EigenWorkspace::new(n10);
+        let p0 = ws10
+            .rejection_eigen_ratios(&omega10, n10, 0.0, &mut ratios, &mut logs)
+            .unwrap();
+        assert_eq!(p0, Some(1.0));
+
+        // 3. Extreme scale disparity diagonal Diag(1e200, 1e-120, 1e-120) at cv = 1e160 -> ratios ~ 1.0.
+        let mut ws3 = EigenWorkspace::new(3);
+        let res_extreme = ws3
+            .rejection_eigen_ratios(
+                &[1e200, 0.0, 0.0, 0.0, 1e-120, 0.0, 0.0, 0.0, 1e-120],
+                3,
+                1e160,
+                &mut ratios,
+                &mut logs,
+            )
+            .unwrap();
+        assert!(res_extreme.is_none());
+        assert_eq!(ratios.len(), 2);
+        for &r in &ratios {
+            assert!((r - 1.0).abs() < 1e-12, "unexpected ratio {r}");
+        }
+
+        // 4. Rank-1 extreme scale disparity v = (2^400, 2^-400, 2^-400).
+        let hi = 2.0_f64.powi(400);
+        let lo = 2.0_f64.powi(-400);
+        let v = [hi, lo, lo];
+        let mut r1 = [0.0_f64; 9];
+        for i in 0..3 {
+            for j in 0..3 {
+                r1[i * 3 + j] = v[i] * v[j];
+            }
+        }
+        let cv_thresh = (hi / lo) / 2.0_f64.sqrt();
+        assert_eq!(
+            ws3.rejection_eigen_ratios(&r1, 3, 0.5 * cv_thresh, &mut ratios, &mut logs)
+                .unwrap(),
+            Some(1.0)
+        );
+        assert_eq!(
+            ws3.rejection_eigen_ratios(&r1, 3, 2.0 * cv_thresh, &mut ratios, &mut logs)
+                .unwrap(),
+            Some(0.0)
         );
 
-        let cov_iv_diag = [1.0, 0.0, 0.0, 1e14];
-        let eigs_d = ws2
-            .weighted_eigenvalues(&cov_iv_diag, 2, 1.0, -1.0)
-            .unwrap()
-            .to_vec();
-        assert!(eigs_d.iter().any(|&v| v > 0.0) && eigs_d.iter().any(|&v| v < 0.0));
-
-        let cov_fe = [1e14, 0.0, 0.0, 1.0];
-        let eigs_fe = ws2
-            .weighted_eigenvalues(&cov_fe, 2, 1.0, -1.0)
-            .unwrap()
-            .to_vec();
-        assert!(eigs_fe.iter().any(|&v| v > 0.0) && eigs_fe.iter().any(|&v| v < 0.0));
-
+        // 5. Validation guards: non-finite, asymmetric, indefinite, roundoff.
         assert!(ws2
-            .weighted_eigenvalues(&[f64::INFINITY, 0.0, 0.0, -1e100], 2, 1.0, -1.0)
+            .rejection_eigen_ratios(
+                &[f64::INFINITY, 0.0, 0.0, 1.0],
+                2,
+                1.0,
+                &mut ratios,
+                &mut logs
+            )
             .is_err());
         assert!(ws2
-            .weighted_eigenvalues(&[0.0, 1.0, 1.0, 0.0], 2, 1.0, -1.0)
+            .rejection_eigen_ratios(&[1.0, 0.5, 0.0, 1.0], 2, 1.0, &mut ratios, &mut logs)
+            .is_err());
+        assert!(ws2
+            .rejection_eigen_ratios(&[0.0, 1.0, 1.0, 0.0], 2, 1.0, &mut ratios, &mut logs)
             .is_err());
 
         let eps = f64::EPSILON;
-        let mut ws3 = EigenWorkspace::new(3);
         let roundoff = [1.0, 0.0, 0.0, 0.0, eps, 16.0 * eps, 0.0, 16.0 * eps, 0.0];
-        let r_eigs = ws3
-            .weighted_eigenvalues(&roundoff, 3, 1.0, -1.0)
-            .unwrap()
-            .to_vec();
-        assert!(
-            (r_eigs[0] - 1.0).abs() < 1e-12 || r_eigs.iter().any(|&v| (v - 1.0).abs() < 1e-12)
-        );
-        assert_eq!(r_eigs.iter().filter(|&&v| v.abs() < 1e-12).count(), 2);
+        let ro_res = ws3
+            .rejection_eigen_ratios(&roundoff, 3, 1.0, &mut ratios, &mut logs)
+            .unwrap();
+        assert!(ro_res.is_none() || ro_res == Some(1.0));
+        assert!(ratios.iter().all(|&r| r < 1e-12));
 
         let indefinite = [1.0, 0.0, 0.0, 0.0, eps, 1e-3, 0.0, 1e-3, 0.0];
         assert!(ws3
-            .weighted_eigenvalues(&indefinite, 3, 1.0, -1.0)
+            .rejection_eigen_ratios(&indefinite, 3, 1.0, &mut ratios, &mut logs)
             .is_err());
+        assert!(ws3
+            .rejection_eigen_ratios(
+                &[1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 2.0, 1.0],
+                3,
+                0.0,
+                &mut ratios,
+                &mut logs,
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn dense_omega_eigen_ratios_match_direct_decomposition() {
+        // Test non-trivial 4x4 dense covariance against direct Omega^{1/2} D Omega^{1/2} eigen.
+        let n = 4usize;
+        let coords = [0.0_f64, 0.3, 1.1, 2.4];
+        let mut omega = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                omega[i * n + j] = (-0.7 * (coords[i] - coords[j]).abs()).exp();
+            }
+        }
+        let mut a = omega.clone();
+        let mut vals = vec![0.0; n];
+        let mut vecs = vec![0.0; n * n];
+        symmetric_eigen(&mut a, &mut vals, Some(&mut vecs)).unwrap();
+        let cv = 1.5_f64;
+        let mut mat = vec![0.0; n * n];
+        for i in 0..n {
+            for j in i..n {
+                let inner: f64 = (1..n).map(|k| vecs[i * n + k] * vecs[j * n + k]).sum();
+                let v =
+                    (vecs[i * n] * vecs[j * n] - cv * cv * inner) * vals[i].sqrt() * vals[j].sqrt();
+                mat[i * n + j] = v;
+                mat[j * n + i] = v;
+            }
+        }
+        let mut evs = vec![0.0; n];
+        symmetric_eigen(&mut mat, &mut evs, None).unwrap();
+        let max_p = evs.iter().copied().fold(0.0_f64, f64::max);
+        let mut ref_r: Vec<f64> = evs
+            .iter()
+            .filter(|&&v| v < 0.0)
+            .map(|&v| -v / max_p)
+            .collect();
+        ref_r.sort_by(|a, b| a.total_cmp(b));
+
+        let mut ws = EigenWorkspace::new(n);
+        let mut ratios = Vec::new();
+        let mut logs = Vec::new();
+        ws.rejection_eigen_ratios(&omega, n, cv, &mut ratios, &mut logs)
+            .unwrap();
+        ratios.sort_by(|a, b| a.total_cmp(b));
+        assert_eq!(ratios.len(), ref_r.len());
+        for (a, b) in ratios.iter().zip(&ref_r) {
+            assert!((a - b).abs() < 1e-11, "got={ratios:?} vs ref={ref_r:?}");
+        }
     }
 }

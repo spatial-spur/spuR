@@ -148,9 +148,15 @@ c_ci <- function(Y, distmat, emat, c_grid_ho, c_grid_ha, y_info = NULL) {
       log_ha_mat[, j] <- log_det_mat_ha[j] - 0.5 * q * log(colSums((ch_omi_ha %*% e)^2))
     }
 
-    lr <- rowMeans(exp(log_ha_mat - log_ho))
-    lr_X <- mean(exp(log_ha_X - log_ho_X))
-    pv_mat[i, 1] <- mean(lr > lr_X)
+    log_ha_max <- apply(log_ha_mat, 1L, max)
+    log_ha_avg <- log_ha_max + log(rowMeans(exp(log_ha_mat - log_ha_max)))
+    log_lr <- log_ha_avg - log_ho
+
+    log_ha_X_max <- max(log_ha_X)
+    log_ha_X_avg <- log_ha_X_max + log(mean(exp(log_ha_X - log_ha_X_max)))
+    log_lr_X <- log_ha_X_avg - log_ho_X
+
+    pv_mat[i, 1] <- mean(log_lr > log_lr_X)
   }
 
   pv_mat

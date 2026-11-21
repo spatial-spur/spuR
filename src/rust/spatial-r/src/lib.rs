@@ -11,9 +11,9 @@ use spatial_core::{
 
 fn core_err(err: CoreError) -> Error {
     match err.kind() {
-        ErrorKind::InvalidInput | ErrorKind::TiedEigenspace | ErrorKind::InvalidSampledCovariance => {
-            Error::Other(err.message().to_string())
-        }
+        ErrorKind::InvalidInput
+        | ErrorKind::TiedEigenspace
+        | ErrorKind::InvalidSampledCovariance => Error::Other(err.message().to_string()),
         ErrorKind::UnsupportedCase => Error::Other(format!("unsupported case: {}", err.message())),
         ErrorKind::CalibrationFailed => {
             Error::Other(format!("calibration failed: {}", err.message()))
@@ -202,42 +202,76 @@ pub fn rust_run_model_scpc(
         return Err(Error::Other("scores must have one row per observation".into()).into());
     }
     let fe = parse_r_index_vec(fe_id, n_obs, "fe_id", "observations")?;
-    let read_design = |matrix: Nullable<RMatrix<f64>>| -> extendr_api::Result<(Option<Vec<f64>>, usize)> {
-        match matrix {
-            Nullable::Null => Ok((None, 0)),
-            Nullable::NotNull(m) => {
-                if m.nrows() != n_obs {
-                    return Err(Error::Other("a model matrix has the wrong number of observations".into()));
+    let read_design =
+        |matrix: Nullable<RMatrix<f64>>| -> extendr_api::Result<(Option<Vec<f64>>, usize)> {
+            match matrix {
+                Nullable::Null => Ok((None, 0)),
+                Nullable::NotNull(m) => {
+                    if m.nrows() != n_obs {
+                        return Err(Error::Other(
+                            "a model matrix has the wrong number of observations".into(),
+                        ));
+                    }
+                    Ok((
+                        Some(col_major_to_row_major(m.data(), n_obs, m.ncols())?),
+                        m.ncols(),
+                    ))
                 }
-                Ok((Some(col_major_to_row_major(m.data(), n_obs, m.ncols())?), m.ncols()))
             }
-        }
-    };
+        };
     let (x, design_cols) = read_design(design)?;
     let (z, instrument_cols) = read_design(instruments)?;
     let (directions, direction_cols) = read_design(direction_design)?;
     if directions.is_some() && direction_cols != p {
-        return Err(Error::Other("the fitted direction matrix must have one column per score".into()).into());
+        return Err(Error::Other(
+            "the fitted direction matrix must have one column per score".into(),
+        )
+        .into());
     }
     let seed = match seed {
         Nullable::Null => None,
-        Nullable::NotNull(s) if (0.0..4_294_967_296.0).contains(&s) && s.fract() == 0.0 => Some(s as u32),
+        Nullable::NotNull(s) if (0.0..4_294_967_296.0).contains(&s) && s.fract() == 0.0 => {
+            Some(s as u32)
+        }
         _ => return Err(Error::Other("seed must be an integer in [0, 2^32)".into()).into()),
     };
     let coord_data = col_major_to_row_major(coords.data(), n, d)?;
     let obs_scores = col_major_to_row_major(scores.data(), n_obs, p)?;
     let bread_rows = col_major_to_row_major(bread.data(), k, p)?;
-    let coefficients = coef.as_robj().as_real_slice()
-        .ok_or_else(|| Error::ExpectedReal(coef.as_robj().clone()))?;
+    let coefficients = coef
+        .as_robj()
+        .as_real_slice()
+        .ok_or_else(|| Error::ExpectedReal(coef.as_robj().clone()))?
+        .to_vec();
     let model = ScpcPreparation {
-        n_sites: n, n_obs, n_scores: p, coefficients, bread: &bread_rows,
-        scores: &obs_scores, design: x.as_deref(), design_cols,
-        instruments: z.as_deref(), instrument_cols, direction_design: directions.as_deref(),
-        cluster_ids: cluster.as_deref(), fixed_effects: fe.as_deref(),
+        n_sites: n,
+        n_obs,
+        n_scores: p,
+        coefficients: &coefficients,
+        bread: &bread_rows,
+        scores: &obs_scores,
+        design: x.as_deref(),
+        design_cols,
+        instruments: z.as_deref(),
+        instrument_cols,
+        direction_design: directions.as_deref(),
+        cluster_ids: cluster.as_deref(),
+        fixed_effects: fe.as_deref(),
     };
-    let out = run_model_scpc(model, &coord_data, d,
-        if latlong { Metric::GreatCircleFractionLonLat } else { Metric::Euclidean },
-        avc, cvs, parse_r_nthreads(nthreads)?, seed)?;
+    let out = run_model_scpc(
+        model,
+        &coord_data,
+        d,
+        if latlong {
+            Metric::GreatCircleFractionLonLat
+        } else {
+            Metric::Euclidean
+        },
+        avc,
+        cvs,
+        parse_r_nthreads(nthreads)?,
+        seed,
+    )?;
     Ok(build_r_scpc_list(out, n, k)?)
 }
 
@@ -307,12 +341,16 @@ fn parse_r_scpc_inputs(
     } else {
         let xj_mat = match xj {
             Nullable::NotNull(m) => m,
-            Nullable::Null => return Err(Error::Other("conditional SCPC requires `xj` matrix".into())),
+            Nullable::Null => {
+                return Err(Error::Other("conditional SCPC requires `xj` matrix".into()))
+            }
         };
         let xjs_mat = match xjs {
             Nullable::NotNull(m) => m,
             Nullable::Null => {
-                return Err(Error::Other("conditional SCPC requires `xjs` matrix".into()))
+                return Err(Error::Other(
+                    "conditional SCPC requires `xjs` matrix".into(),
+                ))
             }
         };
         if xj_mat.nrows() != m_obs || xj_mat.ncols() != k_use {
@@ -708,7 +746,9 @@ fn parse_r_nthreads(nthreads: Nullable<i32>) -> extendr_api::Result<Option<usize
                     "`nthreads` must be a positive integer.".into(),
                 ));
             }
-            Ok(Some(t as usize))
+            let count = Some(t as usize);
+            spatial_core::threads::validate_nthreads(count).map_err(core_err)?;
+            Ok(count)
         }
     }
 }
@@ -911,7 +951,15 @@ pub fn run_spur_i0_resid_r(
     emat: RMatrix<f64>,
     nthreads: Nullable<i32>,
 ) -> extendr_api::Result<List> {
-    run_spur_test_r_impl(coords, latlong, y, Nullable::NotNull(x_in), emat, nthreads, true)
+    run_spur_test_r_impl(
+        coords,
+        latlong,
+        y,
+        Nullable::NotNull(x_in),
+        emat,
+        nthreads,
+        true,
+    )
 }
 
 pub fn run_spur_i1_resid_r(
@@ -922,7 +970,15 @@ pub fn run_spur_i1_resid_r(
     emat: RMatrix<f64>,
     nthreads: Nullable<i32>,
 ) -> extendr_api::Result<List> {
-    run_spur_test_r_impl(coords, latlong, y, Nullable::NotNull(x_in), emat, nthreads, false)
+    run_spur_test_r_impl(
+        coords,
+        latlong,
+        y,
+        Nullable::NotNull(x_in),
+        emat,
+        nthreads,
+        false,
+    )
 }
 
 pub fn run_spur_halflife_r(
@@ -939,7 +995,8 @@ pub fn run_spur_halflife_r(
     let y_slice = y
         .as_robj()
         .as_real_slice()
-        .ok_or_else(|| Error::ExpectedReal(y.as_robj().clone()))?;
+        .ok_or_else(|| Error::ExpectedReal(y.as_robj().clone()))?
+        .to_vec();
     if y_slice.len() != n {
         return Err(Error::Other(format!(
             "y length {} does not match coords rows n = {n}",
@@ -960,7 +1017,7 @@ pub fn run_spur_halflife_r(
         n,
         d,
         metric,
-        y: y_slice,
+        y: &y_slice,
         emat: &emat_rm,
         q,
         nrep,
@@ -1027,7 +1084,11 @@ pub fn run_spur_transform_r(
             } else {
                 Metric::Euclidean
             };
-            (Some(col_major_to_row_major(cm.data(), n_usize, dc)?), dc, met)
+            (
+                Some(col_major_to_row_major(cm.data(), n_usize, dc)?),
+                dc,
+                met,
+            )
         }
     };
 
@@ -1090,7 +1151,8 @@ pub fn run_spur_pipeline_r(
     let y_slice = y
         .as_robj()
         .as_real_slice()
-        .ok_or_else(|| Error::ExpectedReal(y.as_robj().clone()))?;
+        .ok_or_else(|| Error::ExpectedReal(y.as_robj().clone()))?
+        .to_vec();
     if y_slice.len() != n {
         return Err(Error::Other(format!(
             "y length {} does not match coords rows n = {n}",
@@ -1131,7 +1193,7 @@ pub fn run_spur_pipeline_r(
         n,
         d,
         metric,
-        y: y_slice,
+        y: &y_slice,
         x_in: &x_rm,
         k_x,
         emat: &emat_rm,
@@ -1286,6 +1348,7 @@ pub fn build_info_r() -> List {
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
         linalg_provider = spatial_core::linalg_provider(),
+        inherited_accelerate_state = spatial_core::threads::inherited_accelerate_state(),
         scpc_api_version = spatial_core::SCPC_API_VERSION as i32,
         spur_api_version = spatial_core::SPUR_API_VERSION as i32
     )
@@ -1341,8 +1404,14 @@ mod tests {
             (CoreError::unsupported("approx"), "unsupported case: approx"),
             (CoreError::tied("ambiguous"), "ambiguous"),
             (CoreError::invalid_sampled_covariance("not psd"), "not psd"),
-            (CoreError::calibration("no root"), "calibration failed: no root"),
-            (CoreError::degenerate("zero var"), "degenerate variance: zero var"),
+            (
+                CoreError::calibration("no root"),
+                "calibration failed: no root",
+            ),
+            (
+                CoreError::degenerate("zero var"),
+                "degenerate variance: zero var",
+            ),
             (CoreError::internal("lapack"), "internal failure: lapack"),
         ];
         for (err, expected) in cases {
@@ -1361,7 +1430,10 @@ mod tests {
 
         let invalid_cov =
             ApproxScpcError::from(CoreError::invalid_sampled_covariance("indefinite grid"));
-        assert_eq!(invalid_cov.class, Some("spatial_invalid_sampled_covariance"));
+        assert_eq!(
+            invalid_cov.class,
+            Some("spatial_invalid_sampled_covariance")
+        );
         assert_eq!(invalid_cov.message, "indefinite grid");
 
         let other_core = ApproxScpcError::from(CoreError::degenerate("zero var"));

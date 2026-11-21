@@ -20,8 +20,9 @@ Description: Implements low-frequency spatial unit root tests and
     isotropic, cluster) for correcting spatial dependence. See Becker,
     Boll, and Voth (2026) for a practical guide to these methods.
 License: MIT + file LICENSE
+Copyright: file inst/COPYRIGHTS
 Encoding: UTF-8
-SystemRequirements: GNU make, Cargo (Rust's package manager), rustc (optional, for Rust acceleration)
+SystemRequirements: GNU make, Cargo (Rust's package manager), rustc (>= 1.85, optional for Rust acceleration)
 URL: https://github.com/spatial-spur/spuR
 BugReports: https://github.com/spatial-spur/spuR/issues
 Depends:

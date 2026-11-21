@@ -7,12 +7,17 @@ CARGO ?= cargo
 VENDOR_ARCHIVE = $(wildcard rust/vendor.tar.xz)
 VENDOR_DIR = $(wildcard rust/vendor)
 VENDOR_CONFIG = $(wildcard rust/vendor-config.toml)
+CARGO_VENDOR_ENV = $(if $(VENDOR_ARCHIVE)$(VENDOR_DIR),CARGO_HOME="$(CURDIR)/$(TARGET_DIR)/cargo-home")
 CARGO_VENDOR_FLAGS = $(if $(VENDOR_ARCHIVE)$(VENDOR_DIR),--offline $(if $(VENDOR_CONFIG),--config target/vendor-config.toml),)
 
 ifeq ($(strip $(SPATIAL_RUST)),0)
   RUST_AVAILABLE :=
 else
-  RUST_AVAILABLE := $(shell command -v "$(CARGO)" 2>/dev/null)
+  RUSTC_SUPPORTED := $(shell rustc --version 2>/dev/null | awk '/^rustc / { split($$2,v,"."); if (v[1] >= 2 || (v[1] == 1 && v[2] >= 85)) print "yes" }')
+  RUST_AVAILABLE := $(if $(RUSTC_SUPPORTED),$(shell command -v "$(CARGO)" 2>/dev/null))
+  ifeq ($(strip $(RUST_AVAILABLE)),)
+    $(info Using the R fallback. Native builds require Cargo and rustc >= 1.85 with the R target installed.)
+  endif
 endif
 
 UNAME_S := $(shell uname -s)
@@ -22,7 +27,7 @@ ifeq ($(UNAME_S),Darwin)
 else
   RUST_SYS_LIBS = -lpthread -ldl -lm
   ifeq ($(UNAME_S),Linux)
-    EXPORT_MAP = exports.map
+    EXPORT_MAP = rust/exports.map
     EXPORT_FLAGS = -Wl,--version-script=$(EXPORT_MAP)
   endif
 endif
@@ -39,12 +44,13 @@ else
   RUST_DEPS =
 endif
 
-PREV_MODE := $(shell cat .spatial_rust_mode 2>/dev/null || true)
-ifneq ($(PREV_MODE),$(RUST_MODE))
-  $(shell rm -f init.o $(SHLIB) && printf '%s\n' "$(RUST_MODE)" > .spatial_rust_mode)
-endif
-
 all: $(SHLIB)
+
+init.o: .spatial_rust_mode
+
+.PHONY: force-rust-mode
+.spatial_rust_mode: force-rust-mode
+	@if [ "$$(cat $@ 2>/dev/null)" != "$(RUST_MODE)" ]; then printf '%s\n' "$(RUST_MODE)" > "$@"; fi
 
 $(SHLIB): $(RUST_DEPS) $(EXPORT_MAP)
 
@@ -53,4 +59,4 @@ $(STATLIB):
 	"$(CARGO)" --version && rustc --version
 	$(if $(VENDOR_ARCHIVE),tar -xf "$(VENDOR_ARCHIVE)" -C rust,:)
 	$(if $(VENDOR_CONFIG),mkdir -p "$(TARGET_DIR)" && cp "$(VENDOR_CONFIG)" "$(TARGET_DIR)/vendor-config.toml",:)
-	cd rust && CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build --release $(CARGO_VENDOR_FLAGS) --locked
+	cd rust && $(CARGO_VENDOR_ENV) CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build -j 2 --release $(CARGO_VENDOR_FLAGS) --locked

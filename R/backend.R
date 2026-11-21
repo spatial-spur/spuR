@@ -131,7 +131,13 @@
   if (identical(backend_resolved, "rust") && !loaded) {
     stop("`backend = \"rust\"` was requested, but the native Rust backend is not loaded in `spuR`.", call. = FALSE)
   }
-  loaded
+  forked <- loaded && .is_spur_forked_child() &&
+    isTRUE(.Call("wrap__rust_build_info", PACKAGE = "spuR")$inherited_accelerate_state)
+  if (identical(backend_resolved, "rust") && forked) {
+    stop("Accelerate was used before this process forked. Use a fresh process or backend = 'fallback'.",
+         call. = FALSE)
+  }
+  loaded && !forked
 }
 
 .try_spur_test_rust <- function(sym,

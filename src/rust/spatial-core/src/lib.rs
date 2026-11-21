@@ -27,7 +27,7 @@ pub use spur_op::{
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const SPEC_VERSION: &str = "0.3.2";
+pub const SPEC_VERSION: &str = "0.3.3";
 pub const SCPC_API_VERSION: usize = 7;
 pub const SPUR_API_VERSION: usize = 3;
 

@@ -201,3 +201,91 @@ testthat::test_that("spurtransform transforms evaluated response and interaction
     testthat::expect_equal(separate$h_x.z, out$h_x.z)
   }
 })
+
+testthat::test_that("formula LHS expressions evaluate in model.frame and spur allows compound LHS", {
+  df <- utils::read.csv(testthat::test_path("fixtures", "bench_200.csv"))
+  df$pos_am <- exp(df$x1 + 0.3 * df$x2)
+  df$log_pos_am <- log(df$pos_am)
+  df$y1 <- 0.75 * df$y
+  df$y2 <- 0.25 * df$y
+  df$y_sum <- df$y1 + df$y2
+  backends <- "fallback"
+  if (is.loaded("wrap__rust_run_spur_i0", PACKAGE = "spuR")) {
+    backends <- c(backends, "rust")
+  }
+
+  for (backend in backends) {
+    set.seed(10)
+    res_expr_i0 <- spurtest_i0(log(pos_am) ~ 1, data = df, q = 8L, nrep = 250L,
+                               coords_euclidean = c("s_1", "s_2"), backend = backend)
+    set.seed(10)
+    res_col_i0 <- spurtest_i0(log_pos_am ~ 1, data = df, q = 8L, nrep = 250L,
+                              coords_euclidean = c("s_1", "s_2"), backend = backend)
+    testthat::expect_equal(res_expr_i0$teststat, res_col_i0$teststat, tolerance = 1e-12)
+    testthat::expect_equal(res_expr_i0$pvalue, res_col_i0$pvalue, tolerance = 1e-12)
+
+    set.seed(10)
+    res_expr_i1 <- spurtest_i1(log(pos_am) ~ 1, data = df, q = 8L, nrep = 250L,
+                               coords_euclidean = c("s_1", "s_2"), backend = backend)
+    set.seed(10)
+    res_col_i1 <- spurtest_i1(log_pos_am ~ 1, data = df, q = 8L, nrep = 250L,
+                              coords_euclidean = c("s_1", "s_2"), backend = backend)
+    testthat::expect_equal(res_expr_i1$teststat, res_col_i1$teststat, tolerance = 1e-12)
+    testthat::expect_equal(res_expr_i1$pvalue, res_col_i1$pvalue, tolerance = 1e-12)
+  }
+
+  set.seed(123)
+  hl_expr <- spurhalflife(log(pos_am) ~ 1, data = df, q = 6L, nrep = 100L,
+                          coords_euclidean = c("s_1", "s_2"), backend = "fallback")
+  set.seed(123)
+  hl_col <- spurhalflife(log_pos_am ~ 1, data = df, q = 6L, nrep = 100L,
+                         coords_euclidean = c("s_1", "s_2"), backend = "fallback")
+  testthat::expect_equal(hl_expr$ci_l, hl_col$ci_l, tolerance = 1e-12)
+  testthat::expect_equal(hl_expr$ci_u, hl_col$ci_u, tolerance = 1e-12)
+
+  sample <- df[seq_len(120L), ]
+  pipe_expr <- spur(I(y1 + y2) ~ x1 + x2, data = sample, q = 8L, nrep = 400L,
+                    lon = "s_1", lat = "s_2", seed = 42L, backend = "fallback")
+  pipe_col <- spur(y_sum ~ x1 + x2, data = sample, q = 8L, nrep = 400L,
+                   lon = "s_1", lat = "s_2", seed = 42L, backend = "fallback")
+  testthat::expect_equal(
+    unname(stats::coef(pipe_expr$fits$transformed$model)),
+    unname(stats::coef(pipe_col$fits$transformed$model)),
+    tolerance = 1e-12
+  )
+  testthat::expect_equal(pipe_expr$tests$i0$teststat, pipe_col$tests$i0$teststat, tolerance = 1e-12)
+})
+
+testthat::test_that("spurhalflife avoids overflow at high q and matches fallback vs rust", {
+  set.seed(2026)
+  n <- 70L
+  q <- 40L
+  nrep <- 100L
+  df <- data.frame(
+    s_1 = stats::runif(n),
+    s_2 = stats::runif(n)
+  )
+  df$y <- sin(3 * df$s_1) + 0.4 * cos(2 * df$s_2) + 0.1 * stats::rnorm(n)
+  emat <- matrix(stats::rnorm(q * nrep), nrow = q, ncol = nrep)
+
+  fb <- testthat::with_mocked_bindings(
+    .draw_emat = function(q, nrep) emat,
+    .package = "spuR",
+    spurhalflife(y ~ 1, data = df, q = q, nrep = nrep, level = 95,
+                 coords_euclidean = c("s_1", "s_2"), backend = "fallback")
+  )
+  testthat::expect_true(is.finite(fb$ci_l))
+  testthat::expect_true(all(is.finite(fb$full$pv_mat)))
+
+  if (is.loaded("wrap__rust_run_spur_halflife", PACKAGE = "spuR")) {
+    ru <- testthat::with_mocked_bindings(
+      .draw_emat = function(q, nrep) emat,
+      .package = "spuR",
+      spurhalflife(y ~ 1, data = df, q = q, nrep = nrep, level = 95,
+                   coords_euclidean = c("s_1", "s_2"), backend = "rust", nthreads = 1L)
+    )
+    testthat::expect_equal(ru$ci_l, fb$ci_l, tolerance = 1e-12)
+    testthat::expect_equal(ru$ci_u, fb$ci_u, tolerance = 1e-12)
+    testthat::expect_equal(ru$full$pv_mat, fb$full$pv_mat, tolerance = 1e-12)
+  }
+})

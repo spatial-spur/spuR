@@ -418,6 +418,7 @@ fn directions(
 
 /// Construct model influence values, conditional directions and projection factors.
 pub fn prepare_scpc_inputs(req: ScpcPreparation<'_>) -> Result<PreparedScpcInputs, CoreError> {
+    crate::threads::check_native_process()?;
     req.validate()?;
     let k = req.coefficients.len();
     let mut bread_t = transpose(req.bread, k, req.n_scores);
