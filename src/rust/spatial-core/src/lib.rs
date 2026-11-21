@@ -8,6 +8,7 @@ mod covariance;
 pub mod distance;
 pub mod linalg;
 pub mod nystrom;
+pub mod preparation;
 mod quadrature;
 pub mod scpc_op;
 pub mod spur_op;
@@ -24,6 +25,23 @@ pub use spur_op::{
     SpurI0Output, SpurI1Output, SpurPipelineOutput, SpurPipelineRequest, SpurTestRequest,
     SpurTransformKind, SpurTransformOutput, SpurTransformRequest,
 };
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const SPEC_VERSION: &str = "0.3.2";
+pub const SCPC_API_VERSION: usize = 7;
+pub const SPUR_API_VERSION: usize = 3;
+
+/// Returns the active linear algebra provider compiled into `spatial-core`.
+pub const fn linalg_provider() -> &'static str {
+    #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
+    {
+        "accelerate"
+    }
+    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
+    {
+        "faer"
+    }
+}
 
 use std::fmt;
 

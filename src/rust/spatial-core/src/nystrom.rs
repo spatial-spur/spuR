@@ -166,29 +166,47 @@ pub fn normalize_coords(
     }
 }
 
-/// Match the released SCPC pair chain, returning indices and final LCG state.
-pub fn pair_chain(n: usize, count: usize, seed: u32) -> Result<(Vec<usize>, u32), CoreError> {
-    if n < 2 || n > i32::MAX as usize || count == 0 || count >= isize::MAX as usize / 8 {
-        return Err(CoreError::invalid_input("invalid SCPC pair-chain dimensions"));
-    }
-    let mut rng = Lcg(seed);
-    let mut j = rng.index(n);
-    let mut pairs = Vec::with_capacity(count + 1);
-    for _ in 0..=count {
-        pairs.push(j);
-        j = (j + 1 + rng.index(n - 1)) % n;
-    }
-    Ok((pairs, rng.0))
+// Consecutive links are sampled with replacement, excluding self-pairs.
+struct PairChain {
+    n: usize,
+    current: usize,
+    rng: Lcg,
 }
 
-/// Advance the pair-chain LCG state without storing the sampled indices.
-pub(crate) fn advance_pair_chain_state(count: usize, seed: u32) -> u32 {
-    let mut rng = Lcg(seed);
-    let _ = rng.index(2);
-    for _ in 0..=count {
-        let _ = rng.index(2);
+impl PairChain {
+    fn new(n: usize, count: usize, seed: u32) -> Result<Self, CoreError> {
+        if n < 2 || n > i32::MAX as usize || count == 0 || count >= isize::MAX as usize / 8 {
+            return Err(CoreError::invalid_input(
+                "invalid SCPC pair-chain dimensions",
+            ));
+        }
+        let mut rng = Lcg(seed);
+        Ok(Self {
+            n,
+            current: rng.index(n),
+            rng,
+        })
     }
-    rng.0
+
+    fn next(&mut self) -> usize {
+        self.current = (self.current + 1 + self.rng.index(self.n - 1)) % self.n;
+        self.current
+    }
+
+    fn final_state(mut self) -> u32 {
+        // Released raninds() takes one extra step after writing its last index.
+        self.rng.index(self.n - 1);
+        self.rng.0
+    }
+}
+
+/// Match the released SCPC pair chain, returning indices and final LCG state.
+pub fn pair_chain(n: usize, count: usize, seed: u32) -> Result<(Vec<usize>, u32), CoreError> {
+    let mut chain = PairChain::new(n, count, seed)?;
+    let mut indices = Vec::with_capacity(count + 1);
+    indices.push(chain.current);
+    indices.extend((0..count).map(|_| chain.next()));
+    Ok((indices, chain.final_state()))
 }
 
 fn landmarks(n: usize, size: usize, samples: usize, seed: u32) -> (Vec<Vec<usize>>, u32) {
@@ -538,7 +556,207 @@ pub(crate) fn is_psd_prefix_grid(omegas: &[f64], width: usize, q: usize) -> bool
     true
 }
 
-/// Sampled covariance estimator retaining exact `W' W` diagonal and streamed LCG off-diagonal pairs.
+// The dense representation coalesces repeated pairs before evaluating any
+// coefficient. The tiled path retains one shared chain and distance per link.
+enum PairGeometry {
+    Dense {
+        frequencies: Vec<f64>,
+        distances: Vec<f64>,
+    },
+    Tiled {
+        chain: Vec<usize>,
+        distances: Vec<f64>,
+    },
+}
+
+pub(crate) struct SampledPairs {
+    n: usize,
+    count: usize,
+    state: u32,
+    geometry: PairGeometry,
+}
+
+impl SampledPairs {
+    pub(crate) fn new(
+        coordinates: &[f64],
+        n: usize,
+        width: usize,
+        metric: Metric,
+        count: usize,
+        seed: u32,
+    ) -> Result<Self, CoreError> {
+        let distance = Distances::new(coordinates, n, width, metric)?;
+        if n <= 512 && count >= n * n.saturating_sub(1) {
+            let mut chain = PairChain::new(n, count, seed)?;
+            let mut frequencies = vec![0.0; n * n];
+            for _ in 0..count {
+                let i = chain.current;
+                let j = chain.next();
+                frequencies[i * n + j] += 1.0;
+                frequencies[j * n + i] += 1.0;
+            }
+            let mut distances = vec![0.0_f64; n * n];
+            for i in 0..n {
+                for j in 0..i {
+                    let d = distance.pair(i, j);
+                    distances[i * n + j] = d;
+                    distances[j * n + i] = d;
+                }
+            }
+
+            return Ok(Self {
+                n,
+                count,
+                state: chain.final_state(),
+                geometry: PairGeometry::Dense {
+                    frequencies,
+                    distances,
+                },
+            });
+        }
+        let (chain, state) = pair_chain(n, count, seed)?;
+        let distances: Vec<f64> = if crate::threads::is_serial() || count < 8192 {
+            chain
+                .windows(2)
+                .map(|pair| distance.pair(pair[0], pair[1]))
+                .collect()
+        } else {
+            chain
+                .par_windows(2)
+                .map(|pair| distance.pair(pair[0], pair[1]))
+                .collect()
+        };
+
+        Ok(Self {
+            n,
+            count,
+            state,
+            geometry: PairGeometry::Tiled { chain, distances },
+        })
+    }
+
+    pub(crate) fn covariance_grid(
+        &self,
+        weights: &[f64],
+        q: usize,
+        scales: &[f64],
+    ) -> Result<Vec<f64>, CoreError> {
+        let (n, count) = (self.n, self.count);
+        if q == 0
+            || weights.len() != checked_len(&[n, q])?
+            || weights.iter().any(|v| !v.is_finite())
+            || scales.is_empty()
+            || scales.iter().any(|s| !s.is_finite() || *s < 0.0)
+        {
+            return Err(CoreError::invalid_input(
+                "invalid sampled SCPC covariance inputs",
+            ));
+        }
+
+        let matrix_size = checked_len(&[q, q])?;
+        let mut gram = vec![0.0; matrix_size];
+        linalg::multiply(weights, weights, &mut gram, q, n, q, true);
+        let mut grid = vec![0.0; checked_len(&[scales.len(), matrix_size])?];
+        let half_multiplier = 0.5 * (n as f64) * ((n - 1) as f64) / (count as f64);
+
+        let (chain, distances) = match &self.geometry {
+            PairGeometry::Dense {
+                frequencies,
+                distances,
+            } => {
+                let eval_scale = |output: &mut [f64], scale: f64| {
+                    let mut kernel = vec![0.0_f64; n * n];
+                    let mut work = vec![0.0_f64; n * q];
+                    linalg::exp_scaled(distances, -scale, &mut kernel);
+                    for (val, &freq) in kernel.iter_mut().zip(frequencies) {
+                        *val *= freq;
+                    }
+                    linalg::multiply(&kernel, weights, &mut work, n, n, q, false);
+                    linalg::multiply(weights, &work, output, q, n, q, true);
+                    for a in 0..q {
+                        for b in 0..=a {
+                            let ab = a * q + b;
+                            let ba = b * q + a;
+                            let value =
+                                gram[ab] + 0.5 * half_multiplier * (output[ab] + output[ba]);
+                            output[ab] = value;
+                            output[ba] = value;
+                        }
+                    }
+                };
+                if crate::threads::is_serial() || scales.len() <= 1 {
+                    for (output, &scale) in grid.chunks_exact_mut(matrix_size).zip(scales) {
+                        eval_scale(output, scale);
+                    }
+                } else {
+                    grid.par_chunks_exact_mut(matrix_size)
+                        .zip(scales.par_iter())
+                        .for_each(|(output, &scale)| eval_scale(output, scale));
+                }
+                return Ok(grid);
+            }
+            PairGeometry::Tiled { chain, distances } => (chain, distances),
+        };
+        let tile_len = PAIR_TILE.min(count);
+        let eval_scale_tiled = |output: &mut [f64], scale: f64| {
+            let mut w1_buf = vec![0.0_f64; tile_len * q];
+            let mut w2_buf = vec![0.0_f64; tile_len * q];
+            let mut cd_buf = vec![0.0_f64; tile_len];
+            let mut temp = vec![0.0_f64; matrix_size];
+            output.copy_from_slice(&gram);
+
+            for start in (0..count).step_by(tile_len) {
+                let len = (count - start).min(tile_len);
+                linalg::exp_scaled(&distances[start..start + len], -scale, &mut cd_buf[..len]);
+                for idx in 0..len {
+                    let i1 = chain[start + idx];
+                    let i2 = chain[start + idx + 1];
+                    let cd = cd_buf[idx];
+                    w1_buf[idx * q..(idx + 1) * q].copy_from_slice(&weights[i1 * q..(i1 + 1) * q]);
+                    let src2 = &weights[i2 * q..(i2 + 1) * q];
+                    let dst2 = &mut w2_buf[idx * q..(idx + 1) * q];
+                    for c in 0..q {
+                        dst2[c] = src2[c] * cd;
+                    }
+                }
+                linalg::multiply(
+                    &w1_buf[..len * q],
+                    &w2_buf[..len * q],
+                    &mut temp,
+                    q,
+                    len,
+                    q,
+                    true,
+                );
+                for a in 0..q {
+                    for b in 0..=a {
+                        let ab = a * q + b;
+                        let ba = b * q + a;
+                        let val = half_multiplier * (temp[ab] + temp[ba]);
+                        output[ab] += val;
+                        if ab != ba {
+                            output[ba] += val;
+                        }
+                    }
+                }
+            }
+        };
+
+        if crate::threads::is_serial() || scales.len() <= 1 {
+            for (output, &scale) in grid.chunks_exact_mut(matrix_size).zip(scales) {
+                eval_scale_tiled(output, scale);
+            }
+        } else {
+            grid.par_chunks_exact_mut(matrix_size)
+                .zip(scales.par_iter())
+                .for_each(|(output, &scale)| eval_scale_tiled(output, scale));
+        }
+
+        Ok(grid)
+    }
+}
+
+/// Sampled covariance with exact W'W diagonal and linked off-diagonal pairs.
 #[allow(clippy::too_many_arguments)]
 pub fn sampled_covariance_grid(
     coordinates: &[f64],
@@ -551,140 +769,8 @@ pub fn sampled_covariance_grid(
     count: usize,
     seed: u32,
 ) -> Result<(Vec<f64>, u32), CoreError> {
-    let distance = Distances::new(coordinates, n, width, metric)?;
-    if q == 0
-        || weights.len() != checked_len(&[n, q])?
-        || weights.iter().any(|v| !v.is_finite())
-        || scales.is_empty()
-        || scales.iter().any(|s| !s.is_finite() || *s < 0.0)
-    {
-        return Err(CoreError::invalid_input(
-            "invalid sampled SCPC covariance inputs",
-        ));
-    }
-
-    let (chain, state) = pair_chain(n, count, seed)?;
-    let matrix_size = checked_len(&[q, q])?;
-    let mut gram = vec![0.0; matrix_size];
-    linalg::multiply(weights, weights, &mut gram, q, n, q, true);
-    let mut grid = vec![0.0; checked_len(&[scales.len(), matrix_size])?];
-    let half_multiplier = 0.5 * (n as f64) * ((n - 1) as f64) / (count as f64);
-
-    // Small-n optimization for count >= n * (n - 1): aggregate repeated pairs in a dense frequency table.
-    if n <= 512 && count >= n * (n - 1) {
-        let mut frequencies = vec![0.0_f64; n * n];
-        for pair in chain.windows(2) {
-            let (i, j) = (pair[0], pair[1]);
-            frequencies[i * n + j] += 1.0;
-            frequencies[j * n + i] += 1.0;
-        }
-        let mut distances = vec![0.0_f64; n * n];
-        for i in 0..n {
-            for j in 0..i {
-                let d = distance.pair(i, j);
-                distances[i * n + j] = d;
-                distances[j * n + i] = d;
-            }
-        }
-        let eval_scale = |output: &mut [f64], scale: f64| {
-            let mut kernel = vec![0.0_f64; n * n];
-            let mut work = vec![0.0_f64; n * q];
-            linalg::exp_scaled(&distances, -scale, &mut kernel);
-            for (val, &freq) in kernel.iter_mut().zip(&frequencies) {
-                *val *= freq;
-            }
-            linalg::multiply(&kernel, weights, &mut work, n, n, q, false);
-            linalg::multiply(weights, &work, output, q, n, q, true);
-            for a in 0..q {
-                for b in 0..=a {
-                    let ab = a * q + b;
-                    let ba = b * q + a;
-                    let value = gram[ab] + 0.5 * half_multiplier * (output[ab] + output[ba]);
-                    output[ab] = value;
-                    output[ba] = value;
-                }
-            }
-        };
-        if crate::threads::is_serial() || scales.len() <= 1 {
-            for (output, &scale) in grid.chunks_exact_mut(matrix_size).zip(scales) {
-                eval_scale(output, scale);
-            }
-        } else {
-            grid.par_chunks_exact_mut(matrix_size)
-                .zip(scales.par_iter())
-                .for_each(|(output, &scale)| eval_scale(output, scale));
-        }
-        return Ok((grid, state));
-    }
-
-    let distances: Vec<f64> = if crate::threads::is_serial() || count < 8192 {
-        chain
-            .windows(2)
-            .map(|pair| distance.pair(pair[0], pair[1]))
-            .collect()
-    } else {
-        chain
-            .par_windows(2)
-            .map(|pair| distance.pair(pair[0], pair[1]))
-            .collect()
-    };
-
-    let tile_len = PAIR_TILE.min(count);
-    let eval_scale_tiled = |output: &mut [f64], scale: f64| {
-        let mut w1_buf = vec![0.0_f64; tile_len * q];
-        let mut w2_buf = vec![0.0_f64; tile_len * q];
-        let mut cd_buf = vec![0.0_f64; tile_len];
-        let mut temp = vec![0.0_f64; matrix_size];
-        output.copy_from_slice(&gram);
-
-        for start in (0..count).step_by(tile_len) {
-            let len = (count - start).min(tile_len);
-            linalg::exp_scaled(&distances[start..start + len], -scale, &mut cd_buf[..len]);
-            for idx in 0..len {
-                let i1 = chain[start + idx];
-                let i2 = chain[start + idx + 1];
-                let cd = cd_buf[idx];
-                w1_buf[idx * q..(idx + 1) * q].copy_from_slice(&weights[i1 * q..(i1 + 1) * q]);
-                let src2 = &weights[i2 * q..(i2 + 1) * q];
-                let dst2 = &mut w2_buf[idx * q..(idx + 1) * q];
-                for c in 0..q {
-                    dst2[c] = src2[c] * cd;
-                }
-            }
-            linalg::multiply(
-                &w1_buf[..len * q],
-                &w2_buf[..len * q],
-                &mut temp,
-                q,
-                len,
-                q,
-                true,
-            );
-            for a in 0..q {
-                for b in 0..=a {
-                    let ab = a * q + b;
-                    let ba = b * q + a;
-                    let val = half_multiplier * (temp[ab] + temp[ba]);
-                    output[ab] += val;
-                    if ab != ba {
-                        output[ba] += val;
-                    }
-                }
-            }
-        }
-    };
-
-    if crate::threads::is_serial() || scales.len() <= 1 {
-        for (output, &scale) in grid.chunks_exact_mut(matrix_size).zip(scales) {
-            eval_scale_tiled(output, scale);
-        }
-    } else {
-        grid.par_chunks_exact_mut(matrix_size)
-            .zip(scales.par_iter())
-            .for_each(|(output, &scale)| eval_scale_tiled(output, scale));
-    }
-
-    Ok((grid, state))
+    let pairs = SampledPairs::new(coordinates, n, width, metric, count, seed)?;
+    Ok((pairs.covariance_grid(weights, q, scales)?, pairs.state))
 }
 
 #[cfg(test)]
@@ -697,7 +783,6 @@ mod tests {
         let (indices, state) = pair_chain(5, 6, 1).unwrap();
         assert_eq!(indices, vec![0, 4, 3, 1, 2, 4, 0]);
         assert_eq!(state, 3_259_150_681);
-        assert_eq!(advance_pair_chain_state(6, 1), state);
 
         let (subsets, lm_state) = landmarks(4, 3, 1, 1);
         assert_eq!(subsets[0], vec![0, 3, 1]);

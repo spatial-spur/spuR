@@ -1,8 +1,11 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
+#include <R_ext/Visibility.h>
 
 #ifdef SPATIAL_USE_RUST
+extern SEXP wrap__rust_build_info(void);
+
 extern SEXP wrap__rust_run_spur_i0(
     SEXP coords,
     SEXP latlong,
@@ -73,6 +76,7 @@ extern SEXP wrap__rust_run_spur_pipeline(
 );
 
 static const R_CallMethodDef CallEntries[] = {
+    {"wrap__rust_build_info", (DL_FUNC) &wrap__rust_build_info, 0},
     {"wrap__rust_run_spur_i0", (DL_FUNC) &wrap__rust_run_spur_i0, 5},
     {"wrap__rust_run_spur_i1", (DL_FUNC) &wrap__rust_run_spur_i1, 5},
     {"wrap__rust_run_spur_i0_resid", (DL_FUNC) &wrap__rust_run_spur_i0_resid, 6},
@@ -88,7 +92,11 @@ static const R_CallMethodDef CallEntries[] = {
 };
 #endif
 
-void R_init_spuR(DllInfo *dll) {
+/* Some macOS R builds leave attribute_visible empty even under Clang. */
+#if defined(__GNUC__) && !defined(_WIN32) && !defined(HAVE_VISIBILITY_ATTRIBUTE)
+__attribute__((visibility("default")))
+#endif
+void attribute_visible R_init_spuR(DllInfo *dll) {
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);
 }

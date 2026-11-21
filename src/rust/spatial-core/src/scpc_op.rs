@@ -6,7 +6,7 @@ use crate::covariance;
 use crate::distance::{distance_matrix, lower_triangle, Metric};
 use crate::linalg::{self, EigenWorkspace};
 use crate::nystrom::{
-    advance_pair_chain_state, is_psd_prefix_grid, landmark_basis, sampled_covariance_grid,
+    is_psd_prefix_grid, landmark_basis, sampled_covariance_grid, SampledPairs,
     LandmarkRequest,
 };
 use crate::quadrature::RULE;
@@ -275,8 +275,12 @@ impl ProbabilityWorkspace {
         if !cv.is_finite() {
             return Err(CoreError::invalid_input("SCPC critical value must be finite"));
         }
-        if cv <= 0.0 {
+        if cv < 0.0 {
             return Ok(1.0);
+        }
+        if let Some(p) = self.eigensolver.singular_or_bivariate_probability(omega, width, cv)?
+        {
+            return Ok(p);
         }
         let (positive, negative) = if cv > 1.0 {
             (cv.recip().powi(2), -1.0)
@@ -431,6 +435,26 @@ fn select_final_q(
     Ok((best.0, best.1))
 }
 
+fn scaled_norm(values: impl Iterator<Item = f64> + Clone) -> f64 {
+    let scale = values.clone().map(f64::abs).fold(0.0_f64, f64::max);
+    if scale == 0.0 || !scale.is_finite() {
+        return scale;
+    }
+    scale * values.map(|value| (value / scale).powi(2)).sum::<f64>().sqrt()
+}
+
+/// SCPC probabilities are homogeneous in all columns of a coefficient's W.
+/// Equilibrate them together before forming the quadratic covariance grid.
+fn normalize_covariance_basis(mut weights: Vec<f64>) -> Vec<f64> {
+    let scale = weights.iter().copied().map(f64::abs).fold(0.0_f64, f64::max);
+    if scale > 0.0 {
+        for value in &mut weights {
+            *value /= scale;
+        }
+    }
+    weights
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_conditional_basis(
     wfin: &[f64],
@@ -466,12 +490,8 @@ fn build_conditional_basis(
                 wx[g * width] = wfin[g * width] * diag_g[g];
             }
             for c in 0..q {
-                let mut col_sq = 0.0_f64;
-                for g in 0..n {
-                    let val = diag_g[g] * wfin[g * width + 1 + c];
-                    col_sq += val * val;
-                }
-                pre_max = pre_max.max(col_sq.sqrt());
+                let column = (0..n).map(|g| diag_g[g] * wfin[g * width + 1 + c]);
+                pre_max = pre_max.max(scaled_norm(column));
             }
         } else {
             for i in 0..n {
@@ -480,14 +500,11 @@ fn build_conditional_basis(
                 wx[i * width] = wfin[i * width] * xj_i * xjs_i;
             }
             for c in 0..q {
-                let mut col_sq = 0.0_f64;
-                for i in 0..n {
+                let column = (0..n).map(|i| {
                     let idx = i * k_use + col_j;
-                    let b_ic = wfin[i * width + 1 + c];
-                    let scale_i = xj[idx] * xjs[idx];
-                    col_sq += (b_ic * scale_i).powi(2);
-                }
-                pre_max = pre_max.max(col_sq.sqrt());
+                    wfin[i * width + 1 + c] * xj[idx] * xjs[idx]
+                });
+                pre_max = pre_max.max(scaled_norm(column));
             }
         }
 
@@ -577,13 +594,10 @@ fn build_conditional_basis(
                 b_q[g * q..(g + 1) * q].copy_from_slice(&wfin[g * width + 1..g * width + 1 + q]);
             }
             for c in 0..q {
-                let mut col_sq = 0.0_f64;
                 for g in 0..n {
-                    let val = diag_g[g] * b_q[g * q + c];
-                    wx[g * width + 1 + c] = val;
-                    col_sq += val * val;
+                    wx[g * width + 1 + c] = diag_g[g] * b_q[g * q + c];
                 }
-                pre_max = pre_max.max(col_sq.sqrt());
+                pre_max = pre_max.max(scaled_norm((0..n).map(|g| wx[g * width + 1 + c])));
             }
 
             if proj_rank > 0 {
@@ -629,15 +643,12 @@ fn build_conditional_basis(
             // Denominator weights are S_x M_V D_x B_q.
             let mut rx = vec![0.0; checked_len(&[n, q])?];
             for c in 0..q {
-                let mut col_sq = 0.0_f64;
                 for i in 0..n {
                     let idx = i * k_use + col_j;
-                    let b_ic = wfin[i * width + 1 + c];
-                    let scale_i = xj[idx] * xjs[idx];
-                    rx[i * q + c] = b_ic * xj[idx];
-                    col_sq += (b_ic * scale_i).powi(2);
+                    rx[i * q + c] = wfin[i * width + 1 + c] * xj[idx];
                 }
-                pre_max = pre_max.max(col_sq.sqrt());
+                let column = (0..n).map(|i| rx[i * q + c] * xjs[i * k_use + col_j]);
+                pre_max = pre_max.max(scaled_norm(column));
             }
             let rr = if proj_rank > 0 {
                 let u = proj_u.ok_or(CoreError::invalid_input(
@@ -676,10 +687,7 @@ fn build_conditional_basis(
         let all_collapsed = !pre_max.is_finite()
             || pre_max == 0.0
             || (1..width).all(|c| {
-                let col_norm = (0..n)
-                    .map(|i| wx[i * width + c].powi(2))
-                    .sum::<f64>()
-                    .sqrt();
+                let col_norm = scaled_norm((0..n).map(|i| wx[i * width + c]));
                 !col_norm.is_finite() || col_norm <= tol
             });
         if all_collapsed {
@@ -849,6 +857,26 @@ fn trim_basis_columns(weights: &[f64], n: usize, full_width: usize, width: usize
     Ok(wfin)
 }
 
+// SCPC weights are homogeneous within each coefficient. Work in bounded units
+// before projections and restore the score column's units only on its SE.
+fn normalized_columns(values: &[f64], width: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut scales = vec![0.0_f64; width];
+    for row in values.chunks_exact(width) {
+        for (scale, &value) in scales.iter_mut().zip(row) {
+            *scale = scale.max(value.abs());
+        }
+    }
+    let mut normalized = values.to_vec();
+    for row in normalized.chunks_exact_mut(width) {
+        for (value, &scale) in row.iter_mut().zip(&scales) {
+            if scale > 0.0 {
+                *value /= scale;
+            }
+        }
+    }
+    (normalized, scales)
+}
+
 fn compute_uncond_stats(
     wfin: &[f64],
     wj: &[f64],
@@ -858,21 +886,16 @@ fn compute_uncond_stats(
 ) -> Result<(Vec<f64>, Vec<f64>), CoreError> {
     let width = q + 1;
     let mut projected = vec![0.0; checked_len(&[width, k_use])?];
-    linalg::multiply(wfin, wj, &mut projected, width, n, k_use, true);
+    let (wj, scales) = normalized_columns(wj, k_use);
+    linalg::multiply(wfin, &wj, &mut projected, width, n, k_use, true);
     let q_root = (q as f64).sqrt();
     let se_denom = q_root * (n as f64).sqrt();
 
     let mut se_vec = Vec::with_capacity(k_use);
     let mut tau_vec = Vec::with_capacity(k_use);
     for j in 0..k_use {
-        let wj_norm = (0..n)
-            .map(|i| wj[i * k_use + j].powi(2))
-            .sum::<f64>()
-            .sqrt();
-        let norm = (1..width)
-            .map(|row| projected[row * k_use + j].powi(2))
-            .sum::<f64>()
-            .sqrt();
+        let wj_norm = scaled_norm((0..n).map(|i| wj[i * k_use + j]));
+        let norm = scaled_norm((1..width).map(|row| projected[row * k_use + j]));
         if !norm.is_finite()
             || !wj_norm.is_finite()
             || wj_norm == 0.0
@@ -882,8 +905,8 @@ fn compute_uncond_stats(
                 "SCPC variance projection is degenerate",
             ));
         }
-        tau_vec.push(q_root * projected[j] / norm);
-        se_vec.push(norm / se_denom);
+        tau_vec.push((projected[j] / norm) * q_root);
+        se_vec.push((norm / se_denom) * scales[j]);
     }
     Ok((se_vec, tau_vec))
 }
@@ -1058,7 +1081,7 @@ pub fn run_exact_scpc(req: &ExactScpcRequest<'_>) -> Result<ExactScpcOutput, Cor
             drop(distmat);
             None
         } else {
-            let xj = req.xj.expect("validated conditional xj");
+            let (xj, _) = normalized_columns(req.xj.expect("validated conditional xj"), k_use);
             let xjs = req.xjs.expect("validated conditional xjs");
             let wx_list = map_indices(k_use, |j| {
                 build_conditional_basis(
@@ -1067,14 +1090,14 @@ pub fn run_exact_scpc(req: &ExactScpcRequest<'_>) -> Result<ExactScpcOutput, Cor
                     q,
                     req.cluster_id,
                     req.fe_id,
-                    xj,
+                    &xj,
                     xjs,
                     k_use,
                     j,
                     req.proj_u,
                     req.proj_v,
                     req.proj_rank,
-                )
+                ).map(normalize_covariance_basis)
             })?;
             let wx_refs: Vec<&[f64]> = wx_list.iter().map(Vec::as_slice).collect();
             let widths = vec![width; k_use];
@@ -1185,15 +1208,11 @@ pub fn run_approx_scpc(req: &ApproxScpcRequest<'_>) -> Result<ExactScpcOutput, C
         let omsx_list = if req.uncond {
             None
         } else {
-            let xj = req.xj.expect("validated conditional xj");
+            let (xj, _) = normalized_columns(req.xj.expect("validated conditional xj"), k_use);
             let xjs = req.xjs.expect("validated conditional xjs");
-            // Advance LCG in coefficient order before parallel conditional evaluation.
-            let mut seeds = Vec::with_capacity(k_use);
-            let mut state = state_after_uncond;
-            for _ in 0..k_use {
-                seeds.push(state);
-                state = advance_pair_chain_state(req.pair_count, state);
-            }
+            // All reported coefficients use the same sample, starting immediately
+            // after the unconditional grid. Their order or selection cannot change it.
+            let pairs = SampledPairs::new(req.coords, n, req.d, req.metric, req.pair_count, state_after_uncond)?;
             let grids = map_indices(k_use, |j| {
                 let wx = build_conditional_basis(
                     &wfin,
@@ -1201,7 +1220,7 @@ pub fn run_approx_scpc(req: &ApproxScpcRequest<'_>) -> Result<ExactScpcOutput, C
                     q,
                     req.cluster_id,
                     req.fe_id,
-                    xj,
+                    &xj,
                     xjs,
                     k_use,
                     j,
@@ -1209,17 +1228,8 @@ pub fn run_approx_scpc(req: &ApproxScpcRequest<'_>) -> Result<ExactScpcOutput, C
                     req.proj_v,
                     req.proj_rank,
                 )?;
-                let (omsx, _) = sampled_covariance_grid(
-                    req.coords,
-                    n,
-                    req.d,
-                    req.metric,
-                    &wx,
-                    width,
-                    &scales,
-                    req.pair_count,
-                    seeds[j],
-                )?;
+                let wx = normalize_covariance_basis(wx);
+                let omsx = pairs.covariance_grid(&wx, width, &scales)?;
                 if !is_psd_prefix_grid(&omsx, width, q) {
                     return Err(CoreError::invalid_sampled_covariance(
                         "sampled conditional SCPC covariance grid is not positive semidefinite",
@@ -1419,26 +1429,66 @@ mod tests {
         let norm = 10.0_f64.sqrt();
         let w: Vec<_> = x.iter().flat_map(|value| [0.5, -value / norm]).collect();
         let projection: Vec<_> = x.iter().flat_map(|value| [0.5, value / norm]).collect();
-        let weights = build_conditional_basis(
-            &w,
-            4,
-            1,
-            None,
-            None,
-            &x,
-            &sign,
-            1,
-            0,
-            Some(&projection),
-            Some(&projection),
-            2,
-        )
-        .unwrap();
         let a = 1.5 / norm;
         let expected = [1.0, a, 0.5, -a, 0.5, a, 1.0, -a];
-        for (got, expected) in weights.iter().zip(expected) {
-            assert!((got - expected).abs() < 1e-12);
+        for scale in [1.0, 1e160, 1e-200] {
+            let weights = build_conditional_basis(
+                &w, 4, 1, None, None, &x.map(|v| v * scale), &sign, 1, 0,
+                Some(&projection), Some(&projection), 2,
+            ).unwrap();
+            for (got, expected) in weights.iter().zip(expected) {
+                assert!((got / scale - expected).abs() < 1e-12);
+            }
+            let weights = normalize_covariance_basis(weights);
+            assert!(weights.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
         }
+    }
+
+    #[test]
+    fn score_projection_restores_units_after_extreme_rescaling() {
+        let wfin = [0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, -0.5];
+        let wj = [1.0, 1.0, 1.0, -1.0];
+        let (se, t) = compute_uncond_stats(&wfin, &wj, 4, 1, 1).unwrap();
+        for scale in [0.7 * f64::MAX, 1e-300] {
+            let scaled = wj.map(|v| v * scale);
+            let (s, u) = compute_uncond_stats(&wfin, &scaled, 4, 1, 1).unwrap();
+            assert_eq!(s[0] / scale, se[0]);
+            assert_eq!(u, t);
+        }
+    }
+
+    #[test]
+    fn rejection_probability_respects_exchangeability_and_strict_singular_boundary() {
+        let mut ws = ProbabilityWorkspace::new(1);
+        for r in [1.0 - 5e-15, -1.0 + f64::EPSILON, 0.9] {
+            assert!((ws.evaluate(&[1.0, r, r, 1.0], 2, 1.0).unwrap() - 0.5).abs() < 1e-15);
+        }
+        for r in [-1.0, 1.0] {
+            let omega = [1.0, r, r, 1.0];
+            assert_eq!(ws.evaluate(&omega, 2, 1.0).unwrap(), 0.0);
+            assert_eq!(ws.evaluate(&omega, 2, 1.0 - 1e-15).unwrap(), 1.0);
+            assert_eq!(ws.evaluate(&omega, 2, 1.0 + 1e-15).unwrap(), 0.0);
+        }
+        assert!(ws.evaluate(&[0.0, 1.0, 1.0, 0.0], 2, 1.0).is_err());
+        assert_eq!(ws.evaluate(&[0.0; 4], 2, 0.0).unwrap(), 0.0);
+        for scale in [2.0_f64.powi(-900), 1.0, 2.0_f64.powi(900)] {
+            let a = 2401.0 * scale;
+            let b = 49.0 * scale;
+            assert_eq!(ws.evaluate(&[a, b, b, scale], 2, 49.0).unwrap(), 0.0);
+            let near = f64::from_bits(b.to_bits() - 1);
+            assert_eq!(ws.evaluate(&[a, near, near, scale], 2, 49.0).unwrap(), 0.5);
+        }
+        let mut ws = ProbabilityWorkspace::new(2);
+        let omega = [25., 15., 20., 15., 9., 12., 20., 12., 16.];
+        assert_eq!(ws.evaluate(&omega, 3, 1.0).unwrap(), 0.0);
+        assert_eq!(ws.evaluate(&omega, 3, 1.0 - 1e-15).unwrap(), 1.0);
+        let mut nearly_rank_one = omega;
+        nearly_rank_one[0] = f64::from_bits(25.0_f64.to_bits() + 1);
+        let p = ws.evaluate(&nearly_rank_one, 3, 1.0).unwrap();
+        assert!((p - 0.5).abs() < 2e-7, "positive direction lost: p={p}");
+        let r = 1.0 - 5e-15;
+        let padded = [1.0, 0.0, r, 0.0, 0.0, 0.0, r, 0.0, 1.0];
+        assert_eq!(ws.evaluate(&padded, 3, 1.0).unwrap(), 0.5);
     }
 
     #[test]
@@ -2357,6 +2407,75 @@ mod tests {
     }
 
     #[test]
+    fn nystrom_conditional_results_follow_the_coefficient_across_subsets_and_order() {
+        let (y, x, coords) = load_bench_csv("bench_200.csv");
+        let n = y.len();
+        let (coef, scores, xj, signs, projection, rank) = prepare_bench_ols(&y, &x);
+        let (coords, perm) =
+            crate::nystrom::normalize_coords(&coords, n, 2, Metric::Euclidean).unwrap();
+        let projection = permute_rows(&projection, &perm, rank);
+        let original_width = coef.len();
+        let fit = |columns: &[usize]| {
+            let select = |a: &[f64]| -> Vec<f64> {
+                perm.iter()
+                    .flat_map(|&i| columns.iter().map(move |&j| a[i * original_width + j]))
+                    .collect()
+            };
+            let coef_subset: Vec<f64> = columns.iter().map(|&j| coef[j]).collect();
+            run_approx_scpc(&ApproxScpcRequest {
+                coords: &coords,
+                n,
+                d: 2,
+                metric: Metric::Euclidean,
+                avc: 0.03,
+                uncond: false,
+                cvs: true,
+                coef: &coef_subset,
+                wj: &select(&scores),
+                cluster_id: None,
+                fe_id: None,
+                xj: Some(&select(&xj)),
+                xjs: Some(&select(&signs)),
+                proj_u: Some(&projection),
+                proj_v: Some(&projection),
+                proj_rank: rank,
+                cv_tolerance: 0.001,
+                nthreads: Some(1),
+                seed: 1,
+                landmarks: 100,
+                samples: 3,
+                pair_count: 200_000,
+            })
+            .unwrap()
+        };
+        let full = fit(&[0, 1, 2]);
+        for order in [&[2, 0, 1][..], &[1][..]] {
+            let sub = fit(order);
+            assert_eq!(sub.q, full.q);
+            for (i, &j) in order.iter().enumerate() {
+                for (width, a, b) in [
+                    (6, &sub.scpcstats, &full.scpcstats),
+                    (
+                        4,
+                        sub.scpccvs.as_ref().unwrap(),
+                        full.scpccvs.as_ref().unwrap(),
+                    ),
+                ] {
+                    for (left, right) in a[i * width..(i + 1) * width]
+                        .iter()
+                        .zip(&b[j * width..(j + 1) * width])
+                    {
+                        assert!(
+                            (left - right).abs() < 1e-11,
+                            "column {j}: {left} vs {right}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn approx_scpc_matches_release_and_is_thread_count_invariant() {
         let (y, x, coords) = load_bench_csv("bench_1000.csv");
         let n = y.len();
@@ -2445,8 +2564,13 @@ mod tests {
             {
                 assert!((a - b).abs() < 1e-12, "approx cvs mismatch a={a}, b={b}");
             }
-            for (&a, &b) in out_1.wfin.iter().zip(out_4.wfin.iter()) {
-                assert!((a - b).abs() < 1e-12, "approx wfin mismatch a={a}, b={b}");
+            for c in 0..=out_1.q {
+                let width = out_1.q + 1;
+                let column = out_1.wfin.chunks_exact(width).zip(out_4.wfin.chunks_exact(width));
+                let sign = column.clone().map(|(a, b)| a[c] * b[c]).sum::<f64>().signum();
+                for (a, b) in column {
+                    assert!((a[c] - sign * b[c]).abs() < 1e-12, "approx basis direction {c}");
+                }
             }
         }
 

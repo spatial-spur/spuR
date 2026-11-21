@@ -26,16 +26,27 @@ const LBM_GLS_EIG_TOL: f64 = 1e-10;
 
 #[derive(Clone, Debug)]
 pub struct SpurGeometry {
-    pub n: usize,
-    pub raw_distmat: Vec<f64>,
-    pub max_dist: f64,
-    pub norm_distmat: Vec<f64>,
+    pub(crate) n: usize,
+    pub(crate) max_dist: f64,
+    pub(crate) norm_distmat: Vec<f64>,
     lower_tri: Vec<f64>,
     cbar_cache: Vec<(f64, f64)>,
     mean_exp_cache: Vec<(u64, f64)>,
 }
 
 impl SpurGeometry {
+    pub fn n(&self) -> usize {
+        self.n
+    }
+
+    pub fn max_dist(&self) -> f64 {
+        self.max_dist
+    }
+
+    pub fn norm_distmat(&self) -> &[f64] {
+        &self.norm_distmat
+    }
+
     pub fn from_coords(
         coords: &[f64],
         n: usize,
@@ -47,18 +58,19 @@ impl SpurGeometry {
                 "SPUR requires at least 2 observations and 1 coordinate column",
             ));
         }
-        let raw_distmat = distance_matrix(coords, n, d, metric)?;
-        let max_dist = raw_distmat.iter().copied().fold(0.0_f64, f64::max);
+        let mut norm_distmat = distance_matrix(coords, n, d, metric)?;
+        let max_dist = norm_distmat.iter().copied().fold(0.0_f64, f64::max);
         if !max_dist.is_finite() || max_dist <= 0.0 {
             return Err(CoreError::invalid_input(
                 "all coordinates are identical; normalization requires distinct locations",
             ));
         }
-        let norm_distmat: Vec<f64> = raw_distmat.iter().map(|&v| v / max_dist).collect();
+        for v in &mut norm_distmat {
+            *v /= max_dist;
+        }
         let lower_tri = lower_triangle(&norm_distmat, n);
         Ok(Self {
             n,
-            raw_distmat,
             max_dist,
             norm_distmat,
             lower_tri,
@@ -82,7 +94,6 @@ impl SpurGeometry {
         let lower_tri = lower_triangle(&norm_vec, n);
         Ok(Self {
             n,
-            raw_distmat: norm_vec.clone(),
             max_dist: 1.0,
             norm_distmat: norm_vec,
             lower_tri,

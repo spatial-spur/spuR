@@ -41,7 +41,8 @@ endif
 
 all: $(SHLIB)
 
-$(SHLIB): $(RUST_DEPS)
+# R links this explicit export list through its winshlib.mk rule.
+$(SHLIB): $(RUST_DEPS) spuR-win.def
 
 .PHONY: $(STATLIB)
 $(STATLIB):

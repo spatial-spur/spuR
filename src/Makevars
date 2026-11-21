@@ -17,20 +17,25 @@ endif
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
+  EXPORT_FLAGS = -Wl,-exported_symbol,_R_init_spuR
   RUST_SYS_LIBS = -framework Accelerate -lpthread -ldl -lm
 else
   RUST_SYS_LIBS = -lpthread -ldl -lm
+  ifeq ($(UNAME_S),Linux)
+    EXPORT_MAP = exports.map
+    EXPORT_FLAGS = -Wl,--version-script=$(EXPORT_MAP)
+  endif
 endif
 
 ifneq ($(strip $(RUST_AVAILABLE)),)
   RUST_MODE = rust
   PKG_CFLAGS = -DSPATIAL_USE_RUST
-  PKG_LIBS = $(STATLIB) $(RUST_SYS_LIBS)
+  PKG_LIBS = $(EXPORT_FLAGS) $(STATLIB) $(RUST_SYS_LIBS)
   RUST_DEPS = $(STATLIB)
 else
   RUST_MODE = norust
   PKG_CFLAGS =
-  PKG_LIBS =
+  PKG_LIBS = $(EXPORT_FLAGS)
   RUST_DEPS =
 endif
 
@@ -41,7 +46,7 @@ endif
 
 all: $(SHLIB)
 
-$(SHLIB): $(RUST_DEPS)
+$(SHLIB): $(RUST_DEPS) $(EXPORT_MAP)
 
 .PHONY: $(STATLIB)
 $(STATLIB):

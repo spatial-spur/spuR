@@ -7,51 +7,105 @@ on:
     branches: [main, rust-core]
   workflow_dispatch:
     inputs:
+      spatial_rust_ref:
+        description: Matching spatial-rust branch, tag, or commit
+        type: string
       scpcr_ref:
         description: Matching scpcR branch, tag, or commit
-        default: rust-core
+        type: string
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      scpcr_sha: ${{ steps.scpcr.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: spuR
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        id: scpcr
+        with:
+          repository: spatial-spur/scpcR
+          ref: ${{ inputs.scpcr_ref || vars.SCPCR_REF || 'rust-core' }}
+          path: scpcR
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: spatial-spur/spatial-rust
+          ref: ${{ inputs.spatial_rust_ref || vars.SPATIAL_RUST_REF || 'rust-core' }}
+          path: spatial-rust
+          persist-credentials: false
+      - uses: r-lib/actions/setup-r@v2
+      - name: Build the standalone source archives
+        shell: bash
+        run: |
+          bash spatial-rust/scripts/build_r_source.sh scpcR standalone
+          bash spatial-rust/scripts/build_r_source.sh spuR standalone
+          cp spatial-rust/scripts/check_r_library.R standalone/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: standalone-r-source
+          path: standalone
+          if-no-files-found: error
+          retention-days: 2
+
   test:
+    needs: source
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: ['0', '1']
-
     runs-on: ${{ matrix.os }}
     env:
       SPATIAL_RUST: ${{ matrix.rust }}
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Setup R
-        uses: r-lib/actions/setup-r@v2
-
-      - name: Set up Rust target for Rtools
-        if: runner.os == 'Windows' && matrix.rust == '1'
-        run: rustup target add x86_64-pc-windows-gnu
-
-      - name: Check out matching scpcR development branch
-        id: scpcr
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          path: spuR
+          persist-credentials: false
+      - uses: actions/checkout@v6
         with:
           repository: spatial-spur/scpcR
-          ref: ${{ inputs.scpcr_ref || ((github.head_ref || github.ref_name) == 'main' && 'main') || 'rust-core' }}
-          path: scpcR-dev
-
-      - name: Install R dependencies
-        uses: r-lib/actions/setup-r-dependencies@v2
+          ref: ${{ needs.source.outputs.scpcr_sha }}
+          path: scpcR
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
         with:
-          extra-packages: local::scpcR-dev, any::testthat, any::geodist
-          cache-version: rust-${{ matrix.rust }}-scpcr-${{ steps.scpcr.outputs.commit }}
-
-      - name: Run tests
-        run: >-
-          Rscript -e 'pkgload::load_all(quiet = TRUE);
-          native <- Sys.getenv("SPATIAL_RUST") == "1";
-          stopifnot(is.loaded("wrap__rust_run_spur_i0", PACKAGE = "spuR") == native,
-          is.loaded("wrap__rust_run_exact_scpc", PACKAGE = "scpcR") == native);
-          testthat::test_local(stop_on_failure = TRUE)'
+          name: standalone-r-source
+          path: standalone
+      - uses: r-lib/actions/setup-r@v2
+      - name: Set up Rust for Rtools
+        if: runner.os == 'Windows' && matrix.rust == '1'
+        run: rustup target add x86_64-pc-windows-gnu
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          working-directory: spuR
+          extra-packages: local::../scpcR
+          cache-version: rust-${{ matrix.rust }}
+      - name: Install directly from the checkout
+        shell: bash
+        run: |
+          R CMD INSTALL scpcR
+          R CMD INSTALL spuR
+      - name: Check the checkout install
+        run: Rscript standalone/check_r_library.R scpcR spuR
+      - name: Install the source archives with an empty offline Cargo cache
+        shell: bash
+        env:
+          CARGO_NET_OFFLINE: 'true'
+          CARGO_HOME: ${{ runner.temp }}/r-offline-cargo
+        run: |
+          R CMD INSTALL --install-tests standalone/scpcR_*.tar.gz
+          R CMD INSTALL --install-tests standalone/spuR_*.tar.gz
+      - name: Verify the installed libraries and registered routines
+        run: Rscript standalone/check_r_library.R scpcR spuR
+      - name: Run the installed tests
+        shell: Rscript {0}
+        run: testthat::test_package("spuR", stop_on_failure = TRUE)

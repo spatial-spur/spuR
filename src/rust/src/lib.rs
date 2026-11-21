@@ -118,8 +118,14 @@ fn rust_run_spur_pipeline(
     )
 }
 
+#[extendr]
+fn rust_build_info() -> List {
+    spatial_r::build_info_r()
+}
+
 extendr_module! {
     mod spur_rust;
+    fn rust_build_info;
     fn rust_run_spur_i0;
     fn rust_run_spur_i1;
     fn rust_run_spur_i0_resid;

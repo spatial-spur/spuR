@@ -20,22 +20,7 @@ extern "C" {
         ldc: i32,
     );
     fn vvexp(output: *mut f64, input: *const f64, count: *const i32);
-    fn dgeev_(
-        job_left: *const u8,
-        job_right: *const u8,
-        n: *const i32,
-        matrix: *mut f64,
-        lda: *const i32,
-        real: *mut f64,
-        imaginary: *mut f64,
-        left: *mut f64,
-        ld_left: *const i32,
-        right: *mut f64,
-        ld_right: *const i32,
-        workspace: *mut f64,
-        work_len: *const i32,
-        info: *mut i32,
-    );
+
 }
 
 #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
@@ -194,16 +179,107 @@ pub(crate) fn multiply(
     }
 }
 
+/// The q=1 strict rejection event is (X-cY)(X+cY)>0. The Gaussian
+/// quadrant probability below also covers singular covariance, including ties.
+/// Scaling standard deviations before squaring keeps unlike units representable.
+fn bivariate_rejection(a: f64, b: f64, d: f64, cv: f64) -> Result<f64, CoreError> {
+    let tol = 64.0 * f64::EPSILON;
+    let error = || CoreError::invalid_input("SCPC covariance is not positive semidefinite");
+    let magnitude = a.abs().max(d.abs()).max(b.abs());
+    if magnitude == 0.0 {
+        return Ok(0.0);
+    }
+    let (v0, v1) = (a / magnitude + tol, d / magnitude + tol);
+    if v0 < 0.0 || v1 < 0.0 || b.abs() / magnitude > v0.sqrt() * v1.sqrt() {
+        return Err(error());
+    }
+    let (a, d) = (a.max(0.0), d.max(0.0));
+    if a == 0.0 || d == 0.0 {
+        return Ok(if a > 0.0 { 1.0 } else { 0.0 });
+    }
+    // P = atan2(2 c sqrt(ad-b²), c²d-a) / pi. Independent power-of-two
+    // scales keep both products representable; retain their rounding errors
+    // before subtracting, since a one-ulp determinant is not an atom.
+    let exponent = |v: f64| v.log2().floor().clamp(-1022.0, 1023.0) as i32;
+    let (ea, ed) = (exponent(a), exponent(d));
+    let eb = (ea + ed).div_euclid(2);
+    let an = a / 2.0_f64.powi(ea);
+    let dn = d / 2.0_f64.powi(ed) * 2.0_f64.powi((ea + ed).rem_euclid(2));
+    let bn = b / 2.0_f64.powi(eb);
+    let ad = an * dn;
+    let bb = bn * bn;
+    let det = if bb > 2.0 * ad {
+        0.0
+    } else {
+        ((ad - bb) + (an.mul_add(dn, -ad) - bn.mul_add(bn, -bb))).max(0.0)
+    };
+    let t = cv * 2.0_f64.powi(eb - ea);
+    let (spread, difference) = if t > 2.0_f64.powi(500) {
+        (2.0 * det.sqrt() / t, dn)
+    } else {
+        let td = t * dn;
+        let ttd = t * td;
+        let delta = (ttd - an) + (t * t.mul_add(dn, -td) + td.mul_add(t, -ttd));
+        (2.0 * t * det.sqrt(), delta)
+    };
+    if spread == 0.0 {
+        return Ok(if difference < 0.0 { 1.0 } else { 0.0 });
+    }
+    Ok(spread.atan2(difference) / std::f64::consts::PI)
+}
+
+/// Certify zero 2x2 minors exactly. Comparing only the rounded products can
+/// misclassify a genuinely positive but tiny variance as an atom.
+fn equal_products(a: f64, b: f64, c: f64, d: f64) -> bool {
+    let p = a * b;
+    if p != c * d {
+        return false;
+    }
+    if p == 0.0 {
+        return (a == 0.0 || b == 0.0) && (c == 0.0 || d == 0.0);
+    }
+    p.abs() >= f64::MIN_POSITIVE / f64::EPSILON.powi(2) && a.mul_add(b, -p) == c.mul_add(d, -p)
+}
+
+fn one_factor_probability(omega: &[f64], n: usize, width: usize, cv: f64) -> Option<f64> {
+    if omega[0] <= 0.0 || omega[0] * omega[width + 1] != omega[width] * omega[width] {
+        return None;
+    }
+    let magnitude = (0..n).map(|i| omega[i * width + i]).fold(0.0, f64::max);
+    let exponent = magnitude.log2().floor().clamp(-1022.0, 1023.0) as i32;
+    let scale = 2.0_f64.powi(exponent);
+    let first = omega[0] / scale;
+    for i in 1..n {
+        for j in 1..=i {
+            let sample = omega[i * width + j] / scale;
+            let left = omega[i * width] / scale;
+            let right = omega[j * width] / scale;
+            if sample * scale != omega[i * width + j]
+                || left * scale != omega[i * width]
+                || right * scale != omega[j * width]
+                || first * scale != omega[0]
+                || !equal_products(first, sample, left, right)
+            {
+                return None;
+            }
+        }
+    }
+    let denominator: f64 = (1..n).map(|i| omega[i * width + i] / scale).sum();
+    let positive = if cv > 1.0 {
+        (first / cv) / cv > denominator
+    } else {
+        first > (denominator * cv) * cv
+    };
+    Some(if positive { 1.0 } else { 0.0 })
+}
+
 pub(crate) struct EigenWorkspace {
     matrix: Vec<f64>,
     values: Vec<f64>,
     auxiliary: Vec<f64>,
     scratch: Vec<f64>,
-    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
     permutation: Vec<usize>,
-    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
     diag_scale: Vec<f64>,
-    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
     corr: Vec<f64>,
 }
 
@@ -213,71 +289,59 @@ impl EigenWorkspace {
             matrix: vec![0.0; n * n],
             values: vec![0.0; n],
             auxiliary: vec![0.0; n],
-            scratch: vec![
-                0.0;
-                if cfg!(all(target_vendor = "apple", not(feature = "portable"))) {
-                    8 * n
-                } else {
-                    n * n
-                }
-            ],
-            #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
+            scratch: vec![0.0; n * n],
             permutation: (0..n).collect(),
-            #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
             diag_scale: vec![0.0; n],
-            #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
             corr: vec![0.0; n * n],
         }
     }
 
-    /// Eigenvalues of diag(positive, negative, ...) * Omega.
-    #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
-    pub(crate) fn weighted_eigenvalues(
-        &mut self,
+    pub(crate) fn singular_or_bivariate_probability(
+        &self,
         omega: &[f64],
         width: usize,
-        positive: f64,
-        negative: f64,
-    ) -> Result<&[f64], CoreError> {
+        cv: f64,
+    ) -> Result<Option<f64>, CoreError> {
         let n = self.values.len();
-        for j in 0..n {
-            for i in 0..n {
-                let scale = if i == 0 { positive } else { negative };
-                self.matrix[j * n + i] = scale * omega[i * width + j];
+        let mut active = (1..n).filter(|&i| omega[i * width + i] != 0.0);
+        let j = active.next().unwrap_or(1);
+        if n > 2
+            && (active.next().is_some()
+                || (1..n).any(|i| {
+                    i != j
+                        && (0..n)
+                            .any(|k| omega[i * width + k] != 0.0 || omega[k * width + i] != 0.0)
+                }))
+        {
+            // A strict-boundary atom requires a single common Gaussian factor.
+            let probability = one_factor_probability(omega, n, width, cv);
+            if probability.is_some() {
+                for i in 0..n {
+                    for j in 0..=i {
+                        if !omega[i * width + j].is_finite()
+                            || omega[i * width + j] != omega[j * width + i]
+                        {
+                            return Ok(None);
+                        }
+                    }
+                }
             }
+            return Ok(probability);
         }
-        let n = n as i32;
-        let work_len = self.scratch.len() as i32;
-        let mut dummy_left = 0.0;
-        let mut dummy_right = 0.0;
-        let mut status = 0;
-        unsafe {
-            dgeev_(
-                b"N".as_ptr(),
-                b"N".as_ptr(),
-                &n,
-                self.matrix.as_mut_ptr(),
-                &n,
-                self.values.as_mut_ptr(),
-                self.auxiliary.as_mut_ptr(),
-                &mut dummy_left,
-                &1,
-                &mut dummy_right,
-                &1,
-                self.scratch.as_mut_ptr(),
-                &work_len,
-                &mut status,
-            );
-        }
-        if status != 0 {
-            return Err(CoreError::internal(
-                "SCPC covariance eigensolver failed to converge",
+        // An identically zero denominator coordinate does not change the statistic.
+        let (a, b, transpose, d) = (omega[0], omega[j], omega[j * width], omega[j * width + j]);
+        if ![a, b, transpose, d].iter().all(|v| v.is_finite()) {
+            return Err(CoreError::invalid_input(
+                "SCPC covariance contains non-finite values",
             ));
         }
-        Ok(&self.values)
+        if (b - transpose).abs() > 64.0 * f64::EPSILON * a.abs().max(d.abs()).max(b.abs()) {
+            return Err(CoreError::invalid_input("SCPC covariance is not symmetric"));
+        }
+        bivariate_rejection(a, b + 0.5 * (transpose - b), d, cv).map(Some)
     }
 
-    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
+    /// Factor Omega = L L' before diagonalizing the symmetric L' D L.
     pub(crate) fn weighted_eigenvalues(
         &mut self,
         omega: &[f64],
@@ -300,12 +364,17 @@ impl EigenWorkspace {
         }
 
         let pos_diag = omega[0];
-        let neg_max_diag = (1..n)
-            .map(|i| omega[i * width + i])
-            .fold(0.0_f64, f64::max);
+        let neg_max_diag = (1..n).map(|i| omega[i * width + i]).fold(0.0_f64, f64::max);
         let overall_max_diag = pos_diag.max(neg_max_diag);
         let global_tol = 32.0 * (n as f64) * f64::EPSILON * overall_max_diag;
 
+        for i in 0..n {
+            for j in 0..i {
+                if (omega[i * width + j] - omega[j * width + i]).abs() > global_tol {
+                    return Err(CoreError::invalid_input("SCPC covariance is not symmetric"));
+                }
+            }
+        }
         if overall_max_diag <= 0.0 {
             for i in 0..n {
                 for j in 0..=i {
@@ -327,8 +396,6 @@ impl EigenWorkspace {
         }
 
         let s0 = if pos_diag > 0.0 { pos_diag.sqrt() } else { 0.0 };
-        let neg_noise_block = neg_max_diag <= global_tol
-            && (1..n).all(|i| (0..=i).all(|j| omega[i * width + j].abs() <= global_tol));
         let s_neg = if neg_max_diag > 0.0 {
             neg_max_diag.sqrt()
         } else {
@@ -342,7 +409,6 @@ impl EigenWorkspace {
 
         let neg_tol = 32.0 * (n as f64) * f64::EPSILON;
         self.corr.fill(0.0);
-        let mut s_neg_active = s_neg;
         let mut build_ok = true;
         for i in 0..n {
             let si = self.diag_scale[i];
@@ -365,15 +431,17 @@ impl EigenWorkspace {
                     }
                 } else {
                     let c_ij = (entry / si) / sj;
+                    if !c_ij.is_finite() {
+                        build_ok = false;
+                        break;
+                    }
                     self.corr[i * n + j] = c_ij;
                     self.corr[j * n + i] = c_ij;
                 }
             }
         }
         if !build_ok {
-            return Err(CoreError::invalid_input(
-                "SCPC covariance is not positive semidefinite",
-            ));
+            return self.repair_roundoff(omega, width, positive, negative, overall_max_diag);
         }
 
         let run_pivoted_chol = |corr: &[f64],
@@ -391,15 +459,14 @@ impl EigenWorkspace {
                 let p = (k..n)
                     .max_by(|&a, &b| auxiliary[a].total_cmp(&auxiliary[b]))
                     .expect("pivot range is nonempty");
-                if auxiliary[p] <= neg_tol {
+                if auxiliary[p] <= 0.0 {
                     let negligible = auxiliary[k..].iter().all(|value| value.abs() <= neg_tol)
                         && (k..n).all(|i| {
                             (k..i).all(|j| {
                                 let product: f64 = (0..k)
                                     .map(|l| scratch[i * n + l] * scratch[j * n + l])
                                     .sum();
-                                let residual =
-                                    corr[permutation[i] * n + permutation[j]] - product;
+                                let residual = corr[permutation[i] * n + permutation[j]] - product;
                                 residual.abs() <= neg_tol
                             })
                         });
@@ -435,36 +502,24 @@ impl EigenWorkspace {
             &mut self.auxiliary,
         ) {
             Ok(r) => r,
-            Err(()) if neg_noise_block => {
-                s_neg_active = 0.0;
-                self.corr.fill(0.0);
-                if self.diag_scale[0] > 0.0 {
-                    self.corr[0] = 1.0;
-                }
-                run_pivoted_chol(
-                    &self.corr,
-                    &mut self.scratch,
-                    &mut self.permutation,
-                    &mut self.auxiliary,
-                )
-                .map_err(|()| {
-                    CoreError::invalid_input("SCPC covariance is not positive semidefinite")
-                })?
-            }
             Err(()) => {
-                return Err(CoreError::invalid_input(
-                    "SCPC covariance is not positive semidefinite",
-                ));
+                return self.repair_roundoff(omega, width, positive, negative, overall_max_diag)
             }
         };
+
+        if rank == 1 && n > 2 {
+            // The exact one-factor boundary was checked above. A second
+            // representable direction may be lost in a rounded Cholesky pivot.
+            return self.repair_roundoff(omega, width, positive, negative, overall_max_diag);
+        }
 
         let s0_w = if self.diag_scale[0] > 0.0 {
             self.diag_scale[0] * positive.abs().sqrt()
         } else {
             0.0
         };
-        let sneg_w = if s_neg_active > 0.0 {
-            s_neg_active * negative.abs().sqrt()
+        let sneg_w = if s_neg > 0.0 {
+            s_neg * negative.abs().sqrt()
         } else {
             0.0
         };
@@ -474,13 +529,13 @@ impl EigenWorkspace {
             return Ok(&self.values);
         }
         let pos_norm = if self.diag_scale[0] > 0.0 {
-            let r = (self.diag_scale[0] / w_scale) * positive.abs().sqrt();
+            let r = s0_w / w_scale;
             r * r * positive.signum()
         } else {
             0.0
         };
-        let neg_norm = if s_neg_active > 0.0 {
-            let r = (s_neg_active / w_scale) * negative.abs().sqrt();
+        let neg_norm = if s_neg > 0.0 {
+            let r = sneg_w / w_scale;
             r * r * negative.signum()
         } else {
             0.0
@@ -506,9 +561,54 @@ impl EigenWorkspace {
         symmetric_eigen(&mut self.matrix, &mut self.values, None)?;
         Ok(&self.values)
     }
+
+    // A PSD block can acquire a negative eigenvalue at roundoff scale in the
+    // covariance multiplication. Judge that residual in the original units.
+    fn repair_roundoff(
+        &mut self,
+        omega: &[f64],
+        width: usize,
+        positive: f64,
+        negative: f64,
+        scale: f64,
+    ) -> Result<&[f64], CoreError> {
+        let n = self.values.len();
+        for i in 0..n {
+            for j in 0..n {
+                self.corr[i * n + j] = omega[i * width + j] / scale;
+            }
+        }
+        symmetric_eigen(&mut self.corr, &mut self.values, Some(&mut self.scratch))?;
+        if self
+            .values
+            .iter()
+            .any(|&v| v < -32.0 * n as f64 * f64::EPSILON)
+        {
+            return Err(CoreError::invalid_input(
+                "SCPC covariance is not positive semidefinite",
+            ));
+        }
+        for value in &mut self.values {
+            *value = value.max(0.0).sqrt();
+        }
+        // The Jacobi solver stores one eigenvector per row.
+        for i in 0..n {
+            for j in i..n {
+                let inner: f64 = (1..n)
+                    .map(|k| self.scratch[i * n + k] * self.scratch[j * n + k])
+                    .sum();
+                let v = (positive * self.scratch[i * n] * self.scratch[j * n] + negative * inner)
+                    * self.values[i]
+                    * self.values[j];
+                self.matrix[i * n + j] = v;
+                self.matrix[j * n + i] = v;
+            }
+        }
+        symmetric_eigen(&mut self.matrix, &mut self.values, None)?;
+        Ok(&self.values)
+    }
 }
 
-#[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
 pub(crate) fn symmetric_eigen(
     a: &mut [f64],
     values: &mut [f64],
@@ -650,7 +750,24 @@ mod tests {
         }
     }
 
-    #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
+    #[test]
+    fn covariance_eigenfactor_preserves_weighted_quadratic_form() {
+        let omega = [1.0, 0.3, 0.2, 0.3, 0.6, 0.4, 0.2, 0.4, 0.9];
+        let weights = [0.7, -0.4, -0.4];
+        let mut ws = EigenWorkspace::new(3);
+        let eig = ws.repair_roundoff(&omega, 3, weights[0], weights[1], 1.0).unwrap();
+        let mut trace = 0.0;
+        let mut trace_squared = 0.0;
+        for i in 0..3 {
+            trace += weights[i] * omega[i * 3 + i];
+            for j in 0..3 {
+                trace_squared += weights[i] * weights[j] * omega[i * 3 + j].powi(2);
+            }
+        }
+        assert!((eig.iter().sum::<f64>() - trace).abs() < 1e-13);
+        assert!((eig.iter().map(|v| v * v).sum::<f64>() - trace_squared).abs() < 1e-13);
+    }
+
     #[test]
     fn weighted_eigenvalues_handles_scale_disparity_roundoff_and_indefiniteness() {
         let cov_iv = [1.0, 5e6, 5e6, 1e14];

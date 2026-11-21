@@ -52,6 +52,22 @@
   as.integer(round(val))
 }
 
+.spur_runtime_env <- new.env(parent = emptyenv())
+.spur_runtime_env$init_pid <- NULL
+
+.onLoad <- function(libname, pkgname) {
+  .spur_runtime_env$init_pid <- Sys.getpid()
+}
+
+.is_spur_forked_child <- function() {
+  init <- .spur_runtime_env$init_pid
+  if (is.null(init)) {
+    .spur_runtime_env$init_pid <- Sys.getpid()
+    return(FALSE)
+  }
+  !identical(Sys.getpid(), init)
+}
+
 .is_spur_r_check_limit_cores <- function() {
   val <- trimws(Sys.getenv("_R_CHECK_LIMIT_CORES_", unset = ""))
   nzchar(val) && !tolower(val) %in% c("false", "0", "no")
@@ -61,6 +77,8 @@
   resolved <- NULL
   if (!is.null(nthreads)) {
     resolved <- .parse_spur_positive_int_threads(nthreads, "`nthreads`")
+  } else if (.is_spur_forked_child()) {
+    return(1L)
   } else {
     opt_threads <- getOption("spuR.threads")
     if (!is.null(opt_threads)) {

@@ -169,6 +169,78 @@ pub fn run_exact_scpc_r(
     )
 }
 
+#[cfg_attr(feature = "exports", extendr)]
+#[allow(clippy::too_many_arguments)]
+pub fn rust_run_model_scpc(
+    coords: RMatrix<f64>,
+    latlong: bool,
+    avc: f64,
+    cvs: bool,
+    coef: Doubles,
+    scores: RMatrix<f64>,
+    bread: RMatrix<f64>,
+    design: Nullable<RMatrix<f64>>,
+    instruments: Nullable<RMatrix<f64>>,
+    direction_design: Nullable<RMatrix<f64>>,
+    cluster_id: Nullable<Integers>,
+    fe_id: Nullable<Integers>,
+    nthreads: Nullable<i32>,
+    seed: Nullable<f64>,
+) -> std::result::Result<List, ApproxScpcError> {
+    use spatial_core::preparation::{run_model_scpc, ScpcPreparation};
+
+    let n = coords.nrows();
+    let d = coords.ncols();
+    let p = scores.ncols();
+    let k = coef.len();
+    if bread.nrows() != k || bread.ncols() != p {
+        return Err(Error::Other("score or bread dimensions do not match the model".into()).into());
+    }
+    let cluster = parse_r_index_vec(cluster_id, n, "cluster_id", "clusters")?;
+    let n_obs = cluster.as_ref().map_or(n, Vec::len);
+    if scores.nrows() != n_obs {
+        return Err(Error::Other("scores must have one row per observation".into()).into());
+    }
+    let fe = parse_r_index_vec(fe_id, n_obs, "fe_id", "observations")?;
+    let read_design = |matrix: Nullable<RMatrix<f64>>| -> extendr_api::Result<(Option<Vec<f64>>, usize)> {
+        match matrix {
+            Nullable::Null => Ok((None, 0)),
+            Nullable::NotNull(m) => {
+                if m.nrows() != n_obs {
+                    return Err(Error::Other("a model matrix has the wrong number of observations".into()));
+                }
+                Ok((Some(col_major_to_row_major(m.data(), n_obs, m.ncols())?), m.ncols()))
+            }
+        }
+    };
+    let (x, design_cols) = read_design(design)?;
+    let (z, instrument_cols) = read_design(instruments)?;
+    let (directions, direction_cols) = read_design(direction_design)?;
+    if directions.is_some() && direction_cols != p {
+        return Err(Error::Other("the fitted direction matrix must have one column per score".into()).into());
+    }
+    let seed = match seed {
+        Nullable::Null => None,
+        Nullable::NotNull(s) if (0.0..4_294_967_296.0).contains(&s) && s.fract() == 0.0 => Some(s as u32),
+        _ => return Err(Error::Other("seed must be an integer in [0, 2^32)".into()).into()),
+    };
+    let coord_data = col_major_to_row_major(coords.data(), n, d)?;
+    let obs_scores = col_major_to_row_major(scores.data(), n_obs, p)?;
+    let bread_rows = col_major_to_row_major(bread.data(), k, p)?;
+    let coefficients = coef.as_robj().as_real_slice()
+        .ok_or_else(|| Error::ExpectedReal(coef.as_robj().clone()))?;
+    let model = ScpcPreparation {
+        n_sites: n, n_obs, n_scores: p, coefficients, bread: &bread_rows,
+        scores: &obs_scores, design: x.as_deref(), design_cols,
+        instruments: z.as_deref(), instrument_cols, direction_design: directions.as_deref(),
+        cluster_ids: cluster.as_deref(), fixed_effects: fe.as_deref(),
+    };
+    let out = run_model_scpc(model, &coord_data, d,
+        if latlong { Metric::GreatCircleFractionLonLat } else { Metric::Euclidean },
+        avc, cvs, parse_r_nthreads(nthreads)?, seed)?;
+    Ok(build_r_scpc_list(out, n, k)?)
+}
+
 struct ParsedRScpcInputs {
     coords: Vec<f64>,
     n: usize,
@@ -216,48 +288,10 @@ fn parse_r_scpc_inputs(
         )));
     }
 
-    let nthreads = match nthreads {
-        Nullable::Null => None,
-        Nullable::NotNull(t) => {
-            if t <= 0 {
-                return Err(Error::Other(
-                    "`nthreads` must be a positive integer.".into(),
-                ));
-            }
-            Some(t as usize)
-        }
-    };
-
-    let parse_index_vec = |ids: Nullable<Integers>,
-                           upper_bound: usize,
-                           name: &str,
-                           label: &str|
-     -> extendr_api::Result<Option<Vec<usize>>> {
-        match ids {
-            Nullable::Null => Ok(None),
-            Nullable::NotNull(ints) => {
-                let slice = ints
-                    .as_robj()
-                    .as_integer_slice()
-                    .ok_or_else(|| Error::ExpectedInteger(ints.as_robj().clone()))?;
-                let mut out = Vec::with_capacity(slice.len());
-                for &val in slice {
-                    if val == i32::MIN || val < 0 || (val as usize) >= upper_bound {
-                        return Err(Error::Other(format!(
-                            "`{name}` entries must be non-NA integers in 0..{} for {label} (got {val})",
-                            upper_bound
-                        )));
-                    }
-                    out.push(val as usize);
-                }
-                Ok(Some(out))
-            }
-        }
-    };
-
-    let cluster_vec = parse_index_vec(cluster_id, n, "cluster_id", "clusters")?;
+    let nthreads = parse_r_nthreads(nthreads)?;
+    let cluster_vec = parse_r_index_vec(cluster_id, n, "cluster_id", "clusters")?;
     let m_obs = cluster_vec.as_ref().map_or(n, Vec::len);
-    let fe_vec = parse_index_vec(fe_id, m_obs, "fe_id", "observations")?;
+    let fe_vec = parse_r_index_vec(fe_id, m_obs, "fe_id", "observations")?;
 
     let coef_slice = coef
         .as_robj()
@@ -1244,9 +1278,30 @@ pub fn rust_run_spur_pipeline(
     )
 }
 
+/// Return compiled `spatial-core` version, active linear algebra provider, and ABI versions.
+pub fn build_info_r() -> List {
+    list!(
+        version = spatial_core::VERSION,
+        spec_version = spatial_core::SPEC_VERSION,
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+        linalg_provider = spatial_core::linalg_provider(),
+        scpc_api_version = spatial_core::SCPC_API_VERSION as i32,
+        spur_api_version = spatial_core::SPUR_API_VERSION as i32
+    )
+}
+
+#[cfg(feature = "exports")]
+#[extendr]
+pub fn rust_build_info() -> List {
+    build_info_r()
+}
+
 #[cfg(feature = "exports")]
 extendr_module! {
     mod spatial_r;
+    fn rust_run_model_scpc;
+    fn rust_build_info;
     fn rust_run_exact_scpc;
     fn rust_run_exact_scpc_clustered;
     fn rust_run_exact_scpc_full;
