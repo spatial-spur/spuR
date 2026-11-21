@@ -34,10 +34,15 @@ from the published crate archives are reproduced from the revisions
 recorded in their Cargo package metadata.
 
 The commuting-zone example data originate with Chetty, Hendren, Kline
-and Saez (2014), DOI 10.1093/qje/qju022, via the replication materials of
-Mueller and Watson (2024), DOI 10.5281/zenodo.11199509.
+and Saez (2014), via the replication materials of Mueller and Watson
+(2024). The package converts the replication workbook to CSV and
+selects 50 commuting zones and nine variables for spur_example. The R
+port adapts routines from the MATLAB code in the same replication
+deposit. The original data and replication deposits carry CC BY 4.0.
 https://doi.org/10.1093/qje/qju022
+https://doi.org/10.7910/DVN/NALG3E
 https://doi.org/10.5281/zenodo.11199509
+https://creativecommons.org/licenses/by/4.0/
 
 Cargo packages and their declared licenses
 ==========================================

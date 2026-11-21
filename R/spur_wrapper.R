@@ -292,12 +292,13 @@ spur <- function(formula,
   reason <- if (identical(backend_resolved, "fallback")) "requested" else "native_unavailable"
   diagnostics <- NULL
   if (rust_available) {
-    pipe <- .call_spur_rust(
+    pipe <- .Call(
       "wrap__rust_run_spur_pipeline",
       .swap_coords_for_rust(coord_info$coords, coord_info$latlong),
       isTRUE(coord_info$latlong), as.numeric(y), x_in, emat, variables, TRUE,
-      nthreads_resolved
+      nthreads_resolved, PACKAGE = "spuR"
     )
+    pipe <- .check_spur_rust_result(pipe)
     tied[] <- vapply(pipe[kinds], function(test) isTRUE(test$tied), logical(1L))
     if (any(tied) && identical(backend_resolved, "auto")) {
       reason <- "tied_eigenspace"

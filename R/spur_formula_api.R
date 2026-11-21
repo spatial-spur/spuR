@@ -263,7 +263,6 @@ spurtest_i0 <- function(formula,
   tied_from_rust <- FALSE
   if (!identical(backend_resolved, "fallback") && rust_loaded) {
     rust_attempt <- .try_spur_test_rust(
-      "wrap__rust_run_spur_i0",
       coords = coord_info$coords,
       latlong = coord_info$latlong,
       y_mat = y,
@@ -361,7 +360,6 @@ spurtest_i1 <- function(formula,
   tied_from_rust <- FALSE
   if (!identical(backend_resolved, "fallback") && rust_loaded) {
     rust_attempt <- .try_spur_test_rust(
-      "wrap__rust_run_spur_i1",
       coords = coord_info$coords,
       latlong = coord_info$latlong,
       y_mat = y,
@@ -463,7 +461,6 @@ spurtest_i0resid <- function(formula,
   tied_from_rust <- FALSE
   if (!identical(backend_resolved, "fallback") && rust_loaded) {
     rust_attempt <- .try_spur_test_rust(
-      "wrap__rust_run_spur_i0_resid",
       coords = coord_info$coords,
       latlong = coord_info$latlong,
       y_mat = parsed$Y,
@@ -566,7 +563,6 @@ spurtest_i1resid <- function(formula,
   tied_from_rust <- FALSE
   if (!identical(backend_resolved, "fallback") && rust_loaded) {
     rust_attempt <- .try_spur_test_rust(
-      "wrap__rust_run_spur_i1_resid",
       coords = coord_info$coords,
       latlong = coord_info$latlong,
       y_mat = parsed$Y,
@@ -684,15 +680,17 @@ spurhalflife <- function(formula,
   if (!identical(backend_resolved, "fallback") && rust_loaded) {
     e_m <- as.matrix(emat)
     storage.mode(e_m) <- "double"
-    rust_res <- .call_spur_rust(
+    rust_res <- .Call(
       "wrap__rust_run_spur_halflife",
       .swap_coords_for_rust(coord_info$coords, coord_info$latlong),
       isTRUE(coord_info$latlong),
       as.double(z),
       e_m,
       as.double(level / 100),
-      nthreads_resolved
+      nthreads_resolved,
+      PACKAGE = "spuR"
     )
+    rust_res <- .check_spur_rust_result(rust_res)
     tied_from_rust <- isTRUE(rust_res$tied)
     if (!tied_from_rust || identical(backend_resolved, "rust")) {
       used_rust <- TRUE

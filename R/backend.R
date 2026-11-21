@@ -109,8 +109,7 @@
   is.loaded(sym, PACKAGE = "spuR")
 }
 
-.call_spur_rust <- function(sym, ...) {
-  res <- .Call(sym, ..., PACKAGE = "spuR")
+.check_spur_rust_result <- function(res) {
   if (inherits(res, "extendr_error")) {
     stop(res$value, call. = FALSE)
   }
@@ -140,8 +139,7 @@
   loaded && !forked
 }
 
-.try_spur_test_rust <- function(sym,
-                                coords,
+.try_spur_test_rust <- function(coords,
                                 latlong,
                                 y_mat,
                                 emat,
@@ -154,14 +152,28 @@
   storage.mode(y_m) <- "double"
   e_m <- as.matrix(emat)
   storage.mode(e_m) <- "double"
+  latlong <- isTRUE(latlong)
 
   res <- if (is.null(x_in)) {
-    .call_spur_rust(sym, coords_rust, isTRUE(latlong), y_m, e_m, nthreads_resolved)
+    if (isTRUE(is_i0)) {
+      .Call("wrap__rust_run_spur_i0", coords_rust, latlong, y_m, e_m,
+            nthreads_resolved, PACKAGE = "spuR")
+    } else {
+      .Call("wrap__rust_run_spur_i1", coords_rust, latlong, y_m, e_m,
+            nthreads_resolved, PACKAGE = "spuR")
+    }
   } else {
     x_m <- as.matrix(x_in)
     storage.mode(x_m) <- "double"
-    .call_spur_rust(sym, coords_rust, isTRUE(latlong), y_m, x_m, e_m, nthreads_resolved)
+    if (isTRUE(is_i0)) {
+      .Call("wrap__rust_run_spur_i0_resid", coords_rust, latlong, y_m, x_m, e_m,
+            nthreads_resolved, PACKAGE = "spuR")
+    } else {
+      .Call("wrap__rust_run_spur_i1_resid", coords_rust, latlong, y_m, x_m, e_m,
+            nthreads_resolved, PACKAGE = "spuR")
+    }
   }
+  res <- .check_spur_rust_result(res)
 
   tied <- isTRUE(res$tied)
   if (tied && identical(backend_resolved, "auto")) {
@@ -244,7 +256,7 @@
   if (identical(transformation, "cluster")) {
     cl_id <- as.integer(droplevels(cluster)) - 1L
     storage.mode(cl_id) <- "integer"
-    res <- .call_spur_rust(
+    res <- .Call(
       "wrap__rust_run_spur_transform",
       "cluster",
       as.integer(sub_n),
@@ -257,8 +269,10 @@
       cl_id,
       FALSE,
       TRUE,
-      nthreads_resolved
+      nthreads_resolved,
+      PACKAGE = "spuR"
     )
+    res <- .check_spur_rust_result(res)
     out_mat <- res$transformed
     colnames(out_mat) <- y_names
     return(out_mat)
@@ -270,7 +284,7 @@
   } else {
     NULL
   }
-  res <- .call_spur_rust(
+  res <- .Call(
     "wrap__rust_run_spur_transform",
     transformation,
     as.integer(sub_n),
@@ -283,8 +297,10 @@
     NULL,
     FALSE,
     TRUE,
-    nthreads_resolved
+    nthreads_resolved,
+    PACKAGE = "spuR"
   )
+  res <- .check_spur_rust_result(res)
   out_mat <- res$transformed
   colnames(out_mat) <- y_names
   out_mat
