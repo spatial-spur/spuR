@@ -112,6 +112,7 @@ jobs:
         with:
           working-directory: spuR
           extra-packages: local::../scpcR
+          install-pandoc: 'true'
           cache-version: rust-${{ matrix.rust }}
       - name: Install directly from the checkout
         shell: bash

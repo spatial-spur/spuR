@@ -25,7 +25,8 @@ else
   endif
 endif
 
-RUST_SYS_LIBS = -lws2_32 -ladvapi32 -luserenv -lbcrypt -lntdll -lm
+# Rust's standard library uses WaitOnAddress and WakeByAddress on Windows.
+RUST_SYS_LIBS = -lws2_32 -ladvapi32 -luserenv -lbcrypt -lntdll -lsynchronization -lm
 
 ifneq ($(strip $(RUST_AVAILABLE)),)
   RUST_MODE = rust
