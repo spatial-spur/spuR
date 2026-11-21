@@ -704,7 +704,7 @@ spurhalflife <- function(formula,
       )
       max_dist <- as.numeric(rust_res$max_dist)
       if (isTRUE(coord_info$latlong)) {
-        max_dist <- max_dist * .SPUR_HALFLIFE_SCALE_M
+        max_dist <- max_dist * .SPUR_EARTH_CIRCUMFERENCE_M
       }
     }
   }
@@ -715,7 +715,7 @@ spurhalflife <- function(formula,
     ci$backend <- "fallback"
     ci$tied <- tied_from_rust
     max_dist <- distances$max_dist
-    if (isTRUE(coord_info$latlong)) max_dist <- max_dist * .SPUR_HALFLIFE_SCALE_M
+    if (isTRUE(coord_info$latlong)) max_dist <- max_dist * .SPUR_EARTH_CIRCUMFERENCE_M
   }
 
   ci_l <- ci$hl_ci_lower
@@ -769,7 +769,8 @@ spurhalflife <- function(formula,
 #' @param data A data frame containing variables and coordinates.
 #' @param prefix Prefix for transformed variable names.
 #' @param transformation One of `"lbmgls"`, `"nn"`, `"iso"`, or `"cluster"`.
-#' @param radius Radius used by `transformation = "iso"`.
+#' @param radius Radius used by `transformation = "iso"`. Use meters for
+#'   longitude and latitude or the units of the Euclidean coordinates.
 #' @param clustvar Cluster variable used by `transformation = "cluster"`.
 #' @param lon Optional longitude column name (must be supplied with `lat`).
 #' @param lat Optional latitude column name (must be supplied with `lon`).
@@ -780,6 +781,11 @@ spurhalflife <- function(formula,
 #' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
 #' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A data frame with transformed variables appended.
+#' @details Nearest-neighbor differencing averages the observations tied at the
+#'   smallest positive distance. It requires at least two distinct locations.
+#'   Isotropic differencing averages neighbors at positive distances up to and
+#'   including the radius. Observations with no such neighbors transform to zero.
+#'   LBM-GLS centers each transformed column.
 #' @examples
 #' data(spur_example)
 #'

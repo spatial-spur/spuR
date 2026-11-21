@@ -54,7 +54,7 @@ test_that("half-life uses Euclidean coordinate units and geographic metres", {
     expect_equal(b$max_dist, 7 * a$max_dist, tolerance = 1e-12)
     expect_equal(b$ci_l, 7 * a$ci_l, tolerance = 1e-12)
     geo <- calc(d, FALSE, TRUE)
-    expect_equal(geo$max_dist, 29 / 360 * .SPUR_HALFLIFE_SCALE_M, tolerance = 1e-10)
+    expect_equal(geo$max_dist, 29 * pi / 180 * 6371000.009, tolerance = 1e-10)
   }
 })
 

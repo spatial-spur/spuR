@@ -78,7 +78,7 @@ iso_matrix <- function(s, radius, latlong = FALSE) {
   }
 
   if (isTRUE(latlong)) {
-    distmat <- distmat * 3.14159265359 * 6371000.009 * 2
+    distmat <- distmat * .SPUR_EARTH_CIRCUMFERENCE_M
   }
 
   dist_below_b <- distmat > 0 & distmat <= radius

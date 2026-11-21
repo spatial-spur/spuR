@@ -16,8 +16,9 @@ mod student_t;
 pub mod threads;
 
 pub use distance::Metric;
+pub use preparation::{run_model_scpc, ScpcPreparation};
 pub use scpc_op::{
-    run_approx_scpc, run_exact_scpc, ApproxScpcRequest, ExactScpcOutput, ExactScpcRequest,
+    run_approx_scpc, run_exact_scpc, ApproxScpcRequest, ExactScpcRequest, ScpcOutput,
 };
 pub use spur_op::{
     run_spur_halflife, run_spur_i0, run_spur_i0_resid, run_spur_i1, run_spur_i1_resid,
@@ -27,7 +28,7 @@ pub use spur_op::{
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const SPEC_VERSION: &str = "0.3.3";
+pub const SPEC_VERSION: &str = "0.3.4";
 pub const SCPC_API_VERSION: usize = 7;
 pub const SPUR_API_VERSION: usize = 3;
 

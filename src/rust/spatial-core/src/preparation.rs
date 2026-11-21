@@ -2,7 +2,7 @@
 
 use crate::{
     checked_len, linalg, nystrom::normalize_coords, run_approx_scpc, run_exact_scpc,
-    ApproxScpcRequest, CoreError, ExactScpcOutput, ExactScpcRequest, Metric,
+    ApproxScpcRequest, CoreError, ExactScpcRequest, Metric, ScpcOutput,
 };
 
 const RANK_TOL: f64 = 1e-10;
@@ -571,7 +571,7 @@ pub fn run_model_scpc(
     cvs: bool,
     nthreads: Option<usize>,
     seed: Option<u32>,
-) -> Result<ExactScpcOutput, CoreError> {
+) -> Result<ScpcOutput, CoreError> {
     let n = prep.n_sites;
     let k = prep.coefficients.len();
     let uncond = prep.design.is_none();

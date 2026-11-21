@@ -2,11 +2,10 @@
 
 use extendr_api::prelude::*;
 use spatial_core::{
-    run_approx_scpc, run_exact_scpc, run_spur_halflife, run_spur_i0, run_spur_i0_resid,
-    run_spur_i1, run_spur_i1_resid, run_spur_pipeline, run_spur_transform, ApproxScpcRequest,
-    CoreError, ErrorKind, ExactScpcOutput, ExactScpcRequest, Metric, SpurHalfLifeOutput,
-    SpurHalfLifeRequest, SpurI0Output, SpurI1Output, SpurPipelineRequest, SpurTestRequest,
-    SpurTransformKind, SpurTransformRequest,
+    run_spur_halflife, run_spur_i0, run_spur_i0_resid, run_spur_i1, run_spur_i1_resid,
+    run_spur_pipeline, run_spur_transform, CoreError, ErrorKind, Metric, ScpcOutput,
+    SpurHalfLifeOutput, SpurHalfLifeRequest, SpurI0Output, SpurI1Output, SpurPipelineRequest,
+    SpurTestRequest, SpurTransformKind, SpurTransformRequest,
 };
 
 fn core_err(err: CoreError) -> Error {
@@ -27,12 +26,12 @@ fn core_err(err: CoreError) -> Error {
 
 /// The extendr result envelope carries a classed R condition for approximate
 /// SCPC outcomes that the host needs to distinguish at dispatch.
-pub struct ApproxScpcError {
+pub struct ScpcError {
     message: String,
     class: Option<&'static str>,
 }
 
-impl From<Error> for ApproxScpcError {
+impl From<Error> for ScpcError {
     fn from(error: Error) -> Self {
         Self {
             message: error.to_string(),
@@ -41,7 +40,7 @@ impl From<Error> for ApproxScpcError {
     }
 }
 
-impl From<CoreError> for ApproxScpcError {
+impl From<CoreError> for ScpcError {
     fn from(error: CoreError) -> Self {
         let class = match error.kind() {
             ErrorKind::TiedEigenspace => Some("spatial_tied_eigenspace"),
@@ -55,8 +54,8 @@ impl From<CoreError> for ApproxScpcError {
     }
 }
 
-impl From<ApproxScpcError> for Robj {
-    fn from(error: ApproxScpcError) -> Self {
+impl From<ScpcError> for Robj {
+    fn from(error: ScpcError) -> Self {
         if let Some(class) = error.class {
             let mut condition = list!(message = error.message, call = NULL);
             condition
@@ -129,46 +128,6 @@ pub fn row_major_to_rmatrix(
     Ok(mat)
 }
 
-/// Bridge one whole exact SCPC inference call from R `SEXP` wrappers to `spatial_core::run_exact_scpc`.
-///
-/// All R column-major matrices are copied into row-major Rust buffers on the R main thread
-/// prior to entering Rayon-parallel numerical routines, and R output matrices are allocated
-/// back on the R main thread after `run_exact_scpc` completes.
-#[allow(clippy::too_many_arguments)]
-pub fn run_exact_scpc_r(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    avc: f64,
-    uncond: bool,
-    cvs: bool,
-    coef: Doubles,
-    wj: RMatrix<f64>,
-    xj: Nullable<RMatrix<f64>>,
-    xjs: Nullable<RMatrix<f64>>,
-    proj_u: Nullable<RMatrix<f64>>,
-    proj_v: Nullable<RMatrix<f64>>,
-    cv_tolerance: f64,
-    nthreads: Nullable<i32>,
-) -> extendr_api::Result<List> {
-    run_exact_scpc_r_impl(
-        coords,
-        latlong,
-        avc,
-        uncond,
-        cvs,
-        coef,
-        wj,
-        xj,
-        xjs,
-        proj_u,
-        proj_v,
-        cv_tolerance,
-        nthreads,
-        Nullable::Null,
-        Nullable::Null,
-    )
-}
-
 #[cfg_attr(feature = "exports", extendr)]
 #[allow(clippy::too_many_arguments)]
 pub fn rust_run_model_scpc(
@@ -186,8 +145,8 @@ pub fn rust_run_model_scpc(
     fe_id: Nullable<Integers>,
     nthreads: Nullable<i32>,
     seed: Nullable<f64>,
-) -> std::result::Result<List, ApproxScpcError> {
-    use spatial_core::preparation::{run_model_scpc, ScpcPreparation};
+) -> std::result::Result<List, ScpcError> {
+    use spatial_core::{run_model_scpc, ScpcPreparation};
 
     let n = coords.nrows();
     let d = coords.ncols();
@@ -275,162 +234,7 @@ pub fn rust_run_model_scpc(
     Ok(build_r_scpc_list(out, n, k)?)
 }
 
-struct ParsedRScpcInputs {
-    coords: Vec<f64>,
-    n: usize,
-    d: usize,
-    metric: Metric,
-    coef: Vec<f64>,
-    k_use: usize,
-    wj: Vec<f64>,
-    cluster_id: Option<Vec<usize>>,
-    fe_id: Option<Vec<usize>>,
-    xj: Option<Vec<f64>>,
-    xjs: Option<Vec<f64>>,
-    proj_u: Option<Vec<f64>>,
-    proj_v: Option<Vec<f64>>,
-    proj_rank: usize,
-    nthreads: Option<usize>,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn parse_r_scpc_inputs(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    uncond: bool,
-    coef: Doubles,
-    wj: RMatrix<f64>,
-    xj: Nullable<RMatrix<f64>>,
-    xjs: Nullable<RMatrix<f64>>,
-    proj_u: Nullable<RMatrix<f64>>,
-    proj_v: Nullable<RMatrix<f64>>,
-    nthreads: Nullable<i32>,
-    cluster_id: Nullable<Integers>,
-    fe_id: Nullable<Integers>,
-) -> extendr_api::Result<ParsedRScpcInputs> {
-    let n = coords.nrows();
-    let d = coords.ncols();
-    let k_use = coef.len();
-
-    if wj.nrows() != n || wj.ncols() != k_use {
-        return Err(Error::Other(format!(
-            "wj dimensions ({} x {}) do not match n = {} and k_use = {}",
-            wj.nrows(),
-            wj.ncols(),
-            n,
-            k_use
-        )));
-    }
-
-    let nthreads = parse_r_nthreads(nthreads)?;
-    let cluster_vec = parse_r_index_vec(cluster_id, n, "cluster_id", "clusters")?;
-    let m_obs = cluster_vec.as_ref().map_or(n, Vec::len);
-    let fe_vec = parse_r_index_vec(fe_id, m_obs, "fe_id", "observations")?;
-
-    let coef_slice = coef
-        .as_robj()
-        .as_real_slice()
-        .ok_or_else(|| Error::ExpectedReal(coef.as_robj().clone()))?
-        .to_vec();
-
-    let coords_rm = col_major_to_row_major(coords.data(), n, d)?;
-    let wj_rm = col_major_to_row_major(wj.data(), n, k_use)?;
-
-    let (xj_rm, xjs_rm, proj_u_rm, proj_v_rm, proj_rank) = if uncond {
-        (None, None, None, None, 0usize)
-    } else {
-        let xj_mat = match xj {
-            Nullable::NotNull(m) => m,
-            Nullable::Null => {
-                return Err(Error::Other("conditional SCPC requires `xj` matrix".into()))
-            }
-        };
-        let xjs_mat = match xjs {
-            Nullable::NotNull(m) => m,
-            Nullable::Null => {
-                return Err(Error::Other(
-                    "conditional SCPC requires `xjs` matrix".into(),
-                ))
-            }
-        };
-        if xj_mat.nrows() != m_obs || xj_mat.ncols() != k_use {
-            return Err(Error::Other(format!(
-                "xj dimensions ({} x {}) do not match m_obs = {} and k_use = {}",
-                xj_mat.nrows(),
-                xj_mat.ncols(),
-                m_obs,
-                k_use
-            )));
-        }
-        if xjs_mat.nrows() != m_obs || xjs_mat.ncols() != k_use {
-            return Err(Error::Other(format!(
-                "xjs dimensions ({} x {}) do not match m_obs = {} and k_use = {}",
-                xjs_mat.nrows(),
-                xjs_mat.ncols(),
-                m_obs,
-                k_use
-            )));
-        }
-        let xj_rm = col_major_to_row_major(xj_mat.data(), m_obs, k_use)?;
-        let xjs_rm = col_major_to_row_major(xjs_mat.data(), m_obs, k_use)?;
-
-        match (proj_u, proj_v) {
-            (Nullable::Null, Nullable::Null) => (Some(xj_rm), Some(xjs_rm), None, None, 0usize),
-            (Nullable::NotNull(u_mat), Nullable::NotNull(v_mat)) => {
-                let rank = u_mat.ncols();
-                if u_mat.nrows() != m_obs || v_mat.nrows() != m_obs || v_mat.ncols() != rank {
-                    return Err(Error::Other(
-                        "conditional projection U/V dimensions do not match".into(),
-                    ));
-                }
-                if rank == 0 {
-                    (Some(xj_rm), Some(xjs_rm), None, None, 0usize)
-                } else {
-                    let u_slice = u_mat.data();
-                    let v_slice = v_mat.data();
-                    let u_rm = col_major_to_row_major(u_slice, m_obs, rank)?;
-                    let v_rm = if std::ptr::eq(u_slice.as_ptr(), v_slice.as_ptr()) {
-                        None
-                    } else {
-                        Some(col_major_to_row_major(v_slice, m_obs, rank)?)
-                    };
-                    (Some(xj_rm), Some(xjs_rm), Some(u_rm), v_rm, rank)
-                }
-            }
-            _ => {
-                return Err(Error::Other(
-                    "proj_u and proj_v must both be provided or both be NULL".into(),
-                ))
-            }
-        }
-    };
-
-    let metric = if latlong {
-        Metric::GreatCircleFractionLonLat
-    } else {
-        Metric::Euclidean
-    };
-
-    Ok(ParsedRScpcInputs {
-        coords: coords_rm,
-        n,
-        d,
-        metric,
-        coef: coef_slice,
-        k_use,
-        wj: wj_rm,
-        cluster_id: cluster_vec,
-        fe_id: fe_vec,
-        xj: xj_rm,
-        xjs: xjs_rm,
-        proj_u: proj_u_rm,
-        proj_v: proj_v_rm,
-        proj_rank,
-        nthreads,
-    })
-}
-
-fn build_r_scpc_list(out: ExactScpcOutput, n: usize, k_use: usize) -> extendr_api::Result<List> {
+fn build_r_scpc_list(out: ScpcOutput, n: usize, k_use: usize) -> extendr_api::Result<List> {
     let scpcstats = row_major_to_rmatrix(&out.scpcstats, k_use, 6)?;
     let scpccvs: Robj = match out.scpccvs {
         Some(ref cvs_rm) => row_major_to_rmatrix(cvs_rm, k_use, 4)?.into(),
@@ -461,279 +265,6 @@ fn build_r_scpc_list(out: ExactScpcOutput, n: usize, k_use: usize) -> extendr_ap
             Robj::from(q_i32),
             Robj::from(out.tied),
         ],
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn run_exact_scpc_r_impl(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    avc: f64,
-    uncond: bool,
-    cvs: bool,
-    coef: Doubles,
-    wj: RMatrix<f64>,
-    xj: Nullable<RMatrix<f64>>,
-    xjs: Nullable<RMatrix<f64>>,
-    proj_u: Nullable<RMatrix<f64>>,
-    proj_v: Nullable<RMatrix<f64>>,
-    cv_tolerance: f64,
-    nthreads: Nullable<i32>,
-    cluster_id: Nullable<Integers>,
-    fe_id: Nullable<Integers>,
-) -> extendr_api::Result<List> {
-    let inputs = parse_r_scpc_inputs(
-        coords, latlong, uncond, coef, wj, xj, xjs, proj_u, proj_v, nthreads, cluster_id, fe_id,
-    )?;
-    let proj_u_ref = inputs.proj_u.as_deref();
-    let proj_v_ref = inputs.proj_v.as_deref().or(proj_u_ref);
-
-    let req = ExactScpcRequest {
-        coords: &inputs.coords,
-        n: inputs.n,
-        d: inputs.d,
-        metric: inputs.metric,
-        avc,
-        uncond,
-        cvs,
-        coef: &inputs.coef,
-        wj: &inputs.wj,
-        cluster_id: inputs.cluster_id.as_deref(),
-        fe_id: inputs.fe_id.as_deref(),
-        xj: inputs.xj.as_deref(),
-        xjs: inputs.xjs.as_deref(),
-        proj_u: proj_u_ref,
-        proj_v: proj_v_ref,
-        proj_rank: inputs.proj_rank,
-        cv_tolerance,
-        nthreads: inputs.nthreads,
-    };
-
-    let out = run_exact_scpc(&req).map_err(core_err)?;
-    build_r_scpc_list(out, inputs.n, inputs.k_use)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn run_approx_scpc_r_impl(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    avc: f64,
-    uncond: bool,
-    cvs: bool,
-    coef: Doubles,
-    wj: RMatrix<f64>,
-    xj: Nullable<RMatrix<f64>>,
-    xjs: Nullable<RMatrix<f64>>,
-    proj_u: Nullable<RMatrix<f64>>,
-    proj_v: Nullable<RMatrix<f64>>,
-    cv_tolerance: f64,
-    nthreads: Nullable<i32>,
-    cluster_id: Nullable<Integers>,
-    fe_id: Nullable<Integers>,
-    seed: f64,
-    landmarks: i32,
-    samples: i32,
-    pair_count: i32,
-) -> std::result::Result<List, ApproxScpcError> {
-    if !seed.is_finite() || seed < 0.0 || seed >= 4_294_967_296.0 || seed.fract() != 0.0 {
-        return Err(
-            Error::Other("`seed` must be an integer-valued number in [0, 2^32).".into()).into(),
-        );
-    }
-    if landmarks < 2 || samples < 1 || pair_count < 1 {
-        return Err(Error::Other("invalid Nystrom landmark or sampling parameters.".into()).into());
-    }
-    let inputs = parse_r_scpc_inputs(
-        coords, latlong, uncond, coef, wj, xj, xjs, proj_u, proj_v, nthreads, cluster_id, fe_id,
-    )?;
-    let proj_u_ref = inputs.proj_u.as_deref();
-    let proj_v_ref = inputs.proj_v.as_deref().or(proj_u_ref);
-
-    let req = ApproxScpcRequest {
-        coords: &inputs.coords,
-        n: inputs.n,
-        d: inputs.d,
-        metric: inputs.metric,
-        avc,
-        uncond,
-        cvs,
-        coef: &inputs.coef,
-        wj: &inputs.wj,
-        cluster_id: inputs.cluster_id.as_deref(),
-        fe_id: inputs.fe_id.as_deref(),
-        xj: inputs.xj.as_deref(),
-        xjs: inputs.xjs.as_deref(),
-        proj_u: proj_u_ref,
-        proj_v: proj_v_ref,
-        proj_rank: inputs.proj_rank,
-        cv_tolerance,
-        nthreads: inputs.nthreads,
-        seed: seed as u32,
-        landmarks: landmarks as usize,
-        samples: samples as usize,
-        pair_count: pair_count as usize,
-    };
-
-    let out = run_approx_scpc(&req)?;
-    Ok(build_r_scpc_list(out, inputs.n, inputs.k_use)?)
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-#[allow(clippy::too_many_arguments)]
-pub fn rust_run_exact_scpc(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    avc: f64,
-    uncond: bool,
-    cvs: bool,
-    coef: Doubles,
-    wj: RMatrix<f64>,
-    xj: Nullable<RMatrix<f64>>,
-    xjs: Nullable<RMatrix<f64>>,
-    proj_u: Nullable<RMatrix<f64>>,
-    proj_v: Nullable<RMatrix<f64>>,
-    cv_tolerance: f64,
-    nthreads: Nullable<i32>,
-) -> extendr_api::Result<List> {
-    run_exact_scpc_r(
-        coords,
-        latlong,
-        avc,
-        uncond,
-        cvs,
-        coef,
-        wj,
-        xj,
-        xjs,
-        proj_u,
-        proj_v,
-        cv_tolerance,
-        nthreads,
-    )
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-#[allow(clippy::too_many_arguments)]
-pub fn rust_run_exact_scpc_clustered(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    avc: f64,
-    uncond: bool,
-    cvs: bool,
-    coef: Doubles,
-    wj: RMatrix<f64>,
-    xj: Nullable<RMatrix<f64>>,
-    xjs: Nullable<RMatrix<f64>>,
-    proj_u: Nullable<RMatrix<f64>>,
-    proj_v: Nullable<RMatrix<f64>>,
-    cv_tolerance: f64,
-    nthreads: Nullable<i32>,
-    cluster_id: Nullable<Integers>,
-) -> extendr_api::Result<List> {
-    run_exact_scpc_r_impl(
-        coords,
-        latlong,
-        avc,
-        uncond,
-        cvs,
-        coef,
-        wj,
-        xj,
-        xjs,
-        proj_u,
-        proj_v,
-        cv_tolerance,
-        nthreads,
-        cluster_id,
-        Nullable::Null,
-    )
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-#[allow(clippy::too_many_arguments)]
-pub fn rust_run_exact_scpc_full(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    avc: f64,
-    uncond: bool,
-    cvs: bool,
-    coef: Doubles,
-    wj: RMatrix<f64>,
-    xj: Nullable<RMatrix<f64>>,
-    xjs: Nullable<RMatrix<f64>>,
-    proj_u: Nullable<RMatrix<f64>>,
-    proj_v: Nullable<RMatrix<f64>>,
-    cv_tolerance: f64,
-    nthreads: Nullable<i32>,
-    cluster_id: Nullable<Integers>,
-    fe_id: Nullable<Integers>,
-) -> extendr_api::Result<List> {
-    run_exact_scpc_r_impl(
-        coords,
-        latlong,
-        avc,
-        uncond,
-        cvs,
-        coef,
-        wj,
-        xj,
-        xjs,
-        proj_u,
-        proj_v,
-        cv_tolerance,
-        nthreads,
-        cluster_id,
-        fe_id,
-    )
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-#[allow(clippy::too_many_arguments)]
-pub fn rust_run_approx_scpc(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    avc: f64,
-    uncond: bool,
-    cvs: bool,
-    coef: Doubles,
-    wj: RMatrix<f64>,
-    xj: Nullable<RMatrix<f64>>,
-    xjs: Nullable<RMatrix<f64>>,
-    proj_u: Nullable<RMatrix<f64>>,
-    proj_v: Nullable<RMatrix<f64>>,
-    cv_tolerance: f64,
-    nthreads: Nullable<i32>,
-    cluster_id: Nullable<Integers>,
-    fe_id: Nullable<Integers>,
-    seed: f64,
-    landmarks: i32,
-    samples: i32,
-    pair_count: i32,
-) -> std::result::Result<List, ApproxScpcError> {
-    run_approx_scpc_r_impl(
-        coords,
-        latlong,
-        avc,
-        uncond,
-        cvs,
-        coef,
-        wj,
-        xj,
-        xjs,
-        proj_u,
-        proj_v,
-        cv_tolerance,
-        nthreads,
-        cluster_id,
-        fe_id,
-        seed,
-        landmarks,
-        samples,
-        pair_count,
     )
 }
 
@@ -1365,10 +896,6 @@ extendr_module! {
     mod spatial_r;
     fn rust_run_model_scpc;
     fn rust_build_info;
-    fn rust_run_exact_scpc;
-    fn rust_run_exact_scpc_clustered;
-    fn rust_run_exact_scpc_full;
-    fn rust_run_approx_scpc;
     fn rust_run_spur_i0;
     fn rust_run_spur_i1;
     fn rust_run_spur_i0_resid;
@@ -1424,23 +951,22 @@ mod tests {
 
     #[test]
     fn approx_scpc_error_sets_expected_classes_and_messages() {
-        let tied = ApproxScpcError::from(CoreError::tied("tied basis"));
+        let tied = ScpcError::from(CoreError::tied("tied basis"));
         assert_eq!(tied.class, Some("spatial_tied_eigenspace"));
         assert_eq!(tied.message, "tied basis");
 
-        let invalid_cov =
-            ApproxScpcError::from(CoreError::invalid_sampled_covariance("indefinite grid"));
+        let invalid_cov = ScpcError::from(CoreError::invalid_sampled_covariance("indefinite grid"));
         assert_eq!(
             invalid_cov.class,
             Some("spatial_invalid_sampled_covariance")
         );
         assert_eq!(invalid_cov.message, "indefinite grid");
 
-        let other_core = ApproxScpcError::from(CoreError::degenerate("zero var"));
+        let other_core = ScpcError::from(CoreError::degenerate("zero var"));
         assert_eq!(other_core.class, None);
         assert_eq!(other_core.message, "degenerate variance: zero var");
 
-        let extendr_err = ApproxScpcError::from(Error::Other("direct msg".to_string()));
+        let extendr_err = ScpcError::from(Error::Other("direct msg".to_string()));
         assert_eq!(extendr_err.class, None);
         assert_eq!(extendr_err.message, "direct msg");
     }

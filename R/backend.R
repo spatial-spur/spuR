@@ -2,8 +2,7 @@
 # Backend, thread configuration, and native Rust dispatch helpers for spuR
 # ---------------------------------------------------------------------------
 
-.SPUR_EARTH_CIRCUMFERENCE_M <- 3.14159265359 * 6371000.009 * 2
-.SPUR_HALFLIFE_SCALE_M <- pi * 6371000.009 * 2
+.SPUR_EARTH_CIRCUMFERENCE_M <- 2 * pi * 6371000.009
 
 .validate_spur_backend_value <- function(val, source = "`backend`") {
   valid <- c("auto", "rust", "fallback")

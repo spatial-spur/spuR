@@ -33,7 +33,8 @@ intercept is excluded. Evaluated column names are made syntactic.}
 
 \item{transformation}{One of \code{"lbmgls"}, \code{"nn"}, \code{"iso"}, or \code{"cluster"}.}
 
-\item{radius}{Radius used by \code{transformation = "iso"}.}
+\item{radius}{Radius used by \code{transformation = "iso"}. Use meters for
+longitude and latitude or the units of the Euclidean coordinates.}
 
 \item{clustvar}{Cluster variable used by \code{transformation = "cluster"}.}
 
@@ -58,6 +59,13 @@ A data frame with transformed variables appended.
 }
 \description{
 Formula interface for \code{spurtransform}.
+}
+\details{
+Nearest-neighbor differencing averages the observations tied at the
+smallest positive distance. It requires at least two distinct locations.
+Isotropic differencing averages neighbors at positive distances up to and
+including the radius. Observations with no such neighbors transform to zero.
+LBM-GLS centers each transformed column.
 }
 \examples{
 data(spur_example)
