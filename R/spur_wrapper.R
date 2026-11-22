@@ -204,7 +204,7 @@
 #' Run the SPUR diagnostics, fit the levels and transformed regressions,
 #' and compute SCPC inference for both branches.
 #'
-#' @param formula Two-sided regression formula with an explicit intercept.
+#' @param formula Two-sided regression formula with an intercept, as in \code{y ~ x}.
 #' @param data Data frame containing model and coordinate variables.
 #' @param q Number of low-frequency weighted averages (at least 2).
 #' @param nrep Number of Monte Carlo draws.
@@ -264,7 +264,7 @@ spur <- function(formula,
   if (!is.null(stats::model.offset(mf))) stop("Offsets are not supported by spur().")
   design <- stats::model.matrix(levels_model)
   if (attr(stats::terms(levels_model), "intercept") == 0L) {
-    stop("spur() requires an explicit intercept in the regression formula.", call. = FALSE)
+    stop("spur() requires a formula with an intercept.", call. = FALSE)
   }
   x_in <- design
   resid_dof <- nrow(x_in) - ncol(x_in)

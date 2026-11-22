@@ -1045,6 +1045,18 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
 }
 
 #[test]
+fn residual_design_accepts_a_constant_spanned_by_nearly_collinear_columns() {
+    let n = 60;
+    let x: Vec<_> = (1..=n)
+        .flat_map(|i| {
+            let scaled = 1e6 * i as f64;
+            [scaled + 1.0, -scaled]
+        })
+        .collect();
+    assert!(prepare_resid_design(&x, n, 2, 6).is_ok());
+}
+
+#[test]
 fn residual_tests_require_constant_span_and_are_invariant_to_x_beta_shifts() {
     let n = 40usize;
     let q = 6usize;

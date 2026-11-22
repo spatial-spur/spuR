@@ -690,12 +690,23 @@ fn compute_uncond_stats(
         let wj_norm = scaled_norm((0..n).map(|i| wj[i * k_use + j]));
         let norm = scaled_norm((1..width).map(|row| projected[row * k_use + j]));
         let se = (norm / se_denom) * scales[j];
-        if !se.is_finite() || se == 0.0 || norm <= SCALE_REL_TOL * wj_norm {
+        if norm <= SCALE_REL_TOL * wj_norm {
             return Err(CoreError::degenerate(
                 "SCPC variance projection is degenerate",
             ));
         }
-        tau_vec.push(coef[j] / se);
+        if !se.is_finite() || se == 0.0 {
+            return Err(CoreError::degenerate(
+                "SCPC standard error is outside the floating-point range",
+            ));
+        }
+        let tau = coef[j] / se;
+        if !tau.is_finite() {
+            return Err(CoreError::degenerate(
+                "SCPC t-statistic is outside the floating-point range",
+            ));
+        }
+        tau_vec.push(tau);
         se_vec.push(se);
     }
     Ok((se_vec, tau_vec))

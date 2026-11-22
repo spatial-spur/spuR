@@ -58,7 +58,10 @@ get_cbar <- function(rhobar, distmat) {
     }
   }
 
-  while (average(c1) > rhobar) {
+  repeat {
+    corr <- average(c1)
+    if (corr < rhobar) break
+    if (c1 >= 10240 && corr == rhobar) return(c1)
     c0 <- c1
     c1 <- min(2 * c1, .Machine$double.xmax)
     if (c1 == c0) {

@@ -21,6 +21,8 @@ test_that("SPUR calibration brackets large rates and rejects unattainable averag
   for (target in c(0.3, 1 / 3)) {
     expect_error(get_cbar(target, with_duplicates), "co-located-pair fraction")
   }
+  endpoint <- matrix(c(0, 1e-4, 1e-4, 0), 2L)
+  expect_identical(get_cbar(exp(-10240 * 1e-4), endpoint), 10240)
 })
 
 test_that("NN compares raw distances before averaging ties", {

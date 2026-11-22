@@ -104,8 +104,14 @@
   resolved
 }
 
+.spur_build_info <- function() {
+  if (is.loaded("wrap__rust_build_info", PACKAGE = "spuR")) {
+    .Call("wrap__rust_build_info", PACKAGE = "spuR")
+  }
+}
+
 .is_spur_rust_loaded <- function(sym) {
-  is.loaded(sym, PACKAGE = "spuR")
+  is.loaded(sym, PACKAGE = "spuR") && isTRUE(.spur_build_info()$spur_api_version == 4L)
 }
 
 .check_spur_rust_result <- function(res) {
@@ -125,14 +131,11 @@
 }
 
 .spur_inherited_accelerate <- function() {
-  own <- is.loaded("wrap__rust_build_info", PACKAGE = "spuR") &&
-    isTRUE(.Call("wrap__rust_build_info", PACKAGE = "spuR")$inherited_accelerate_state)
-  own || isTRUE(scpcR::.scpc_accelerate_state())
+  isTRUE(.spur_build_info()$inherited_accelerate_state) || isTRUE(scpcR::.scpc_accelerate_state())
 }
 
 .mark_spur_accelerate_used <- function() {
-  if (is.loaded("wrap__rust_build_info", PACKAGE = "spuR") &&
-      identical(.Call("wrap__rust_build_info", PACKAGE = "spuR")$linalg_provider, "accelerate")) {
+  if (identical(.spur_build_info()$linalg_provider, "accelerate")) {
     scpcR::.scpc_accelerate_state(mark = TRUE)
   }
 }
@@ -144,7 +147,7 @@
   forced <- identical(backend_resolved, "rust")
   if (!.is_spur_rust_loaded(sym)) {
     if (forced) {
-      stop("`backend = \"rust\"` was requested, but the native Rust backend is not loaded in `spuR`.", call. = FALSE)
+      stop("`backend = \"rust\"` was requested, but a compatible native Rust backend is not loaded in `spuR`. Rebuild with SPUR API 4.", call. = FALSE)
     }
     return("native_unavailable")
   }

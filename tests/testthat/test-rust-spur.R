@@ -299,6 +299,17 @@ testthat::test_that("tied eigenspace triggers auto fallback and backend validati
   )
 })
 
+testthat::test_that("a stale SPUR native library routes auto to the fallback", {
+  sym <- "wrap__rust_run_spur_i0"
+  testthat::skip_if_not(is.loaded(sym, PACKAGE = "spuR"))
+  testthat::local_mocked_bindings(
+    .spur_build_info = function() list(spur_api_version = 3L),
+    .package = "spuR"
+  )
+  testthat::expect_identical(.spur_rust_fallback_reason("auto", sym), "native_unavailable")
+  testthat::expect_error(.spur_rust_fallback_reason("rust", sym), "SPUR API 4")
+})
+
 testthat::test_that("residual tests require the constant direction and the pipeline requires an intercept", {
   set.seed(303)
   n <- 42L
@@ -334,12 +345,12 @@ testthat::test_that("residual tests require the constant direction and the pipel
     testthat::expect_error(
       spur(y ~ 0 + x1, data = df, q = 8L, nrep = 400L, coords_euclidean = c("sx", "sy"),
            backend = backend),
-      "explicit intercept"
+      "requires a formula with an intercept"
     )
     testthat::expect_error(
       spur(y ~ 0 + g, data = df, q = 8L, nrep = 400L, coords_euclidean = c("sx", "sy"),
            backend = backend),
-      "explicit intercept"
+      "requires a formula with an intercept"
     )
   }
 

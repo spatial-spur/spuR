@@ -153,7 +153,8 @@ lvech <- function(S) {
   n <- nrow(q_x)
   constant <- rep(1 / sqrt(n), n)
   residual <- .residualize_spur(.residualize_spur(constant, q_x), q_x)
-  if (.safe_vec_norm(residual) > 64 * .Machine$double.eps) {
+  # Squared norm bounds the fraction of the constant covariance left by projection.
+  if (sum(residual^2) > .Machine$double.eps) {
     stop("SPUR residual tests require a design that spans a constant.", call. = FALSE)
   }
   q_x

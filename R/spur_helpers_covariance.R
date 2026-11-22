@@ -9,7 +9,7 @@
 #' @keywords internal
 get_sigma_dm <- function(distmat, c) {
   n <- nrow(distmat)
-  sigma <- exp(-c * distmat)
+  sigma <- expm1(-c * distmat)
   sigma_dm <- sigma - matrix(colMeans(sigma), n, n, byrow = TRUE)
   sigma_dm <- sigma_dm - matrix(rowMeans(sigma_dm), n, n)
   sigma_dm

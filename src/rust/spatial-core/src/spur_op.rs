@@ -185,6 +185,19 @@ impl SpurGeometry {
         kern
     }
 
+    fn exp_deviation_kernel(&self, c: f64) -> Vec<f64> {
+        let n = self.n;
+        let mut kernel = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..i {
+                let value = (-c * self.norm_distmat[i * n + j]).exp_m1();
+                kernel[i * n + j] = value;
+                kernel[j * n + i] = value;
+            }
+        }
+        kernel
+    }
+
     fn projected_omega_from_mr(&self, c: f64, mr: &[f64], q: usize) -> Vec<f64> {
         let n = self.n;
         let sig = self.exp_kernel(c);
@@ -351,14 +364,7 @@ impl SpurGeometry {
         // Residualization removes the constant matrix. Start with the
         // exponential deviations so that the near-unit-root signal is never
         // computed by subtracting order-one projections.
-        let mut sig = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..i {
-                let value = (-c_bm * self.norm_distmat[i * n + j]).exp_m1();
-                sig[i * n + j] = value;
-                sig[j * n + i] = value;
-            }
-        }
+        let mut sig = self.exp_deviation_kernel(c_bm);
         // Since M = I - Q_x Q_x' and sig is symmetric:
         // M * sig * M = sig - Q_x * (Q_x' * sig) - (sig * Q_x) * Q_x' + Q_x * (Q_x' * sig * Q_x) * Q_x'.
         let mut qt_sig = vec![0.0_f64; k_x * n];
@@ -520,7 +526,6 @@ fn solve_cbar_cached(
         }
     }
 
-    it = 0;
     loop {
         let v = eval_c(c1);
         if v < rhobar {
@@ -535,10 +540,6 @@ fn solve_cbar_cached(
         }
         c0 = c1;
         c1 *= 2.0;
-        it += 1;
-        if it > MAX_CBAR_BRACKET_STEPS || !c1.is_finite() {
-            return Err(CoreError::calibration("rhobar too small for get_cbar"));
-        }
     }
 
     while (c1 - c0) > 0.001 {
@@ -1590,7 +1591,8 @@ fn prepare_resid_design(
     let unit_constant = vec![(n as f64).sqrt().recip(); n];
     let unit_once = residual_project_matrix(&unit_constant, &qx, n, k_x, 1);
     let unit_residual = residual_project_matrix(&unit_once, &qx, n, k_x, 1);
-    if unit_residual.iter().map(|v| v * v).sum::<f64>().sqrt() > 64.0 * f64::EPSILON {
+    // The squared norm bounds the fraction of the all-ones kernel left by projection.
+    if unit_residual.iter().map(|v| v * v).sum::<f64>() > f64::EPSILON {
         return Err(CoreError::invalid_input(
             "SPUR residual tests require a design that spans a constant",
         ));
@@ -1713,7 +1715,7 @@ pub fn run_spur_i1_resid(req: &SpurTestRequest<'_>) -> Result<SpurI1Output, Core
 
 impl SpurGeometry {
     fn kernel_dm(&self, c: f64) -> Vec<f64> {
-        let mut kern = self.exp_kernel(c);
+        let mut kern = self.exp_deviation_kernel(c);
         double_demean(&mut kern, self.n);
         kern
     }

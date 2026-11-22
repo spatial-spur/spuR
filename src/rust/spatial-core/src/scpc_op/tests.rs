@@ -206,6 +206,17 @@ fn score_projection_restores_units_after_extreme_rescaling() {
 }
 
 #[test]
+fn scpc_reports_unrepresentable_standard_errors_and_t_statistics() {
+    let wfin = [0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, -0.5];
+    let wj = [1.0, 1.0, 1.0, -1.0];
+    let tiny = wj.map(|v| v * f64::from_bits(1));
+    let err = compute_uncond_stats(&wfin, &tiny, 4, 1, &[1.0]).unwrap_err();
+    assert!(err.message().contains("standard error"));
+    let err = compute_uncond_stats(&wfin, &wj, 4, 1, &[f64::MAX]).unwrap_err();
+    assert!(err.message().contains("t-statistic"));
+}
+
+#[test]
 fn scpc_scale_grid_includes_the_finite_endpoint_when_needed() {
     assert_eq!(build_scale_grid(1.0, 1.3), [1.0, 1.2, 1.3]);
     assert_eq!(build_scale_grid(1.0, 0.8), [1.0, 1.2]);

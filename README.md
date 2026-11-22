@@ -77,6 +77,8 @@ all indicators of a factor span a constant. The combined `spur()` pipeline
 requires a formula intercept, which R formulas include by default, so both fits have
 a common formula convention. Uninformative covariance shapes and decay
 targets at or below the fraction of co-located pairs produce explicit errors.
+The I(0) calibration grid starts at `0.0001`, so the I(0) tests and `spur()`
+require the co-located share of observation pairs to lie below that value.
 
 Euclidean absolute half-lives use the original coordinate units. Geographic absolute
 half-lives use metres, and `normdist = TRUE` reports fractions of the sample diameter.

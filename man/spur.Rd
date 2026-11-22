@@ -21,7 +21,7 @@ spur(
 )
 }
 \arguments{
-\item{formula}{Two-sided regression formula with an explicit intercept.}
+\item{formula}{Two-sided regression formula with an intercept, as in \code{y ~ x}.}
 
 \item{data}{Data frame containing model and coordinate variables.}
 
