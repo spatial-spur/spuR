@@ -1,14 +1,28 @@
-.half_life_mixture <- function() {
+.half_life_mixture <- function(min_distance) {
   nodes <- c(-0.906179845938664, -0.5384693101056831, 0,
              0.5384693101056831, 0.906179845938664)
   weights <- c(0.2369268850561891, 0.4786286704993665, 128 / 225,
                0.4786286704993665, 0.2369268850561891)
-  edges <- c(0, 2^(-9:0))
+  near_zero <- max(min_distance / 32, .Machine$double.xmin)
+  exponent <- -9L
+  while (2^exponent > near_zero) exponent <- exponent - 1L
+  edges <- c(0, 2^(exponent:0))
   width <- diff(edges) / 2
   list(
     points = as.vector(outer(1 + nodes, width) + rep(head(edges, -1L), each = 5L)),
     weights = as.vector(outer(weights, width))
   )
+}
+
+.half_life_search_grid <- function(min_distance) {
+  short <- numeric()
+  h <- 1 / 127
+  near_zero <- max(min_distance / 32, .Machine$double.xmin)
+  while (h > near_zero) {
+    h <- h * 0.8408964152537145
+    short <- c(short, h / (1 + h))
+  }
+  c(0, rev(short), seq_len(128L) / 128)
 }
 
 .invert_half_life <- function(grid, accepted, accepts) {
@@ -18,7 +32,8 @@
   for (i in transitions) {
     left <- grid[i]
     right <- grid[i + 1L]
-    while (right - left > 1e-7) {
+    tolerance <- min(1e-7, 1e-5 * (right - left))
+    while (right - left > tolerance) {
       mid <- (left + right) / 2
       if (accepts(mid) == accepted[i]) left <- mid else right <- mid
     }
@@ -56,25 +71,22 @@ spur_persistence <- function(Z, distmat, emat, level) {
       -0.5 * distmat
     } else {
       rate <- log(2) / h
-      if (rate < 0.01) 0.5 * expm1(-rate * distmat) / rate else exp(-rate * distmat)
+      if (rate < 0.01) 0.5 * expm1(-rate * distmat) / rate else exp(-log(2) * (distmat / h))
     }
     omega <- crossprod(projected, kernel %*% projected)
     0.5 * (omega + t(omega))
   }
 
-  grid <- seq(0, 1, length.out = 129L)
+  min_distance <- min(distmat[distmat > 0])
+  grid <- .half_life_search_grid(min_distance)
   h_grid <- grid / (1 - grid)
   nulls <- lapply(h_grid, covariance)
-  mixture <- .half_life_mixture()
+  mixture <- .half_life_mixture(min_distance)
   alternatives <- lapply(mixture$points, covariance)
   if (!any(vapply(c(nulls[-1L], alternatives), .spur_shapes_differ, logical(1L), b = nulls[[1L]]))) {
     stop("Half-life experiment is uninformative: covariance shapes are proportional.")
   }
-  precision_factor <- function(omega) {
-    inverse <- solve(omega)
-    chol(0.5 * (inverse + t(inverse)))
-  }
-  factors <- lapply(alternatives, precision_factor)
+  factors <- lapply(alternatives, function(omega) .spur_precision_factor(t(chol(omega))))
   log_weights <- log(mixture$weights) + vapply(factors, function(f) sum(log(diag(f))), 0.0)
   log_density <- function(upper, values, log_weight) {
     log_weight - 0.5 * q * log(colSums((upper %*% values)^2))
@@ -87,9 +99,9 @@ spur_persistence <- function(Z, distmat, emat, level) {
   draw_norm <- 0.5 * q * log(colSums(emat^2))
 
   exceedances <- function(omega) {
-    simulated <- t(chol(omega)) %*% emat
-    upper <- precision_factor(omega)
-    observed_score <- observed_mix + 0.5 * q * log(sum((upper %*% observed)^2))
+    lower <- t(chol(omega))
+    simulated <- lower %*% emat
+    observed_score <- observed_mix + 0.5 * q * log(sum(forwardsolve(lower, observed)^2))
     log_terms <- vapply(seq_along(factors), function(j) {
       log_density(factors[[j]], simulated, log_weights[j])
     }, numeric(nrep))

@@ -48,6 +48,11 @@ A list of class \code{"spur_test"} with \code{pvalue}, \code{teststat}, \code{ha
 \description{
 Formula interface for the SPUR spatial I(0) test.
 }
+\details{
+The test calibrates over attainable average pairwise correlations up to 0.03,
+including the co-location limit. The null is empty if more than 3\% of
+observation pairs share a location.
+}
 \examples{
 \donttest{
 data(spur_example)

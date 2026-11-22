@@ -60,7 +60,8 @@ get_r <- function(sig, qmax) {
 .select_spur_eigenvectors <- function(eig, q) {
   order <- order(eig$values, decreasing = TRUE)
   sorted <- eig$values[order]
-  if (length(sorted) > q && sorted[q] - sorted[q + 1L] <= 1.6e-11 * max(1, sorted[1L])) {
+  gap_tol <- max(1.6e-11 * sorted[1L], 8 * .Machine$double.eps * nrow(eig$vectors))
+  if (length(sorted) > q && sorted[q] - sorted[q + 1L] <= gap_tol) {
     stop("Requested q splits a tied eigenspace. Choose q at an eigenvalue gap.")
   }
   idx <- order[seq_len(q)]

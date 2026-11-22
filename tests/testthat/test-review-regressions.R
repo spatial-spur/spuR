@@ -25,6 +25,35 @@ test_that("SPUR calibration brackets large rates and rejects unattainable averag
   expect_identical(get_cbar(exp(-10240 * 1e-4), endpoint), 10240)
 })
 
+test_that("SPUR diagnostics accept attainable correlations on co-located sites", {
+  sites <- c(0, 0, 0.04, 0.17, 0.19, 0.25, 0.42, 0.60, 0.78, 1)
+  data <- data.frame(s = sites, y = sin(7 * sites))
+  for (backend in review_backends()) {
+    i0 <- spurtest_i0(~y, data, coords_euclidean = "s", q = 2L, nrep = 199L,
+                      seed = 17L, backend = backend)
+    i1 <- spurtest_i1(~y, data, coords_euclidean = "s", q = 2L, nrep = 199L,
+                      seed = 17L, backend = backend)
+    expect_true(is.finite(i0$teststat))
+    expect_true(is.finite(i1$teststat))
+  }
+})
+
+test_that("residual inference agrees for equivalent large-offset group designs", {
+  data <- review_spur_data(36L)
+  data$g <- factor(rep(letters[1:3], each = 12L))
+  data$y <- 1e13 + round(4 * data$y) / 4
+  for (backend in review_backends()) {
+    for (fn in list(spurtest_i0resid, spurtest_i1resid)) {
+      expected <- fn(y ~ g, data, coords_euclidean = "sx", q = 4L, nrep = 499L,
+                     seed = 42L, backend = backend)
+      actual <- fn(y ~ 0 + g, data, coords_euclidean = "sx", q = 4L, nrep = 499L,
+                   seed = 42L, backend = backend)
+      expect_equal(actual$teststat, expected$teststat, tolerance = 1e-12)
+      expect_identical(actual$pvalue, expected$pvalue)
+    }
+  }
+})
+
 test_that("NN compares raw distances before averaging ties", {
   d <- data.frame(
     s = c(0, 0.66219144446564393, -0.66219144446564404, 86012.158427686139, 43006.07921384307),

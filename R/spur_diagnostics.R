@@ -1,12 +1,12 @@
-.run_spur_test <- function(Y, distmat, emat, is_i0, X_in = NULL, q_x = NULL) {
+.run_spur_test <- function(Y, distmat, emat, is_i0, X_in = NULL) {
   dims <- .validate_core_spur_inputs(distmat, emat, blocks = 2L)
-  design <- .prepare_spur_diagnostics(Y, distmat, dims$q, X_in = X_in, q_x = q_x)
+  design <- .prepare_spur_diagnostics(Y, distmat, dims$q, X_in = X_in)
   if (is_i0) .spur_i0(design, distmat, emat) else .spur_i1(design, distmat, emat)
 }
 
 .prepare_spur_diagnostics <- function(Y, distmat, q, X_in = NULL,
                                       decay = .make_spur_decay_solver(distmat),
-                                      bm = NULL, eig = NULL, q_x = NULL) {
+                                      bm = NULL, eig = NULL) {
   n <- nrow(distmat)
   if (NROW(Y) != n) {
     stop("`Y` row count must match `distmat`.")
@@ -21,9 +21,8 @@
     if (NROW(X_in) != n) {
       stop("`X_in` row count must match `distmat`.")
     }
-    if (is.null(q_x)) q_x <- .spur_residual_basis(X_in)
-    center_response <- any(apply(as.matrix(X_in), 2L, function(x) all(x == x[1L])))
-    y_info <- .validate_spur_residual_y(Y, q_x, center_response)
+    q_x <- .orthonormal_design_basis(X_in)
+    y_info <- .validate_spur_residual_y(Y, q_x, .spur_constant_residual(q_x))
     resid_dof <- n - ncol(q_x)
     if (q > resid_dof) {
       stop(sprintf(
@@ -51,9 +50,19 @@
 }
 
 .spur_projected_covariance <- function(distmat, basis, rate) {
-  kernel <- if (is.infinite(rate)) distmat == 0 else exp(-rate * distmat)
+  kernel <- if (is.infinite(rate)) {
+    distmat == 0
+  } else if (rate < 0.01) {
+    expm1(-rate * distmat)
+  } else {
+    exp(-rate * distmat)
+  }
   om <- crossprod(basis, kernel %*% basis)
   0.5 * (om + t(om))
+}
+
+.spur_precision_factor <- function(lower) {
+  forwardsolve(lower, diag(nrow(lower)))
 }
 
 .spur_lr <- function(values, ch_omi_ho, ch_omi_ha, observed = FALSE) {
@@ -69,18 +78,24 @@
   q <- ncol(design$basis)
   tuning <- emat[q + seq_len(q), , drop = FALSE]
   emat <- emat[seq_len(q), , drop = FALSE]
-  om_ho <- .spur_projected_covariance(distmat, design$basis, design$decay(0.001))
+  floor_corr <- mean(lvech(distmat) == 0)
+  if (floor_corr > 0.03) {
+    stop("I(0) null requires a co-located-pair fraction at or below 0.03.")
+  }
+  reference_rate <- if (floor_corr < 0.001) design$decay(0.001) else Inf
+  om_ho <- .spur_projected_covariance(distmat, design$basis, reference_rate)
   if (!.spur_shapes_differ(om_ho, design$bm)) {
     stop("SPUR experiment is uninformative: covariance shapes are proportional.")
   }
   ha_parm <- get_ha_param_i0(om_ho, om_ho, design$bm, tuning)
   om_ha <- om_ho + ha_parm * design$bm
-  ch_omi_ho <- chol(solve(om_ho))
-  ch_omi_ha <- chol(solve(om_ha))
+  ch_omi_ho <- .spur_precision_factor(t(chol(om_ho)))
+  ch_omi_ha <- .spur_precision_factor(t(chol(om_ha)))
   lr <- .spur_lr(design$response, ch_omi_ho, ch_omi_ha, observed = TRUE)
 
-  floor_corr <- mean(lvech(distmat) == 0)
-  rho_grid <- c(floor_corr, seq(0.0001, 0.03, length.out = 30L))
+  first <- if (floor_corr < 0.0001) 0.0001 else floor_corr + (0.03 - floor_corr) / 30
+  finite_rhos <- seq(first, 0.03, length.out = 30L)
+  rho_grid <- c(floor_corr, finite_rhos[finite_rhos > floor_corr])
   pvalues <- matrix(NA_real_, length(rho_grid), length(lr))
   cvalues <- matrix(NA_real_, length(rho_grid), 3L)
   for (i in seq_along(rho_grid)) {
@@ -107,17 +122,19 @@
   tuning <- emat[q + seq_len(q), , drop = FALSE]
   emat <- emat[seq_len(q), , drop = FALSE]
   covariance <- function(rate) .spur_projected_covariance(distmat, design$basis, rate)
-  rates <- vapply(c(0.01, 0.5, 0.95), design$decay, 0.0)
+  floor_corr <- mean(lvech(distmat) == 0)
+  rates <- vapply(floor_corr + (1 - floor_corr) * c(0.01, 0.5, 0.95), design$decay, 0.0)
   shapes <- lapply(rates, covariance)
-  if (!.spur_shapes_differ(shapes[[1L]], shapes[[2L]]) &&
-      !.spur_shapes_differ(shapes[[1L]], shapes[[3L]])) {
+  if (!any(vapply(shapes, .spur_shapes_differ, logical(1L), b = design$bm))) {
     stop("SPUR experiment is uninformative: covariance shapes are proportional.")
   }
 
-  ha <- .fit_spur_i1(design$bm, tuning, covariance, rates, shapes)
-  ch_omi_ho <- chol(solve(design$bm))
-  ch_omi_ha <- chol(solve(ha$covariance))
-  lr_ho <- .spur_lr(t(chol(design$bm)) %*% emat, ch_omi_ho, ch_omi_ha)
+  min_distance <- min(distmat[distmat > 0])
+  ha <- .fit_spur_i1(design$bm, tuning, covariance, rates, shapes, min_distance)
+  lower <- t(chol(design$bm))
+  ch_omi_ho <- .spur_precision_factor(lower)
+  ch_omi_ha <- .spur_precision_factor(t(chol(ha$covariance)))
+  lr_ho <- .spur_lr(lower %*% emat, ch_omi_ho, ch_omi_ha)
   lr <- .spur_lr(design$response, ch_omi_ho, ch_omi_ha, observed = TRUE)
 
   list(
@@ -128,7 +145,7 @@
   )
 }
 
-.fit_spur_i1 <- function(om_ho, emat, covariance, rates, shapes) {
+.fit_spur_i1 <- function(om_ho, emat, covariance, rates, shapes, min_distance) {
   power <- .make_pow_qf_evaluator(om0 = om_ho, e = emat)
 
   lower <- rates[3L]
@@ -147,7 +164,7 @@
   steps <- 1L
   best <- list(rate = upper, covariance = omega, power = pow)
   while (pow < 0.5) {
-    if (steps >= 200L) return(best)
+    if (steps >= 200L || exp(-upper * min_distance) == 0) return(best)
     upper <- 2 * upper
     omega <- covariance(upper)
     pow <- power(omega)

@@ -51,20 +51,19 @@ pub fn normalize_coords(
 
     match metric {
         Metric::Euclidean => {
-            let mut means = vec![0.0_f64; d];
+            let mut bounds = vec![(f64::INFINITY, f64::NEG_INFINITY); d];
             for row in coords.chunks_exact(d) {
-                for c in 0..d {
-                    means[c] += row[c];
+                for (&value, (low, high)) in row.iter().zip(&mut bounds) {
+                    *low = low.min(value);
+                    *high = high.max(value);
                 }
             }
-            for mean in &mut means {
-                *mean /= n as f64;
-            }
+            let anchors: Vec<_> = bounds.iter().map(|(lo, hi)| lo.midpoint(*hi)).collect();
             let mut centered = vec![0.0_f64; n * d];
             let mut max_abs = 0.0_f64;
             for (dst, src) in centered.chunks_exact_mut(d).zip(coords.chunks_exact(d)) {
                 for c in 0..d {
-                    let v = src[c] - means[c];
+                    let v = src[c] - anchors[c];
                     dst[c] = v;
                     max_abs = max_abs.max(v.abs());
                 }
@@ -79,6 +78,20 @@ pub fn normalize_coords(
                 } else {
                     for v in &mut centered {
                         *v /= max_abs;
+                    }
+                }
+                let mut means = vec![0.0; d];
+                for row in centered.chunks_exact(d) {
+                    for (mean, value) in means.iter_mut().zip(row) {
+                        *mean += value;
+                    }
+                }
+                for mean in &mut means {
+                    *mean /= n as f64;
+                }
+                for row in centered.chunks_exact_mut(d) {
+                    for (value, mean) in row.iter_mut().zip(&means) {
+                        *value -= mean;
                     }
                 }
                 let mut cov = vec![0.0_f64; d * d];
@@ -949,6 +962,12 @@ mod tests {
             for (a, b) in norm.iter().zip(&norm_ref) {
                 assert!(a.is_finite() && (a - b).abs() < 1e-12, "a={a}, b={b}");
             }
+        }
+        let shifted: Vec<_> = base.iter().map(|&v| 1e308 + v * 1e306).collect();
+        let (norm, perm) = normalize_coords(&shifted, 5, 2, Metric::Euclidean).unwrap();
+        assert_eq!(perm, perm_ref);
+        for (a, b) in norm.iter().zip(&norm_ref) {
+            assert!((a - b).abs() < 1e-12, "a={a}, b={b}");
         }
     }
 }

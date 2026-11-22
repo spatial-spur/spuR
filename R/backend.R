@@ -117,7 +117,7 @@
   info <- .spur_build_info()
   isTRUE(info$spur_api_version == 5L &&
     length(info$spec_version) == 1L &&
-    utils::compareVersion(info$spec_version, "0.3.7") >= 0L)
+    utils::compareVersion(info$spec_version, "0.3.8") >= 0L)
 }
 
 .check_spur_rust_result <- function(res) {
@@ -153,7 +153,7 @@
   forced <- identical(backend_resolved, "rust")
   if (!.is_spur_rust_loaded(sym)) {
     if (forced) {
-      stop("`backend = \"rust\"` was requested, but a compatible native Rust backend is not loaded in `spuR`. Rebuild with SPUR API 5 and methods spec 0.3.7 or newer.", call. = FALSE)
+      stop("`backend = \"rust\"` was requested, but a compatible native Rust backend is not loaded in `spuR`. Rebuild with SPUR API 5 and methods spec 0.3.8 or newer.", call. = FALSE)
     }
     return("native_unavailable")
   }

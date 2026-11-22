@@ -223,6 +223,9 @@
 #'   sample. The spatial transformation applies to the evaluated response and
 #'   design columns. For example, a log response is logged before transformation.
 #'   The intercept in the transformed fit is a normalization of the centered columns.
+#'   LBM-GLS retains normalized covariance eigenvalues greater than 1e-10.
+#'   Comparing both fits is a sensitivity analysis. Coverage after choosing a
+#'   branch using the same data requires a separate justification.
 #' @return A list of class \code{"spur_result"} with \code{tests}, \code{fits},
 #'   \code{stage_backends}, and \code{fallback_reasons}.
 #' @useDynLib spuR, .registration = TRUE

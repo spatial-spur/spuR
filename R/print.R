@@ -14,7 +14,7 @@ print.spur_test <- function(x, ...) {
 print.spur_halflife <- function(x, ...) {
   level <- attr(x, "level")
   if (is.null(level)) level <- 95
-  cat(sprintf("Spatial half-life %s%% confidence set\n", level))
+  cat(sprintf("Approximate spatial half-life %s%% confidence set\n", level))
   cat("---------------------------------------\n")
   .print_halflife_components(x$components)
   invisible(x)

@@ -62,4 +62,7 @@ Both regressions and the diagnostics use the levels model's estimation
 sample. The spatial transformation applies to the evaluated response and
 design columns. For example, a log response is logged before transformation.
 The intercept in the transformed fit is a normalization of the centered columns.
+LBM-GLS retains normalized covariance eigenvalues greater than \eqn{10^{-10}}.
+Comparing both fits is a sensitivity analysis. Coverage after choosing a branch
+using the same data requires a separate justification.
 }

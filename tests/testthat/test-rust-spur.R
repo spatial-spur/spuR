@@ -173,7 +173,8 @@ testthat::test_that("spurhalflife matches fallback with frozen emat and preserve
         )
       )
       testthat::expect_identical(ru$backend, "rust")
-      testthat::expect_length(ru$full$pv_mat, 129L)
+      testthat::expect_length(ru$full$pv_mat, length(fb$full$hl_grid_ho))
+      testthat::expect_equal(ru$full$hl_grid_ho, fb$full$hl_grid_ho, tolerance = 1e-12)
       testthat::expect_equal(ru$max_dist, fb$max_dist, tolerance = 1e-10)
       testthat::expect_equal(ru$ci_l, fb$ci_l, tolerance = 1e-10)
       if (is.na(fb$ci_u)) {
@@ -303,11 +304,11 @@ testthat::test_that("a stale SPUR native library routes auto to the fallback", {
   sym <- "wrap__rust_run_spur_i0"
   testthat::skip_if_not(is.loaded(sym, PACKAGE = "spuR"))
   testthat::local_mocked_bindings(
-    .spur_build_info = function() list(spur_api_version = 5L, spec_version = "0.3.6"),
+    .spur_build_info = function() list(spur_api_version = 5L, spec_version = "0.3.7"),
     .package = "spuR"
   )
   testthat::expect_identical(.spur_rust_fallback_reason("auto", sym), "native_unavailable")
-  testthat::expect_error(.spur_rust_fallback_reason("rust", sym), "methods spec 0.3.7")
+  testthat::expect_error(.spur_rust_fallback_reason("rust", sym), "methods spec 0.3.8")
 })
 
 testthat::test_that("residual tests preserve inference with a nearly constant nuisance column", {

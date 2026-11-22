@@ -128,15 +128,12 @@ lvech <- function(S) {
 
   for (j in seq_len(n_y)) {
     col <- as.double(Y[, j])
-    if (max(col) - min(col) == 0) {
+    if (max(col) == min(col)) {
       stop(sprintf("Response `%s` has zero variation; SPUR inference requires non-constant `%s`.", name, name))
     }
-    col_dm <- col - mean(col)
-    dm_max <- max(abs(col_dm))
-    if (!is.finite(dm_max) || dm_max == 0) {
-      stop(sprintf("Response `%s` is effectively constant; SPUR inference requires variation in `%s`.", name, name))
-    }
-    y_dm[, j] <- col_dm / dm_max
+    centered <- col - (0.5 * min(col) + 0.5 * max(col))
+    scaled <- centered / max(abs(centered))
+    y_dm[, j] <- scaled - mean(scaled)
     y_dm_norm[j] <- sqrt(sum(y_dm[, j]^2))
   }
 
@@ -148,20 +145,20 @@ lvech <- function(S) {
   values - q_x %*% crossprod(q_x, values)
 }
 
-.spur_residual_basis <- function(X) {
-  q_x <- .orthonormal_design_basis(X)
+.spur_constant_residual <- function(q_x) {
   n <- nrow(q_x)
   constant <- rep(1 / sqrt(n), n)
   residual <- .residualize_spur(.residualize_spur(constant, q_x), q_x)
   # Squared norm bounds the fraction of the constant covariance left by projection.
-  if (sum(residual^2) > .Machine$double.eps) {
+  norm_sq <- sum(residual^2)
+  if (norm_sq > .Machine$double.eps) {
     stop("SPUR residual tests require a design that spans a constant.", call. = FALSE)
   }
-  q_x
+  if (norm_sq <= (8 * .Machine$double.eps)^2) NULL else as.numeric(residual) * sqrt(n)
 }
 
 #' @keywords internal
-.validate_spur_residual_y <- function(Y, q_x, center_response, name = "Y") {
+.validate_spur_residual_y <- function(Y, q_x, constant_residual, name = "Y") {
   if (is.vector(Y)) {
     Y <- matrix(Y, ncol = 1L)
   } else {
@@ -184,21 +181,24 @@ lvech <- function(S) {
     if (max(col) == min(col)) {
       stop(sprintf("Response `%s` has zero variation; SPUR inference requires non-constant `%s`.", name, name))
     }
-    centered <- col
-    if (center_response) {
-      # An exact constant column allows subtraction before scaling.
-      centered <- col - col[1L]
-      if (any(!is.finite(centered))) {
-        scaled <- col / max(abs(col))
-        centered <- scaled - scaled[1L]
-      }
+    anchor <- 0.5 * min(col) + 0.5 * max(col)
+    centered <- col - anchor
+    scale <- max(abs(centered))
+    allowance <- 0
+    if (is.null(constant_residual)) {
+      col_scaled <- centered / scale
+    } else {
+      correction <- anchor * constant_residual
+      scale <- max(scale, abs(correction))
+      col_scaled <- centered / scale + correction / scale
+      allowance <- (8 * .Machine$double.eps * abs(anchor) / scale) * sqrt(n)
     }
-    col_scaled <- centered / max(abs(centered))
     col_norm <- .safe_vec_norm(col_scaled)
     u <- .residualize_spur(.residualize_spur(col_scaled, q_x), q_x)
     u_max <- max(abs(u))
     u_norm <- .safe_vec_norm(u)
-    if (!is.finite(u_max) || u_max == 0 || !is.finite(u_norm) || u_norm <= 1e-12 * col_norm) {
+    if (!is.finite(u_max) || u_max == 0 || !is.finite(u_norm) ||
+        u_norm <= 1e-12 * col_norm + allowance) {
       stop(sprintf("Residualized response `%s` has zero variation; SPUR inference requires variation orthogonal to `X_in`.", name))
     }
     y_res[, j] <- u / u_max

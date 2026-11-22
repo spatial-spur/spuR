@@ -1,7 +1,7 @@
 use super::halflife::{
     accepts_halflife_null, add_halflife_likelihood_terms, half_life_covariances, half_life_mixture,
-    half_power, halflife_cancellation_bound, halflife_tile_size, invert_half_life, log_sum_exp,
-    quadratic_form_from_upper, HL_HA_LEN, MAX_HALFLIFE_TILE_BYTES,
+    half_life_search_grid, half_power, halflife_cancellation_bound, halflife_tile_size,
+    invert_half_life, log_sum_exp, quadratic_form_from_lower, MAX_HALFLIFE_TILE_BYTES,
 };
 use super::*;
 use crate::ErrorKind;
@@ -166,20 +166,27 @@ fn spur_basis_orientation_uses_the_first_nearly_maximal_entry() {
 
 #[test]
 fn halflife_worker_scratch_and_likelihood_terms_are_stable() {
+    let n_alternatives = 165;
     for q in [4, 64, 500, 1000, 1200] {
         let pairs = q * (q + 1) / 2;
-        let (cols, packed) = halflife_tile_size(q, pairs, 10_000);
+        let (cols, packed) = halflife_tile_size(q, pairs, n_alternatives, 10_000);
         assert!(cols <= TILE_COLS);
         assert_eq!(packed, q <= 64);
         if packed {
-            assert!(pairs * HL_HA_LEN * size_of::<f64>() <= MAX_HALFLIFE_TILE_BYTES);
+            assert!(pairs * n_alternatives * size_of::<f64>() <= MAX_HALFLIFE_TILE_BYTES);
         }
-        let tile_doubles = cols * (2 * q + if packed { pairs + HL_HA_LEN + 2 } else { 0 });
+        let tile_doubles = cols
+            * (2 * q
+                + if packed {
+                    pairs + n_alternatives + 2
+                } else {
+                    0
+                });
         assert!(tile_doubles * size_of::<f64>() <= MAX_HALFLIFE_TILE_BYTES);
     }
-    let upper = [1.0, -1.0, 0.0, 1e-7];
+    let lower = [1e-7, 0.0, -1.0, 1.0];
     let draws = [1.0, 2.0, 1.0, 3.0];
-    let form = quadratic_form_from_upper(&upper, &draws, 2, 0);
+    let form = quadratic_form_from_lower(&lower, &draws, 2, 0);
     assert!((form / 1e-14 - 1.0).abs() < 4.0 * f64::EPSILON);
     let log_total = log_sum_exp(&[1000.0, 1000.0]);
     assert!((log_total - 1000.0 - 2.0_f64.ln()).abs() < 1e-13);
@@ -239,20 +246,35 @@ fn spur_decay_brackets_large_roots_and_checks_the_colocation_floor() {
 }
 
 #[test]
-fn residual_brownian_proxy_preserves_orientation_at_paired_maxima() {
+fn residual_brownian_basis_preserves_orientation_at_paired_maxima() {
     let mut coords: Vec<f64> = (0..60).map(|i| i as f64 * (1.0 / 59.0)).collect();
     coords[59] = 1.0;
     let design: Vec<f64> = coords.iter().flat_map(|&s| [1.0, s - 0.5]).collect();
     let q = 15;
-    let qx = prepare_resid_design(&design, coords.len(), 2, q).unwrap();
-    let mut geom = SpurGeometry::from_coords(&coords, coords.len(), 1, Metric::Euclidean).unwrap();
-    let basis = prepare_resid_basis(&mut geom, qx, 2, q).unwrap();
+    let design = prepare_resid_design(&design, coords.len(), 2, q).unwrap();
+    let geom = SpurGeometry::from_coords(&coords, coords.len(), 1, Metric::Euclidean).unwrap();
+    let basis = prepare_resid_basis(&geom, design, q).unwrap();
 
     // The second direction has opposite signs at its mirrored maxima.
     // The sign convention selects the earlier site when their magnitudes agree.
     let earlier = basis.basis_r[19 * q + 1];
     let later = basis.basis_r[40 * q + 1];
     assert!(earlier > 0.18 && (earlier + later).abs() < 1e-14);
+}
+
+#[test]
+fn resolved_eigenvalue_gap_survives_projection_to_a_small_scale() {
+    let coords = [0.0, 1e-12, 2e-12, 4e-12, 6e-12, 9e-12]
+        .into_iter()
+        .chain([0.0, 1e-12, 2e-12, 4e-12, 5e-12, 7e-12].map(|d| 1.0 + d))
+        .collect::<Vec<_>>();
+    let design: Vec<_> = (0..12)
+        .flat_map(|i| if i < 6 { [1.0, 0.0] } else { [0.0, 1.0] })
+        .collect();
+    let geom = SpurGeometry::from_coords(&coords, 12, 1, Metric::Euclidean).unwrap();
+    let design = prepare_resid_design(&design, 12, 2, 2).unwrap();
+    let basis = prepare_resid_basis(&geom, design, 2).unwrap();
+    assert!(!basis.tied);
 }
 
 #[test]
@@ -414,8 +436,8 @@ fn spur_halflife_and_lbmgls_invariance_and_colocation() {
         nthreads: Some(2),
     })
     .unwrap();
-    assert_eq!(hl_1.pv_mat.len(), 129);
-    assert_eq!(hl_1.hl_grid_ho.len(), 129);
+    assert!(hl_1.pv_mat.len() >= 129);
+    assert_eq!(hl_1.pv_mat.len(), hl_1.hl_grid_ho.len());
     assert!(hl_1.ci_lower > 0.0);
     assert_eq!(hl_1.ci_upper, f64::INFINITY);
     assert_eq!(hl_1.components, hl_2.components);
@@ -788,8 +810,8 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
     // Residual degeneracy is invariant to an additive offset when the design
     // spans constants, even with the constant represented by the column sum.
     let x: Vec<f64> = (0..3).flat_map(|i| [i as f64, (1 - i) as f64]).collect();
-    let qx = prepare_resid_design(&x, 3, 2, 1).unwrap();
-    let residual_projection = |y| prepare_residual_y_projections(y, 3, 1, &basis, &qx, 2, 1, true);
+    let design = prepare_resid_design(&x, 3, 2, 1).unwrap();
+    let residual_projection = |y| prepare_residual_y_projections(y, 3, 1, &basis, &design, 1);
     let unshifted = residual_projection(&[-1.0, 1.0, 0.0]).unwrap();
     assert_eq!(
         residual_projection(&[1e13 - 1.0, 1e13 + 1.0, 1e13]).unwrap(),
@@ -890,29 +912,33 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
         let mut mr = basis_r.clone();
         center_columns(&mut mr, n_hl, q_hl);
         let p_vec = prepare_y_projections(&y_hl, n_hl, 1, &basis_r, q_hl).unwrap();
-        let compact: Vec<_> = (0..=128).map(|i| i as f64 / 128.0).collect();
+        let min_distance = g.min_positive_distance();
+        let compact = half_life_search_grid(min_distance);
         let ho_f: Vec<_> = half_life_covariances(&g, &mr, q_hl, &compact)
             .iter()
             .map(|omega| factor_omega(omega, q_hl).unwrap())
             .collect();
-        let (rates, masses) = half_life_mixture();
-        let ha_f: Vec<_> = rates
+        let (half_lives, masses) = half_life_mixture(min_distance);
+        let ha_f: Vec<_> = half_lives
             .iter()
-            .map(|&c| factor_omega(&g.projected_omega_from_mr(c, &mr, q_hl), q_hl).unwrap())
+            .map(|&h| {
+                let c = std::f64::consts::LN_2 / h;
+                factor_omega(&g.projected_omega_from_mr(c, &mr, q_hl), q_hl).unwrap()
+            })
             .collect();
         let q_f = q_hl as f64;
         for (idx, ho) in ho_f.iter().enumerate() {
             let mut xc_obs = vec![0.0_f64; q_hl];
-            linalg::multiply(&ho.ch_omi.upper, &p_vec, &mut xc_obs, q_hl, q_hl, 1, false);
-            let log_ho_obs =
-                ho.ch_omi.log_sqrt_det - 0.5 * q_f * xc_obs.iter().map(|v| v * v).sum::<f64>().ln();
+            linalg::multiply(&ho.inverse_lower, &p_vec, &mut xc_obs, q_hl, q_hl, 1, false);
+            let log_ho_obs = ho.log_inverse_sqrt_det
+                - 0.5 * q_f * xc_obs.iter().map(|v| v * v).sum::<f64>().ln();
             let lr_obs: f64 = ha_f
                 .iter()
-                .zip(masses)
+                .zip(&masses)
                 .map(|(ha, weight)| {
                     let mut xc = vec![0.0_f64; q_hl];
-                    linalg::multiply(&ha.ch_omi.upper, &p_vec, &mut xc, q_hl, q_hl, 1, false);
-                    let lha = ha.ch_omi.log_sqrt_det
+                    linalg::multiply(&ha.inverse_lower, &p_vec, &mut xc, q_hl, q_hl, 1, false);
+                    let lha = ha.log_inverse_sqrt_det
                         - 0.5 * q_f * xc.iter().map(|v| v * v).sum::<f64>().ln();
                     weight * (lha - log_ho_obs).exp()
                 })
@@ -921,18 +947,18 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
             for c in 0..nrep_hl {
                 let e_col: Vec<f64> = (0..q_hl).map(|r| emat_hl[r * nrep_hl + c]).collect();
                 let mut x = vec![0.0_f64; q_hl];
-                linalg::multiply(&ho.ch_om.lower, &e_col, &mut x, q_hl, q_hl, 1, false);
+                linalg::multiply(&ho.lower, &e_col, &mut x, q_hl, q_hl, 1, false);
                 let mut z0 = vec![0.0_f64; q_hl];
-                linalg::multiply(&ho.ch_omi.upper, &x, &mut z0, q_hl, q_hl, 1, false);
-                let log_ho =
-                    ho.ch_omi.log_sqrt_det - 0.5 * q_f * z0.iter().map(|v| v * v).sum::<f64>().ln();
+                linalg::multiply(&ho.inverse_lower, &x, &mut z0, q_hl, q_hl, 1, false);
+                let log_ho = ho.log_inverse_sqrt_det
+                    - 0.5 * q_f * z0.iter().map(|v| v * v).sum::<f64>().ln();
                 let avg: f64 = ha_f
                     .iter()
-                    .zip(masses)
+                    .zip(&masses)
                     .map(|(ha, weight)| {
                         let mut z1 = vec![0.0_f64; q_hl];
-                        linalg::multiply(&ha.ch_omi.upper, &x, &mut z1, q_hl, q_hl, 1, false);
-                        let lha = ha.ch_omi.log_sqrt_det
+                        linalg::multiply(&ha.inverse_lower, &x, &mut z1, q_hl, q_hl, 1, false);
+                        let lha = ha.log_inverse_sqrt_det
                             - 0.5 * q_f * z1.iter().map(|v| v * v).sum::<f64>().ln();
                         weight * (lha - log_ho).exp()
                     })
@@ -1138,12 +1164,42 @@ fn half_life_search_refines_disconnected_components() {
     assert!((found[1][1] - 1.5).abs() < 1e-6);
     assert!((found[2][0] - 9.0).abs() < 2e-5);
     assert_eq!(found[2][1], f64::INFINITY);
-    let (rates, weights) = half_life_mixture();
+    let (half_lives, weights) = half_life_mixture(1e-8);
     assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-15);
-    let mean = rates
+    let mean = half_lives
         .iter()
         .zip(weights)
-        .map(|(&r, w)| std::f64::consts::LN_2 / r * w)
+        .map(|(&h, w)| h * w)
         .sum::<f64>();
     assert!((mean - 0.5).abs() < 1e-15);
+}
+
+#[test]
+fn half_life_mixture_resolves_the_close_pair_contrast() {
+    let sites = [0.0, 1e-8, 0.3, 0.6, 1.0];
+    let geom = SpurGeometry::from_coords(&sites, 5, 1, Metric::Euclidean).unwrap();
+    // The four Helmert contrasts form an orthonormal basis of the centered space.
+    let mut basis = [0.0; 5 * 4];
+    for j in 0..4 {
+        let span = (j + 1) as f64;
+        let scale = (span * (span + 1.0)).sqrt().recip();
+        for i in 0..=j {
+            basis[i * 4 + j] = scale;
+        }
+        basis[(j + 1) * 4 + j] = -span * scale;
+    }
+    let observed = [2.0_f64.sqrt(), 0.0, 0.0, 0.0];
+    let (half_lives, weights) = half_life_mixture(geom.min_positive_distance());
+    let points: Vec<_> = half_lives.iter().map(|h| h / (1.0 + h)).collect();
+    let mixture: f64 = half_life_covariances(&geom, &basis, 4, &points)
+        .iter()
+        .zip(weights)
+        .map(|(omega, weight)| {
+            let factor = factor_omega(omega, 4).unwrap();
+            let form = quadratic_form_from_lower(&factor.inverse_lower, &observed, 1, 0);
+            weight * factor.log_inverse_sqrt_det.exp() / form.powi(2)
+        })
+        .sum();
+    // Independent adaptive integration of the angular Gaussian density in h.
+    assert!((mixture / 3.632914971239679e-9 - 1.0).abs() < 1e-5);
 }

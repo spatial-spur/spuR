@@ -135,31 +135,13 @@ fn cluster_transform(req: &SpurTransformRequest<'_>) -> Result<Vec<f64>, CoreErr
     }
     let mut group_map = HashMap::new();
     let mut group_idx = Vec::with_capacity(req.n);
-    let mut counts = Vec::new();
     for &raw_id in cid {
         let next_idx = group_map.len();
         let idx = *group_map.entry(raw_id).or_insert(next_idx);
-        if idx == counts.len() {
-            counts.push(1usize);
-        } else {
-            counts[idx] += 1;
-        }
         group_idx.push(idx);
     }
-    let width = req.n_y;
-    let mut sums = vec![0.0_f64; counts.len() * width];
-    for (row, &g) in req.y.chunks_exact(width).zip(&group_idx) {
-        for (sum, value) in sums[g * width..(g + 1) * width].iter_mut().zip(row) {
-            *sum += value;
-        }
-    }
     let mut out = req.y.to_vec();
-    for (row, &g) in out.chunks_exact_mut(width).zip(&group_idx) {
-        let inv_count = (counts[g] as f64).recip();
-        for (value, &sum) in row.iter_mut().zip(&sums[g * width..(g + 1) * width]) {
-            *value -= sum * inv_count;
-        }
-    }
+    crate::preparation::within(&mut out, req.n_y, &group_idx, false)?;
     Ok(out)
 }
 

@@ -55,11 +55,12 @@ A list of class \code{"spur_halflife"} with \code{ci_l}, \code{ci_u}, \code{max_
 Inverts the continuous half-life tests of Mueller and Watson (2024).
 }
 \details{
-The calculation evaluates zero and infinite half-life explicitly and refines
-detected changes in acceptance. Inspect \code{components} for detected
+The calculation evaluates zero and infinite half-life explicitly and adds
+short-half-life probes based on the smallest positive inter-site distance.
+It refines detected changes in acceptance. Inspect \code{components} for detected
 confidence-set components and \code{ci_l}, \code{ci_u} for their hull. The
 initial probes and p-values are in \code{full$hl_grid_ho} and
-\code{full$pv_mat}. Narrow components between probes can escape detection.
+\code{full$pv_mat}. Narrow components or gaps between probes can escape detection.
 }
 \examples{
 \donttest{

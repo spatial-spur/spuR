@@ -146,7 +146,12 @@ fn spacing(magnitude: f64) -> f64 {
 
 /// Remove a one-way fixed effect in group-scaled coordinates so translations do
 /// not hide representable within variation and sums cannot overflow.
-fn within(a: &mut [f64], cols: usize, ids: &[usize], screen: bool) -> Result<(), CoreError> {
+pub(crate) fn within(
+    a: &mut [f64],
+    cols: usize,
+    ids: &[usize],
+    screen: bool,
+) -> Result<(), CoreError> {
     let groups = ids.iter().copied().max().unwrap_or(0) + 1;
     let mut first = vec![usize::MAX; groups];
     let mut count = vec![0usize; groups];

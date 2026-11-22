@@ -172,8 +172,7 @@
     stop("Residual test formula must include at least one term (e.g., an intercept or regressor).")
   }
 
-  q_x <- if (attr(terms_obj, "intercept") == 0L) .spur_residual_basis(x_in)
-  list(Y = as.matrix(y), X_in = x_in, q_x = q_x, use_rows = use_rows)
+  list(Y = as.matrix(y), X_in = x_in, use_rows = use_rows)
 }
 
 #' @keywords internal
@@ -489,7 +488,7 @@ spurtest_i0resid <- function(formula,
 
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   res <- .run_spur_test(parsed$Y, distmat, emat, is_i0 = TRUE,
-                        X_in = parsed$X_in, q_x = parsed$q_x)
+                        X_in = parsed$X_in)
   .format_spur_test_from_full(
     res,
     test_type = "I(0) Residual",
@@ -593,7 +592,7 @@ spurtest_i1resid <- function(formula,
 
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
   res <- .run_spur_test(parsed$Y, distmat, emat, is_i0 = FALSE,
-                        X_in = parsed$X_in, q_x = parsed$q_x)
+                        X_in = parsed$X_in)
   .format_spur_test_from_full(
     res,
     test_type = "I(1) Residual",
@@ -625,10 +624,11 @@ spurtest_i1resid <- function(formula,
 #' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_halflife"` with `ci_l`, `ci_u`, `max_dist`,
 #'   `components`, and `full`.
-#' @details The calculation evaluates both limit laws and refines detected
-#'   changes in acceptance. Inspect `components` for detected components,
-#'   and `ci_l` and `ci_u` for their hull. A component between search probes
-#'   can escape detection. Initial probes and p-values are in
+#' @details The calculation evaluates both limits and adds short-half-life
+#'   probes based on the smallest positive inter-site distance. It refines
+#'   detected changes in acceptance. Inspect `components` for detected components
+#'   and `ci_l` and `ci_u` for their hull. Narrow components or gaps can escape
+#'   detection. Initial probes and p-values are in
 #'   `full$hl_grid_ho` and `full$pv_mat`.
 #' @examples
 #' \donttest{
@@ -747,7 +747,7 @@ spurhalflife <- function(formula,
   }
 
   if (isTRUE(verbose)) {
-    cat(sprintf("Spatial half-life %s%% confidence set (%s)\n", level, units))
+    cat(sprintf("Approximate spatial half-life %s%% confidence set (%s)\n", level, units))
     cat("---------------------------------------\n")
     .print_halflife_components(components)
     cat("---------------------------------------\n")
@@ -903,6 +903,8 @@ spurtransform <- function(formula,
     transformed <- if (use_rust_path &&
         (transformation == "cluster" || nrow(y_mat) >= 2L || identical(backend_resolved, "rust"))) {
       .transform_vars_rust(y_mat, coord_info, transformation, radius, cluster, nthreads_resolved)
+    } else if (transformation == "cluster") {
+      .demean_spur_clusters(y_mat, cluster)
     } else if (transformation == "lbmgls") {
       distances <- .normalized_distmat(coord_info$coords, coord_info$latlong)
       .apply_lbm_transform(y_mat, eigen(get_sigma_lbm_dm(distances), symmetric = TRUE))
@@ -916,4 +918,19 @@ spurtransform <- function(formula,
   }
 
   result
+}
+
+.demean_spur_clusters <- function(values, groups) {
+  for (rows in split(seq_len(nrow(values)), groups, drop = TRUE)) {
+    block <- values[rows, , drop = FALSE]
+    lo <- apply(block, 2L, min)
+    hi <- apply(block, 2L, max)
+    anchor <- 0.5 * lo + 0.5 * hi
+    scale <- pmax(hi - anchor, anchor - lo)
+    scale[scale == 0] <- 1
+    scaled <- sweep(sweep(block, 2L, anchor, "-"), 2L, scale, "/")
+    values[rows, ] <- sweep(sweep(scaled, 2L, colMeans(scaled), "-"), 2L, scale, "*")
+  }
+  if (any(!is.finite(values))) stop("Cluster demeaning produced a non-finite entry.")
+  values
 }

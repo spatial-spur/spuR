@@ -9,9 +9,7 @@ use rayon::prelude::*;
 mod halflife;
 mod transform;
 
-pub use halflife::{
-    run_spur_halflife, SpurHalfLifeOutput, SpurHalfLifeRequest, HALF_LIFE_MAX_COMPONENTS,
-};
+pub use halflife::{run_spur_halflife, SpurHalfLifeOutput, SpurHalfLifeRequest};
 use transform::apply_lbmgls;
 pub use transform::{run_spur_transform, SpurTransformKind, SpurTransformRequest};
 
@@ -65,6 +63,14 @@ impl SpurGeometry {
             cbar_cache: Vec::new(),
             mean_exp_cache: Vec::new(),
         })
+    }
+
+    fn min_positive_distance(&self) -> f64 {
+        self.lower_tri
+            .iter()
+            .copied()
+            .filter(|&d| d > 0.0)
+            .fold(f64::INFINITY, f64::min)
     }
 
     fn validate_rhobar(&self, rhobar: f64) -> Result<(), CoreError> {
@@ -168,7 +174,7 @@ impl SpurGeometry {
         mat
     }
 
-    fn exp_kernel(&self, c: f64) -> Vec<f64> {
+    fn kernel_for_projection(&self, c: f64) -> Vec<f64> {
         if c == f64::INFINITY {
             return self
                 .norm_distmat
@@ -178,11 +184,17 @@ impl SpurGeometry {
         }
         let n = self.n;
         let mut l_exp = vec![0.0_f64; self.lower_tri.len()];
-        linalg::exp_scaled(&self.lower_tri, -c, &mut l_exp);
+        if c < 0.01 {
+            for (value, distance) in l_exp.iter_mut().zip(&self.lower_tri) {
+                *value = (-c * distance).exp_m1();
+            }
+        } else {
+            linalg::exp_scaled(&self.lower_tri, -c, &mut l_exp);
+        }
         let mut kern = vec![0.0_f64; n * n];
         let mut idx = 0usize;
         for i in 0..n {
-            kern[i * n + i] = 1.0;
+            kern[i * n + i] = if c < 0.01 { 0.0 } else { 1.0 };
             for j in 0..i {
                 let v = l_exp[idx];
                 idx += 1;
@@ -195,7 +207,7 @@ impl SpurGeometry {
 
     fn projected_omega_from_mr(&self, c: f64, mr: &[f64], q: usize) -> Vec<f64> {
         let n = self.n;
-        let sig = self.exp_kernel(c);
+        let sig = self.kernel_for_projection(c);
         let mut sig_mr = vec![0.0_f64; n * q];
         linalg::multiply(&sig, mr, &mut sig_mr, n, n, q, false);
         let mut om = vec![0.0_f64; q * q];
@@ -674,18 +686,8 @@ fn orthonormal_design_basis(x_in: &[f64], n: usize, k_x: usize) -> Result<Vec<f6
     Ok(q_mat)
 }
 
-struct CholFactor {
-    /// Upper triangular factor `U` with `U' * U = A` (`q x q`, row-major).
-    upper: Vec<f64>,
-    /// Lower triangular factor `L = U'` with `L * L' = A` (`q x q`, row-major).
-    lower: Vec<f64>,
-    /// `0.5 * ln(det(A)) = sum_i ln(U[i, i])`.
-    log_sqrt_det: f64,
-}
-
-fn cholesky_factor(a: &[f64], q: usize) -> Result<CholFactor, CoreError> {
+fn cholesky_lower(a: &[f64], q: usize) -> Result<Vec<f64>, CoreError> {
     let mut lower = vec![0.0_f64; q * q];
-    let mut log_sqrt_det = 0.0_f64;
     for i in 0..q {
         for j in 0..=i {
             let mut sum = a[i * q + j];
@@ -698,60 +700,45 @@ fn cholesky_factor(a: &[f64], q: usize) -> Result<CholFactor, CoreError> {
                         "SPUR covariance matrix is not positive definite",
                     ));
                 }
-                let diag = sum.sqrt();
-                lower[i * q + j] = diag;
-                log_sqrt_det += diag.ln();
+                lower[i * q + j] = sum.sqrt();
             } else {
                 lower[i * q + j] = sum / lower[j * q + j];
             }
         }
     }
-    let mut upper = vec![0.0_f64; q * q];
-    for i in 0..q {
-        for j in 0..=i {
-            upper[j * q + i] = lower[i * q + j];
-        }
-    }
-    Ok(CholFactor {
-        upper,
-        lower,
-        log_sqrt_det,
-    })
+    Ok(lower)
 }
 
-fn invert_spd_from_lower(lower: &[f64], q: usize) -> Vec<f64> {
-    // Invert lower triangular `L`, then `A^{-1} = L^{-T} L^{-1}`.
-    let mut linv = vec![0.0_f64; q * q];
+struct CovarianceFactor {
+    lower: Vec<f64>,
+    inverse_lower: Vec<f64>,
+    log_inverse_sqrt_det: f64,
+}
+
+fn factor_omega(om: &[f64], q: usize) -> Result<CovarianceFactor, CoreError> {
+    let lower = cholesky_lower(om, q)?;
+    // Solve against the identity once and reuse L^-1 for all quadratic forms.
+    let mut inverse_lower = vec![0.0; q * q];
     for j in 0..q {
-        linv[j * q + j] = lower[j * q + j].recip();
+        inverse_lower[j * q + j] = lower[j * q + j].recip();
         for i in (j + 1)..q {
-            let mut sum = 0.0_f64;
+            let mut sum = 0.0;
             for k in j..i {
-                sum -= lower[i * q + k] * linv[k * q + j];
+                sum -= lower[i * q + k] * inverse_lower[k * q + j];
             }
-            linv[i * q + j] = sum / lower[i * q + i];
+            inverse_lower[i * q + j] = sum / lower[i * q + i];
         }
     }
-    let mut inv = vec![0.0_f64; q * q];
-    linalg::multiply(&linv, &linv, &mut inv, q, q, q, true);
-    symmetrize(&mut inv, q);
-    inv
-}
-
-struct OmegaPairFactor {
-    ch_om: CholFactor,
-    om_inv: Vec<f64>,
-    ch_omi: CholFactor,
-}
-
-fn factor_omega(om: &[f64], q: usize) -> Result<OmegaPairFactor, CoreError> {
-    let ch_om = cholesky_factor(om, q)?;
-    let om_inv = invert_spd_from_lower(&ch_om.lower, q);
-    let ch_omi = cholesky_factor(&om_inv, q)?;
-    Ok(OmegaPairFactor {
-        ch_om,
-        om_inv,
-        ch_omi,
+    if inverse_lower.iter().any(|v| !v.is_finite()) {
+        return Err(CoreError::degenerate(
+            "SPUR covariance triangular solve exceeded the numeric range",
+        ));
+    }
+    let log_inverse_sqrt_det = -(0..q).map(|i| lower[i * (q + 1)].ln()).sum::<f64>();
+    Ok(CovarianceFactor {
+        lower,
+        inverse_lower,
+        log_inverse_sqrt_det,
     })
 }
 
@@ -815,8 +802,8 @@ struct PowQfBase<'a> {
     nrep: usize,
     emat: &'a [f64],
     qe: Vec<f64>,
-    ch_om0_lower: Vec<f64>,
-    ch_om0i_upper: Vec<f64>,
+    null_lower: Vec<f64>,
+    null_inverse_lower: Vec<f64>,
 }
 
 impl<'a> PowQfBase<'a> {
@@ -834,8 +821,8 @@ impl<'a> PowQfBase<'a> {
             nrep,
             emat,
             qe,
-            ch_om0_lower: base.ch_om.lower,
-            ch_om0i_upper: base.ch_omi.upper,
+            null_lower: base.lower,
+            null_inverse_lower: base.inverse_lower,
         })
     }
 
@@ -846,8 +833,8 @@ impl<'a> PowQfBase<'a> {
         let mut ho = vec![0.0_f64; q * q];
         let mut ha = vec![0.0_f64; q * q];
         linalg::multiply(
-            &alt.ch_omi.upper,
-            &self.ch_om0_lower,
+            &alt.inverse_lower,
+            &self.null_lower,
             &mut ho,
             q,
             q,
@@ -855,8 +842,8 @@ impl<'a> PowQfBase<'a> {
             false,
         );
         linalg::multiply(
-            &self.ch_om0i_upper,
-            &alt.ch_om.lower,
+            &self.null_inverse_lower,
+            &alt.lower,
             &mut ha,
             q,
             q,
@@ -908,7 +895,10 @@ impl<'a> PowQfBase<'a> {
 }
 
 fn select_leading_basis(sigdm: &[f64], n: usize, q: usize) -> Result<(Vec<f64>, bool), CoreError> {
-    let eigen = basis::symmetric_eigenpairs(sigdm, n, q)?;
+    // The kernel has entries on the scale of a unit sample diameter before
+    // projection. Allow for construction roundoff even when its spectrum shrinks.
+    let gap_floor = 8.0 * f64::EPSILON * n as f64;
+    let eigen = basis::symmetric_eigenpairs_with_gap_floor(sigdm, n, q, gap_floor)?;
     let lead = eigen.values.first().copied().unwrap_or(0.0);
     let tail = eigen.values.get(q - 1).copied().unwrap_or(0.0);
     if !lead.is_finite() || lead <= 0.0 || !tail.is_finite() || tail <= 1e-12 * lead {
@@ -982,59 +972,59 @@ fn prepare_y_projections(
     if y.iter().any(|v| !v.is_finite()) {
         return Err(CoreError::invalid_input("response Y values must be finite"));
     }
-    let mut y_min = vec![f64::INFINITY; n_y];
-    let mut y_max = vec![f64::NEG_INFINITY; n_y];
-    for row in y.chunks_exact(n_y) {
-        for j in 0..n_y {
-            let v = row[j];
-            y_min[j] = y_min[j].min(v);
-            y_max[j] = y_max[j].max(v);
-        }
-    }
+    let mut y_dm = vec![0.0; y.len()];
+    let mut col = vec![0.0; n];
     for j in 0..n_y {
-        if y_max[j] - y_min[j] == 0.0 {
-            return Err(CoreError::degenerate(
-                "response Y has zero variation; SPUR inference requires non-constant Y",
-            ));
+        offset_response_column(y, n_y, j, &mut col)?;
+        let scale = col.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        for (row, value) in y_dm.chunks_exact_mut(n_y).zip(&col) {
+            row[j] = value / scale;
         }
     }
-    let mut y_dm = y.to_vec();
     center_columns(&mut y_dm, n, n_y);
-    let mut y_dm_max = vec![0.0_f64; n_y];
-    for row in y_dm.chunks_exact(n_y) {
-        for j in 0..n_y {
-            y_dm_max[j] = y_dm_max[j].max(row[j].abs());
-        }
-    }
-    let mut y_dm_norm = vec![0.0_f64; n_y];
-    for j in 0..n_y {
-        let max_d = y_dm_max[j];
-        if !max_d.is_finite() || max_d == 0.0 {
-            return Err(CoreError::degenerate(
-                "response Y has zero variation; SPUR inference requires non-constant Y",
-            ));
-        }
-        for i in 0..n {
-            y_dm[i * n_y + j] /= max_d;
-        }
-        y_dm_norm[j] = (0..n)
-            .map(|i| y_dm[i * n_y + j].powi(2))
-            .sum::<f64>()
-            .sqrt();
-    }
+    let y_dm_norm: Vec<_> = (0..n_y)
+        .map(|j| {
+            y_dm.chunks_exact(n_y)
+                .map(|row| row[j].powi(2))
+                .sum::<f64>()
+                .sqrt()
+        })
+        .collect();
     project_scaled_y_cols(&y_dm, &y_dm_norm, n, n_y, basis_r, q)
 }
 
-#[allow(clippy::too_many_arguments)]
+fn offset_response_column(
+    y: &[f64],
+    n_y: usize,
+    j: usize,
+    col: &mut [f64],
+) -> Result<f64, CoreError> {
+    let (min, max) = y
+        .chunks_exact(n_y)
+        .map(|row| row[j])
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
+            (min.min(value), max.max(value))
+        });
+    if min == max {
+        return Err(CoreError::degenerate(
+            "response Y has zero variation; SPUR inference requires non-constant Y",
+        ));
+    }
+    // The midpoint keeps the subtraction finite even at opposite extremes.
+    let anchor = min.midpoint(max);
+    for (value, row) in col.iter_mut().zip(y.chunks_exact(n_y)) {
+        *value = row[j] - anchor;
+    }
+    Ok(anchor)
+}
+
 fn prepare_residual_y_projections(
     y: &[f64],
     n: usize,
     n_y: usize,
     basis_r: &[f64],
-    qx: &[f64],
-    k_x: usize,
+    design: &ResidDesign,
     q: usize,
-    center_response: bool,
 ) -> Result<Vec<f64>, CoreError> {
     if n_y == 0 || y.len() != checked_len(&[n, n_y])? {
         return Err(CoreError::invalid_input("invalid response Y dimensions"));
@@ -1045,42 +1035,29 @@ fn prepare_residual_y_projections(
     let mut y_res = vec![0.0_f64; n * n_y];
     let mut y_res_norm = vec![0.0_f64; n_y];
     let mut col = vec![0.0_f64; n];
+    let max_constant_residual = design
+        .constant_residual
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0_f64, f64::max);
+    let k_x = design.qx.len() / n;
 
     for j in 0..n_y {
-        let mut col_min = f64::INFINITY;
-        let mut col_max_val = f64::NEG_INFINITY;
-        let mut raw_max = 0.0_f64;
-        for i in 0..n {
-            let v = y[i * n_y + j];
-            col_min = col_min.min(v);
-            col_max_val = col_max_val.max(v);
-            raw_max = raw_max.max(v.abs());
-        }
-        if col_max_val == col_min {
-            return Err(CoreError::degenerate(
-                "response Y has zero variation; SPUR inference requires non-constant Y",
-            ));
-        }
-        // A numerical constant-span check does not justify removing an offset
-        // from the response. Do that only for an actual constant design column.
-        let anchor = if center_response { y[j] } else { 0.0 };
-        for i in 0..n {
-            col[i] = y[i * n_y + j] - anchor;
-        }
-        let mut scale = col.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-        if !scale.is_finite() {
-            let scaled_anchor = anchor / raw_max;
-            for i in 0..n {
-                col[i] = y[i * n_y + j] / raw_max - scaled_anchor;
-            }
-            scale = col.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-        }
+        let anchor = offset_response_column(y, n_y, j, &mut col)?;
+        let scale = col
+            .iter()
+            .map(|v| v.abs())
+            .fold(anchor.abs() * max_constant_residual, f64::max);
         for v in &mut col {
             *v /= scale;
         }
+        // Subtract a * P_X 1 by forming (y - a * 1) + a * M_X 1.
+        for (value, constant) in col.iter_mut().zip(&design.constant_residual) {
+            *value += (anchor * constant) / scale;
+        }
         let col_norm = col.iter().map(|v| v * v).sum::<f64>().sqrt();
-        let u_once = residual_project_matrix(&col, qx, n, k_x, 1);
-        let u = residual_project_matrix(&u_once, qx, n, k_x, 1);
+        let u_once = residual_project_matrix(&col, &design.qx, n, k_x, 1);
+        let u = residual_project_matrix(&u_once, &design.qx, n, k_x, 1);
         let u_max = u.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
         if !u_max.is_finite() || u_max == 0.0 {
             return Err(CoreError::degenerate(
@@ -1088,7 +1065,12 @@ fn prepare_residual_y_projections(
             ));
         }
         let u_norm = u_max * u.iter().map(|v| (v / u_max).powi(2)).sum::<f64>().sqrt();
-        if !u_norm.is_finite() || u_norm <= 1e-12 * col_norm {
+        let allowance = if design.constant_residual.is_empty() {
+            0.0
+        } else {
+            (8.0 * f64::EPSILON * anchor.abs() / scale) * (n as f64).sqrt()
+        };
+        if !u_norm.is_finite() || u_norm <= 1e-12 * col_norm + allowance {
             return Err(CoreError::degenerate(
                 "residualized response Y has zero variation; SPUR inference requires variation orthogonal to X",
             ));
@@ -1189,16 +1171,18 @@ fn calibrate_ha_i0(
 }
 
 fn calibrate_ha_i1(
-    geom: &mut SpurGeometry,
+    geom: &SpurGeometry,
     om_ho: &[f64],
     mr: &[f64],
     emat: &[f64],
     q: usize,
     nrep: usize,
+    c_lo: f64,
+    c_hi: f64,
 ) -> Result<f64, CoreError> {
     let base = PowQfBase::new(om_ho, emat, q, nrep)?;
     let mut pow = 1.0_f64;
-    let mut ctry = geom.get_cbar(0.95)?;
+    let mut ctry = c_hi;
     let mut c = ctry;
     let mut it = 0usize;
     while pow > 0.5 {
@@ -1216,7 +1200,8 @@ fn calibrate_ha_i1(
     let mut c1 = c;
 
     pow = 0.0;
-    ctry = geom.get_cbar(0.01)?;
+    ctry = c_lo;
+    let min_distance = geom.min_positive_distance();
     let mut best = (c, -1.0_f64);
     it = 0;
     while pow < 0.5 {
@@ -1228,7 +1213,7 @@ fn calibrate_ha_i1(
             best = (c, pow);
         }
         it += 1;
-        if it >= MAX_HA_BRACKET_STEPS && pow < 0.5 {
+        if pow < 0.5 && (it >= MAX_HA_BRACKET_STEPS || (-c * min_distance).exp() == 0.0) {
             return Ok(best.0);
         }
     }
@@ -1254,16 +1239,16 @@ fn calibrate_ha_i1(
 
 fn eval_sim_lr_ratio(
     ch_om_ho_lower: &[f64],
-    ch_omi_ho_upper: &[f64],
-    ch_omi_ha_upper: &[f64],
+    ho_inverse_lower: &[f64],
+    ha_inverse_lower: &[f64],
     emat: &[f64],
     q: usize,
     nrep: usize,
 ) -> Vec<f64> {
     let mut a_ho = vec![0.0_f64; q * q];
     let mut a_ha = vec![0.0_f64; q * q];
-    linalg::multiply(ch_omi_ho_upper, ch_om_ho_lower, &mut a_ho, q, q, q, false);
-    linalg::multiply(ch_omi_ha_upper, ch_om_ho_lower, &mut a_ha, q, q, q, false);
+    linalg::multiply(ho_inverse_lower, ch_om_ho_lower, &mut a_ho, q, q, q, false);
+    linalg::multiply(ha_inverse_lower, ch_om_ho_lower, &mut a_ha, q, q, q, false);
 
     let mut lr_ho = vec![0.0_f64; nrep];
     let mut tile_e = if nrep > TILE_COLS {
@@ -1307,52 +1292,43 @@ fn eval_sim_lr_ratio(
 }
 
 fn eval_observed_lr(
-    om_ho_inv: &[f64],
-    om_ha_inv: &[f64],
-    ch_omi_ho_upper: &[f64],
-    ch_omi_ha_upper: &[f64],
+    ho_inverse_lower: &[f64],
+    ha_inverse_lower: &[f64],
     p_mat: &[f64],
     q: usize,
     n_y: usize,
-    use_chol_norm: bool,
 ) -> Result<Vec<f64>, CoreError> {
-    let mut lr = vec![0.0_f64; n_y];
-    if use_chol_norm {
-        let mut y_ho = vec![0.0_f64; q * n_y];
-        let mut y_ha = vec![0.0_f64; q * n_y];
-        linalg::multiply(ch_omi_ho_upper, p_mat, &mut y_ho, q, q, n_y, false);
-        linalg::multiply(ch_omi_ha_upper, p_mat, &mut y_ha, q, q, n_y, false);
-        for j in 0..n_y {
+    let mut y_ho = vec![0.0_f64; q * n_y];
+    let mut y_ha = vec![0.0_f64; q * n_y];
+    linalg::multiply(ho_inverse_lower, p_mat, &mut y_ho, q, q, n_y, false);
+    linalg::multiply(ha_inverse_lower, p_mat, &mut y_ha, q, q, n_y, false);
+    (0..n_y)
+        .map(|j| {
             let num: f64 = (0..q).map(|r| y_ho[r * n_y + j].powi(2)).sum();
             let den: f64 = (0..q).map(|r| y_ha[r * n_y + j].powi(2)).sum();
             if !num.is_finite() || !den.is_finite() || den <= 0.0 {
                 return Err(CoreError::degenerate("SPUR LR denominator is non-positive"));
             }
-            lr[j] = num / den;
-        }
-    } else {
-        let mut m_ho = vec![0.0_f64; q * n_y];
-        let mut m_ha = vec![0.0_f64; q * n_y];
-        linalg::multiply(om_ho_inv, p_mat, &mut m_ho, q, q, n_y, false);
-        linalg::multiply(om_ha_inv, p_mat, &mut m_ha, q, q, n_y, false);
-        for j in 0..n_y {
-            let num: f64 = (0..q).map(|r| p_mat[r * n_y + j] * m_ho[r * n_y + j]).sum();
-            let den: f64 = (0..q).map(|r| p_mat[r * n_y + j] * m_ha[r * n_y + j]).sum();
-            if !num.is_finite() || !den.is_finite() || den <= 0.0 {
-                return Err(CoreError::degenerate("SPUR LR denominator is non-positive"));
-            }
-            lr[j] = num / den;
-        }
-    }
-    Ok(lr)
-}
-
-fn build_rho_grid() -> Vec<f64> {
-    (0..RHO_GRID_LEN)
-        .map(|i| {
-            RHO_GRID_MIN + (RHO_GRID_MAX - RHO_GRID_MIN) * (i as f64) / ((RHO_GRID_LEN - 1) as f64)
+            Ok(num / den)
         })
         .collect()
+}
+
+fn build_rho_grid(floor: f64) -> Vec<f64> {
+    if floor == RHO_GRID_MAX {
+        return Vec::new();
+    }
+    let start = if floor < RHO_GRID_MIN {
+        RHO_GRID_MIN
+    } else {
+        floor + (RHO_GRID_MAX - floor) / RHO_GRID_LEN as f64
+    };
+    let mut grid: Vec<_> = (0..RHO_GRID_LEN - 1)
+        .map(|i| start + (RHO_GRID_MAX - start) * (i as f64) / ((RHO_GRID_LEN - 1) as f64))
+        .filter(|&rho| rho > floor)
+        .collect();
+    grid.push(RHO_GRID_MAX);
+    grid
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1368,7 +1344,17 @@ fn run_spur_i0_from_basis(
     nrep: usize,
 ) -> Result<SpurI0Output, CoreError> {
     let (emat, tuning) = emat.split_at(q * nrep);
-    let c_rho = geom.get_cbar(RHO_I0_ALT)?;
+    let floor = geom.correlation_floor;
+    if floor > RHO_GRID_MAX {
+        return Err(CoreError::calibration(
+            "I(0) null requires a co-located-pair fraction at or below 0.03",
+        ));
+    }
+    let c_rho = if RHO_I0_ALT > floor {
+        geom.get_cbar(RHO_I0_ALT)?
+    } else {
+        f64::INFINITY
+    };
     let om_rho = geom.projected_omega_from_mr(c_rho, mr, q);
     if !covariance_shapes_differ(&om_rho, om_bm, q)? {
         return Err(CoreError::degenerate(
@@ -1385,18 +1371,9 @@ fn run_spur_i0_from_basis(
 
     let ho_f = factor_omega(&om_rho, q)?;
     let ha_f = factor_omega(&om_ha, q)?;
-    let lr = eval_observed_lr(
-        &ho_f.om_inv,
-        &ha_f.om_inv,
-        &ho_f.ch_omi.upper,
-        &ha_f.ch_omi.upper,
-        p_mat,
-        q,
-        n_y,
-        true,
-    )?;
+    let lr = eval_observed_lr(&ho_f.inverse_lower, &ha_f.inverse_lower, p_mat, q, n_y)?;
 
-    let positive_grid = build_rho_grid();
+    let positive_grid = build_rho_grid(floor);
     let rates = geom.get_cbar_batch(&positive_grid)?;
     let mut rho_grid = vec![geom.correlation_floor];
     rho_grid.extend(positive_grid);
@@ -1404,11 +1381,11 @@ fn run_spur_i0_from_basis(
     om_grid.extend(geom.projected_omega_grid(&rates, mr, q));
 
     let eval_grid_point = |omega: &Vec<f64>| -> Result<(Vec<f64>, Vec<f64>), CoreError> {
-        let ch_om_lower = cholesky_factor(omega, q)?.lower;
+        let ch_om_lower = cholesky_lower(omega, q)?;
         let mut lr_ho = eval_sim_lr_ratio(
             &ch_om_lower,
-            &ho_f.ch_omi.upper,
-            &ha_f.ch_omi.upper,
+            &ho_f.inverse_lower,
+            &ha_f.inverse_lower,
             emat,
             q,
             nrep,
@@ -1474,43 +1451,36 @@ fn run_spur_i1_from_basis(
     nrep: usize,
 ) -> Result<SpurI1Output, CoreError> {
     let (emat, tuning) = emat.split_at(q * nrep);
-    let c_lo = geom.get_cbar(0.01)?;
-    let c_mid = geom.get_cbar(0.5)?;
-    let c_hi = geom.get_cbar(0.95)?;
+    let floor = geom.correlation_floor;
+    let targets = [0.01, 0.5, 0.95].map(|rho| floor + (1.0 - floor) * rho);
+    let rates = geom.get_cbar_batch(&targets)?;
+    let (c_lo, c_mid, c_hi) = (rates[0], rates[1], rates[2]);
     let om_lo = geom.projected_omega_from_mr(c_lo, mr, q);
     let om_mid = geom.projected_omega_from_mr(c_mid, mr, q);
     let om_hi = geom.projected_omega_from_mr(c_hi, mr, q);
-    if !covariance_shapes_differ(&om_lo, &om_mid, q)?
-        && !covariance_shapes_differ(&om_lo, &om_hi, q)?
+    if !covariance_shapes_differ(om_ho, &om_lo, q)?
+        && !covariance_shapes_differ(om_ho, &om_mid, q)?
+        && !covariance_shapes_differ(om_ho, &om_hi, q)?
     {
         return Err(CoreError::degenerate(
             "SPUR experiment is uninformative: covariance shapes are proportional",
         ));
     }
-    let ha_param = calibrate_ha_i1(geom, om_ho, mr, tuning, q, nrep)?;
+    let ha_param = calibrate_ha_i1(geom, om_ho, mr, tuning, q, nrep, c_lo, c_hi)?;
     let om_ha = geom.projected_omega_from_mr(ha_param, mr, q);
 
     let ho_f = factor_omega(om_ho, q)?;
     let ha_f = factor_omega(&om_ha, q)?;
     let mut lr_ho = eval_sim_lr_ratio(
-        &ho_f.ch_om.lower,
-        &ho_f.ch_omi.upper,
-        &ha_f.ch_omi.upper,
+        &ho_f.lower,
+        &ho_f.inverse_lower,
+        &ha_f.inverse_lower,
         emat,
         q,
         nrep,
     );
 
-    let lr = eval_observed_lr(
-        &ho_f.om_inv,
-        &ha_f.om_inv,
-        &ho_f.ch_omi.upper,
-        &ha_f.ch_omi.upper,
-        p_mat,
-        q,
-        n_y,
-        false,
-    )?;
+    let lr = eval_observed_lr(&ho_f.inverse_lower, &ha_f.inverse_lower, p_mat, q, n_y)?;
     let pvalue: Vec<f64> = lr
         .iter()
         .map(|&obs_lr| monte_carlo_pvalue(&lr_ho, obs_lr))
@@ -1547,7 +1517,12 @@ struct ResidBasis {
     tied: bool,
     mr: Vec<f64>,
     om_bm: Vec<f64>,
+    design: ResidDesign,
+}
+
+struct ResidDesign {
     qx: Vec<f64>,
+    constant_residual: Vec<f64>,
 }
 
 fn prepare_resid_design(
@@ -1555,7 +1530,7 @@ fn prepare_resid_design(
     n: usize,
     k_x: usize,
     q: usize,
-) -> Result<Vec<f64>, CoreError> {
+) -> Result<ResidDesign, CoreError> {
     let qx = orthonormal_design_basis(x_in, n, k_x)?;
     if q > n - k_x {
         return Err(CoreError::invalid_input(
@@ -1564,33 +1539,39 @@ fn prepare_resid_design(
     }
     let unit_constant = vec![(n as f64).sqrt().recip(); n];
     let unit_once = residual_project_matrix(&unit_constant, &qx, n, k_x, 1);
-    let unit_residual = residual_project_matrix(&unit_once, &qx, n, k_x, 1);
+    let mut constant_residual = residual_project_matrix(&unit_once, &qx, n, k_x, 1);
     // The squared norm bounds the fraction of the all-ones kernel left by projection.
-    if unit_residual.iter().map(|v| v * v).sum::<f64>() > f64::EPSILON {
+    let norm_sq = constant_residual.iter().map(|v| v * v).sum::<f64>();
+    if norm_sq > f64::EPSILON {
         return Err(CoreError::invalid_input(
             "SPUR residual tests require a design that spans a constant",
         ));
     }
-    Ok(qx)
-}
-
-fn has_constant_column(x: &[f64], k_x: usize) -> bool {
-    x[..k_x]
-        .iter()
-        .enumerate()
-        .any(|(j, &first)| x.chunks_exact(k_x).all(|row| row[j] == first))
+    // Treat projection roundoff as zero. Keep the correction for designs that
+    // only approximately span the constant.
+    if norm_sq <= (8.0 * f64::EPSILON).powi(2) {
+        constant_residual.clear();
+    } else {
+        for value in &mut constant_residual {
+            *value *= (n as f64).sqrt();
+        }
+    }
+    Ok(ResidDesign {
+        qx,
+        constant_residual,
+    })
 }
 
 fn prepare_resid_basis(
     geom: &SpurGeometry,
-    qx: Vec<f64>,
-    k_x: usize,
+    design: ResidDesign,
     q: usize,
 ) -> Result<ResidBasis, CoreError> {
     let n = geom.n;
-    let sigdm_bm = geom.residual_sigma_bm(&qx, k_x);
+    let k_x = design.qx.len() / n;
+    let sigdm_bm = geom.residual_sigma_bm(&design.qx, k_x);
     let (basis_r, tied) = select_leading_basis(&sigdm_bm, n, q)?;
-    let mr = residual_project_matrix(&basis_r, &qx, n, k_x, q);
+    let mr = residual_project_matrix(&basis_r, &design.qx, n, k_x, q);
     let mut sig_r = vec![0.0_f64; n * q];
     linalg::multiply(&sigdm_bm, &basis_r, &mut sig_r, n, n, q, false);
     let mut om_bm = vec![0.0_f64; q * q];
@@ -1601,7 +1582,7 @@ fn prepare_resid_basis(
         tied,
         mr,
         om_bm,
-        qx,
+        design,
     })
 }
 
@@ -1635,18 +1616,16 @@ pub fn run_spur_i0_resid(req: &SpurTestRequest<'_>) -> Result<SpurI0Output, Core
         .x_in
         .ok_or_else(|| CoreError::invalid_input("residual test requires X_in design matrix"))?;
     run_with_threads(req.nthreads, || {
-        let qx = prepare_resid_design(x_in, req.n, req.k_x, req.q)?;
+        let design = prepare_resid_design(x_in, req.n, req.k_x, req.q)?;
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
-        let resid = prepare_resid_basis(&geom, qx, req.k_x, req.q)?;
+        let resid = prepare_resid_basis(&geom, design, req.q)?;
         let p_mat = prepare_residual_y_projections(
             req.y,
             req.n,
             req.n_y,
             &resid.basis_r,
-            &resid.qx,
-            req.k_x,
+            &resid.design,
             req.q,
-            has_constant_column(x_in, req.k_x),
         )?;
         run_spur_i0_from_basis(
             &mut geom,
@@ -1668,18 +1647,16 @@ pub fn run_spur_i1_resid(req: &SpurTestRequest<'_>) -> Result<SpurI1Output, Core
         .x_in
         .ok_or_else(|| CoreError::invalid_input("residual test requires X_in design matrix"))?;
     run_with_threads(req.nthreads, || {
-        let qx = prepare_resid_design(x_in, req.n, req.k_x, req.q)?;
+        let design = prepare_resid_design(x_in, req.n, req.k_x, req.q)?;
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
-        let resid = prepare_resid_basis(&geom, qx, req.k_x, req.q)?;
+        let resid = prepare_resid_basis(&geom, design, req.q)?;
         let p_mat = prepare_residual_y_projections(
             req.y,
             req.n,
             req.n_y,
             &resid.basis_r,
-            &resid.qx,
-            req.k_x,
+            &resid.design,
             req.q,
-            has_constant_column(x_in, req.k_x),
         )?;
         run_spur_i1_from_basis(
             &mut geom,
@@ -1712,7 +1689,7 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
     }
 
     run_with_threads(req.nthreads, || {
-        let qx = prepare_resid_design(req.x_in, req.n, req.k_x, req.q)?;
+        let design = prepare_resid_design(req.x_in, req.n, req.k_x, req.q)?;
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
         let sigdm_lbm = geom.sigma_lbm_dm();
         let (basis_lbm, tied_lbm, mr_lbm, om_lbm) = prepare_lbm_basis(&sigdm_lbm, req.n, req.q)?;
@@ -1726,17 +1703,9 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
         let transformed_vars =
             apply_lbmgls(sigdm_lbm, req.n, req.transform_vars, req.n_transform_vars)?;
 
-        let resid = prepare_resid_basis(&geom, qx, req.k_x, req.q)?;
-        let p_res = prepare_residual_y_projections(
-            req.y,
-            req.n,
-            1,
-            &resid.basis_r,
-            &resid.qx,
-            req.k_x,
-            req.q,
-            has_constant_column(req.x_in, req.k_x),
-        )?;
+        let resid = prepare_resid_basis(&geom, design, req.q)?;
+        let p_res =
+            prepare_residual_y_projections(req.y, req.n, 1, &resid.basis_r, &resid.design, req.q)?;
         let i0resid = run_spur_i0_from_basis(
             &mut geom,
             resid.tied,

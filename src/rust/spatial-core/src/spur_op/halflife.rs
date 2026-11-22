@@ -2,7 +2,7 @@
 
 use super::{
     center_columns, covariance_shapes_differ, factor_omega, prepare_y_projections,
-    select_leading_basis, validate_emat, OmegaPairFactor, SpurGeometry, TILE_COLS,
+    select_leading_basis, validate_emat, CovarianceFactor, SpurGeometry, TILE_COLS,
 };
 use crate::distance::Metric;
 use crate::threads::{is_serial, run_with_threads};
@@ -10,10 +10,7 @@ use crate::{linalg, CoreError};
 use rayon::prelude::*;
 
 pub(super) const MAX_HALFLIFE_TILE_BYTES: usize = 4 * 1024 * 1024;
-pub(super) const HL_HA_LEN: usize = 50;
 const HALF_LIFE_SEARCH_STEPS: usize = 128;
-pub const HALF_LIFE_MAX_COMPONENTS: usize = HALF_LIFE_SEARCH_STEPS / 2 + 1;
-const HALF_LIFE_BOUND_TOL: f64 = 1e-7;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SpurHalfLifeRequest<'a> {
@@ -58,12 +55,17 @@ pub(super) fn half_power(x: f64, q: usize) -> f64 {
     acc
 }
 
-pub(super) fn halflife_tile_size(q: usize, p_pairs: usize, nrep: usize) -> (usize, bool) {
+pub(super) fn halflife_tile_size(
+    q: usize,
+    p_pairs: usize,
+    n_alternatives: usize,
+    nrep: usize,
+) -> (usize, bool) {
     // Bound both the shared packed coefficient bank and per-job draw scratch.
     let base_per_draw = 2 * q;
     let budget = MAX_HALFLIFE_TILE_BYTES / size_of::<f64>();
-    let packed_width = base_per_draw + p_pairs + HL_HA_LEN + 2;
-    let packed = p_pairs <= budget / HL_HA_LEN && packed_width <= budget;
+    let packed_width = base_per_draw + p_pairs + n_alternatives + 2;
+    let packed = p_pairs <= budget / n_alternatives && packed_width <= budget;
     let per_draw = if packed { packed_width } else { base_per_draw };
     ((budget / per_draw).clamp(1, TILE_COLS).min(nrep), packed)
 }
@@ -76,18 +78,20 @@ struct HalfLifeScratch {
     sum_ha_over_ho: Vec<f64>,
     col_sq: Vec<f64>,
     xc_obs: Vec<f64>,
+    log_ha: Vec<f64>,
 }
 
 impl HalfLifeScratch {
-    fn new(q: usize, max_tile: usize, packed_pairs: Option<usize>) -> Self {
+    fn new(q: usize, n_alternatives: usize, max_tile: usize, packed_pairs: Option<usize>) -> Self {
         Self {
             tile_e: vec![0.0; q * max_tile],
             e_tile: vec![0.0; q * max_tile],
             u_tile: vec![0.0; packed_pairs.unwrap_or(0) * max_tile],
-            q_tile: vec![0.0; packed_pairs.map_or(0, |_| HL_HA_LEN * max_tile)],
+            q_tile: vec![0.0; packed_pairs.map_or(0, |_| n_alternatives * max_tile)],
             sum_ha_over_ho: vec![0.0; packed_pairs.map_or(0, |_| max_tile)],
             col_sq: vec![0.0; packed_pairs.map_or(0, |_| max_tile)],
             xc_obs: vec![0.0; q],
+            log_ha: vec![0.0; n_alternatives],
         }
     }
 }
@@ -125,8 +129,9 @@ pub(super) fn add_halflife_likelihood_terms(
 }
 
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn halflife_log_draw_sum(
-    alternatives: &[OmegaPairFactor],
+    alternatives: &[CovarianceFactor],
     log_weights: &[f64],
     packed_forms: &[f64],
     draws: &[f64],
@@ -134,11 +139,11 @@ fn halflife_log_draw_sum(
     c: usize,
     q: f64,
     log_null_density: f64,
+    log_ha: &mut [f64],
 ) -> Result<f64, CoreError> {
-    let mut log_ha = [0.0; HL_HA_LEN];
     for (j, ha) in alternatives.iter().enumerate() {
         let form = if packed_forms.is_empty() {
-            let value = quadratic_form_from_upper(&ha.ch_omi.upper, draws, cols, c);
+            let value = quadratic_form_from_lower(&ha.inverse_lower, draws, cols, c);
             if !value.is_finite() || value <= 0.0 {
                 return Err(CoreError::degenerate(
                     "half-life simulation draw has an invalid covariance quadratic form",
@@ -148,23 +153,23 @@ fn halflife_log_draw_sum(
         } else {
             packed_forms[j * cols + c]
         };
-        log_ha[j] = log_weights[j] + ha.ch_omi.log_sqrt_det - 0.5 * q * form.ln();
+        log_ha[j] = log_weights[j] + ha.log_inverse_sqrt_det - 0.5 * q * form.ln();
     }
-    Ok(log_sum_exp(&log_ha) - log_null_density)
+    Ok(log_sum_exp(log_ha) - log_null_density)
 }
 
-pub(super) fn quadratic_form_from_upper(
-    upper: &[f64],
+pub(super) fn quadratic_form_from_lower(
+    lower: &[f64],
     draws: &[f64],
     cols: usize,
     c: usize,
 ) -> f64 {
     let q = draws.len() / cols;
-    upper
+    lower
         .chunks_exact(q)
         .enumerate()
         .map(|(i, row)| {
-            (i..q)
+            (0..=i)
                 .map(|j| row[j] * draws[j * cols + c])
                 .sum::<f64>()
                 .powi(2)
@@ -184,9 +189,8 @@ pub(super) fn accepts_halflife_null(exceedances: usize, nrep: usize, level: f64)
     (nrep - exceedances) as f64 / ((nrep + 1) as f64) < level
 }
 
-/// Composite five-point Gauss--Legendre quadrature on ten segments of [0, 1].
-/// The segments get shorter near zero, where small inter-site distances matter.
-pub(super) fn half_life_mixture() -> ([f64; HL_HA_LEN], [f64; HL_HA_LEN]) {
+/// Composite five-point Gauss--Legendre quadrature for a uniform half-life on [0, 1].
+pub(super) fn half_life_mixture(min_distance: f64) -> (Vec<f64>, Vec<f64>) {
     let nodes = [
         -0.906179845938664,
         -0.5384693101056831,
@@ -201,21 +205,41 @@ pub(super) fn half_life_mixture() -> ([f64; HL_HA_LEN], [f64; HL_HA_LEN]) {
         0.4786286704993665,
         0.2369268850561891,
     ];
-    let mut rates = [0.0; HL_HA_LEN];
-    let mut masses = [0.0; HL_HA_LEN];
+    // Below min_distance/32 every positive-distance correlation is at most 2^-32.
+    // Use dyadic panels from that scale through one sample diameter.
+    let near_zero = (min_distance / 32.0).max(f64::MIN_POSITIVE);
+    let mut right = 1.0 / 512.0;
+    while right > near_zero {
+        right *= 0.5;
+    }
+    let mut half_lives = Vec::new();
+    let mut masses = Vec::new();
     let mut left = 0.0;
-    for segment in 0..10 {
-        let right = (2_u32.pow(segment) as f64) / 512.0;
+    while right <= 1.0 {
         let half_width = (right - left) / 2.0;
         for j in 0..5 {
-            let hl = left + half_width * (1.0 + nodes[j]);
-            let index = segment as usize * 5 + j;
-            rates[index] = std::f64::consts::LN_2 / hl;
-            masses[index] = half_width * weights[j];
+            half_lives.push(left + half_width * (1.0 + nodes[j]));
+            masses.push(half_width * weights[j]);
         }
         left = right;
+        right *= 2.0;
     }
-    (rates, masses)
+    (half_lives, masses)
+}
+
+pub(super) fn half_life_search_grid(min_distance: f64) -> Vec<f64> {
+    let mut grid = Vec::new();
+    let near_zero = (min_distance / 32.0).max(f64::MIN_POSITIVE);
+    let mut h = 1.0 / (HALF_LIFE_SEARCH_STEPS - 1) as f64;
+    // Probe four times per doubling of h below the first regular probe.
+    while h > near_zero {
+        h *= 0.8408964152537145;
+        grid.push(h / (1.0 + h));
+    }
+    grid.push(0.0);
+    grid.reverse();
+    grid.extend((1..=HALF_LIFE_SEARCH_STEPS).map(|i| i as f64 / HALF_LIFE_SEARCH_STEPS as f64));
+    grid
 }
 
 fn from_compact_half_life(t: f64) -> f64 {
@@ -238,9 +262,10 @@ pub(super) fn half_life_covariances(
         .filter(|rate| rate.is_finite() && *rate >= 0.01)
         .collect();
     let mut regular = geom.projected_omega_grid(&regular, mr, q).into_iter();
-    rates
-        .into_iter()
-        .map(|rate| {
+    points
+        .iter()
+        .zip(rates)
+        .map(|(&t, rate)| {
             if rate.is_finite() && rate >= 0.01 {
                 return regular.next().expect("regular half-life covariance");
             }
@@ -248,12 +273,14 @@ pub(super) fn half_life_covariances(
                 .norm_distmat
                 .iter()
                 .map(|&d| {
-                    if rate.is_infinite() {
+                    if t == 0.0 {
                         if d == 0.0 {
                             1.0
                         } else {
                             0.0
                         }
+                    } else if rate.is_infinite() {
+                        (-std::f64::consts::LN_2 * (d / from_compact_half_life(t))).exp()
                     } else if rate == 0.0 {
                         -0.5 * d
                     } else {
@@ -280,19 +307,25 @@ pub(super) fn invert_half_life(
         .windows(2)
         .zip(accepted.windows(2))
         .filter(|(_, flags)| flags[0] != flags[1])
-        .map(|(points, flags)| (points[0], points[1], flags[0]))
+        .map(|(points, flags)| {
+            let width = points[1] - points[0];
+            (points[0], points[1], flags[0], (1e-5 * width).min(1e-7))
+        })
         .collect();
-    while brackets
-        .first()
-        .is_some_and(|&(lo, hi, _)| hi - lo > HALF_LIFE_BOUND_TOL)
-    {
+    loop {
         let midpoints: Vec<_> = brackets
             .iter()
-            .map(|&(lo, hi, _)| (lo + hi) / 2.0)
+            .filter(|&&(lo, hi, _, tolerance)| hi - lo > tolerance)
+            .map(|&(lo, hi, _, _)| (lo + hi) / 2.0)
             .collect();
+        if midpoints.is_empty() {
+            break;
+        }
         let status = evaluate(&midpoints)?;
-        for ((lo, hi, left_accepted), (mid, mid_accepted)) in
-            brackets.iter_mut().zip(midpoints.into_iter().zip(status))
+        for ((lo, hi, left_accepted, _), (mid, mid_accepted)) in brackets
+            .iter_mut()
+            .filter(|(lo, hi, _, tolerance)| *hi - *lo > *tolerance)
+            .zip(midpoints.into_iter().zip(status))
         {
             if mid_accepted == *left_accepted {
                 *lo = mid;
@@ -304,7 +337,7 @@ pub(super) fn invert_half_life(
     let mut components = Vec::new();
     let mut start = 0.0;
     // Use the outside bracket endpoints so boundary rounding includes the accepted side.
-    for (lo, hi, left_accepted) in brackets {
+    for (lo, hi, left_accepted, _) in brackets {
         if left_accepted {
             components.push([from_compact_half_life(start), from_compact_half_life(hi)]);
         } else {
@@ -353,12 +386,12 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
         center_columns(&mut mr, n, q);
         let p_vec = prepare_y_projections(req.y, n, 1, &basis_r, q)?;
 
-        let grid: Vec<_> = (0..=HALF_LIFE_SEARCH_STEPS)
-            .map(|i| i as f64 / HALF_LIFE_SEARCH_STEPS as f64)
-            .collect();
-        let (rates, weights) = half_life_mixture();
-        let log_weights = weights.map(f64::ln);
-        let om_ha = geom.projected_omega_grid(&rates, &mr, q);
+        let min_distance = geom.min_positive_distance();
+        let grid = half_life_search_grid(min_distance);
+        let (half_lives, weights) = half_life_mixture(min_distance);
+        let log_weights: Vec<_> = weights.iter().map(|w| w.ln()).collect();
+        let mixture_points: Vec<_> = half_lives.iter().map(|&h| h / (1.0 + h)).collect();
+        let om_ha = half_life_covariances(&geom, &mr, q, &mixture_points);
         let om_ho = half_life_covariances(&geom, &mr, q, &grid);
         let mut informative = false;
         for candidate in om_ho[1..].iter().chain(&om_ha) {
@@ -380,17 +413,17 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
         let q_f = q as f64;
         let ha_x_log: Vec<f64> = ha_factors
             .iter()
-            .zip(log_weights)
+            .zip(&log_weights)
             .map(|(ha, log_weight)| {
                 let mut xc = vec![0.0_f64; q];
-                linalg::multiply(&ha.ch_omi.upper, &p_vec, &mut xc, q, q, 1, false);
+                linalg::multiply(&ha.inverse_lower, &p_vec, &mut xc, q, q, 1, false);
                 let qnorm: f64 = xc.iter().map(|&v| v * v).sum();
                 if !qnorm.is_finite() || qnorm <= 0.0 {
                     return Err(CoreError::degenerate(
                         "projected SPUR vector has zero quadratic form",
                     ));
                 }
-                Ok(log_weight + ha.ch_omi.log_sqrt_det - 0.5 * q_f * qnorm.ln())
+                Ok(log_weight + ha.log_inverse_sqrt_det - 0.5 * q_f * qnorm.ln())
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -409,27 +442,39 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
         let emat_inv: Vec<f64> = emat_sq.iter().map(|value| value.recip()).collect();
 
         let p_pairs = q * (q + 1) / 2;
-        let (max_tile, packed) = halflife_tile_size(q, p_pairs, nrep);
+        let n_alternatives = weights.len();
+        let (max_tile, packed) = halflife_tile_size(q, p_pairs, n_alternatives, nrep);
         let mut w_ha = Vec::new();
         let mut cancellation_scale = Vec::new();
         if packed {
-            w_ha.resize(HL_HA_LEN * p_pairs, 0.0);
+            w_ha.resize(n_alternatives * p_pairs, 0.0);
+            let mut precision = vec![0.0; q * q];
             for (j, ha) in ha_factors.iter().enumerate() {
+                linalg::multiply(
+                    &ha.inverse_lower,
+                    &ha.inverse_lower,
+                    &mut precision,
+                    q,
+                    q,
+                    q,
+                    true,
+                );
                 let mut kp = 0usize;
                 for b in 0..q {
                     for a in 0..=b {
-                        let val = ha.om_inv[a * q + b];
+                        let val = precision[a * q + b];
                         w_ha[j * p_pairs + kp] = if a == b { val } else { 2.0 * val };
                         kp += 1;
                     }
                 }
-                cancellation_scale.push(halflife_cancellation_bound(&ha.om_inv, p_pairs));
+                cancellation_scale.push(halflife_cancellation_bound(&precision, p_pairs));
             }
         }
 
-        let make_scratch = || HalfLifeScratch::new(q, max_tile, packed.then_some(p_pairs));
+        let make_scratch =
+            || HalfLifeScratch::new(q, n_alternatives, max_tile, packed.then_some(p_pairs));
         let eval_null_hl = |scratch: &mut HalfLifeScratch,
-                            ho: &OmegaPairFactor|
+                            ho: &CovarianceFactor|
          -> Result<usize, CoreError> {
             let HalfLifeScratch {
                 tile_e,
@@ -439,21 +484,26 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                 sum_ha_over_ho,
                 col_sq,
                 xc_obs,
+                log_ha,
             } = scratch;
-            linalg::multiply(&ho.ch_omi.upper, &p_vec, xc_obs, q, q, 1, false);
+            linalg::multiply(&ho.inverse_lower, &p_vec, xc_obs, q, q, 1, false);
             let qnorm_obs: f64 = xc_obs.iter().map(|&v| v * v).sum();
             if !qnorm_obs.is_finite() || qnorm_obs <= 0.0 {
                 return Err(CoreError::degenerate(
                     "projected SPUR vector has zero quadratic form",
                 ));
             }
-            let log_ho_obs = ho.ch_omi.log_sqrt_det - 0.5 * q_f * qnorm_obs.ln();
+            let log_ho_obs = ho.log_inverse_sqrt_det - 0.5 * q_f * qnorm_obs.ln();
             let log_obs_sum = log_sum_exp(&ha_x_log) - log_ho_obs;
             let obs_sum = log_obs_sum.exp();
 
-            let det_ratios: [f64; HL_HA_LEN] = std::array::from_fn(|j| {
-                weights[j] * (ha_factors[j].ch_omi.log_sqrt_det - ho.ch_omi.log_sqrt_det).exp()
-            });
+            let det_ratios: Vec<_> = weights
+                .iter()
+                .zip(&ha_factors)
+                .map(|(&weight, ha)| {
+                    weight * (ha.log_inverse_sqrt_det - ho.log_inverse_sqrt_det).exp()
+                })
+                .collect();
             let use_fast_pow = packed
                 && q <= 60
                 && obs_sum.is_finite()
@@ -474,15 +524,7 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                 }
 
                 // e_tile = L_ho * tile_e has covariance om_ho and exact null quadratic form ||tile_e||^2.
-                linalg::multiply(
-                    &ho.ch_om.lower,
-                    &tile_e[..q * cols],
-                    e_tile,
-                    q,
-                    q,
-                    cols,
-                    false,
-                );
+                linalg::multiply(&ho.lower, &tile_e[..q * cols], e_tile, q, q, cols, false);
 
                 let emat_inv = &emat_inv[start..start + cols];
                 if packed {
@@ -504,8 +546,8 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                     linalg::multiply(
                         &w_ha,
                         &u_tile[..p_pairs * cols],
-                        &mut q_tile[..HL_HA_LEN * cols],
-                        HL_HA_LEN,
+                        &mut q_tile[..n_alternatives * cols],
+                        n_alternatives,
                         p_pairs,
                         cols,
                         false,
@@ -520,7 +562,7 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                             f64::INFINITY
                         }
                     });
-                    for (j, row) in q_tile[..HL_HA_LEN * cols]
+                    for (j, row) in q_tile[..n_alternatives * cols]
                         .chunks_exact_mut(cols)
                         .enumerate()
                     {
@@ -535,8 +577,8 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                             for (c, (form, &norm)) in row.iter_mut().zip(col_sq.iter()).enumerate()
                             {
                                 if !form.is_finite() || !(norm > 0.0 && *form > thresh * norm) {
-                                    *form = quadratic_form_from_upper(
-                                        &ha_factors[j].ch_omi.upper,
+                                    *form = quadratic_form_from_lower(
+                                        &ha_factors[j].inverse_lower,
                                         e_tile,
                                         cols,
                                         c,
@@ -578,7 +620,7 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                     }
                 }
 
-                let q_tile = &q_tile[..if packed { HL_HA_LEN * cols } else { 0 }];
+                let q_tile = &q_tile[..if packed { n_alternatives * cols } else { 0 }];
                 for (c, &norm) in emat_sq[start..start + cols].iter().enumerate() {
                     let exceeds = if use_fast_pow
                         && sum_ha_over_ho[c].is_finite()
@@ -587,7 +629,7 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                     {
                         sum_ha_over_ho[c] >= obs_sum
                     } else {
-                        let log_ho = ho.ch_omi.log_sqrt_det - 0.5 * q_f * norm.ln();
+                        let log_ho = ho.log_inverse_sqrt_det - 0.5 * q_f * norm.ln();
                         halflife_log_draw_sum(
                             &ha_factors,
                             &log_weights,
@@ -597,6 +639,7 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                             c,
                             q_f,
                             log_ho,
+                            log_ha,
                         )? >= log_obs_sum
                     };
                     if exceeds {

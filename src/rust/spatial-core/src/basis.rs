@@ -92,7 +92,7 @@ pub fn scpc_basis(
 
     let dimension = n - 1;
     let covariance = contrast_covariance(distances, n, scale);
-    let eigen = leading_eigenpairs(Cow::Owned(covariance), dimension, q)?;
+    let eigen = leading_eigenpairs(Cow::Owned(covariance), dimension, q, 1.6e-11)?;
 
     let root_n = (n as f64).sqrt();
     let mut result = vec![root_n.recip(); checked_len(&[n, q + 1])?];
@@ -122,22 +122,32 @@ pub(crate) fn symmetric_eigenpairs(
     n: usize,
     q: usize,
 ) -> Result<SymmetricEigen, CoreError> {
+    symmetric_eigenpairs_with_gap_floor(matrix, n, q, 1.6e-11)
+}
+
+pub(crate) fn symmetric_eigenpairs_with_gap_floor(
+    matrix: &[f64],
+    n: usize,
+    q: usize,
+    gap_floor: f64,
+) -> Result<SymmetricEigen, CoreError> {
     if n == 0 || q == 0 || q > n || matrix.len() != checked_len(&[n, n])? {
         return Err(CoreError::invalid_input(
             "symmetric eigenproblem dimensions do not match",
         ));
     }
-    leading_eigenpairs(Cow::Borrowed(matrix), n, q)
+    leading_eigenpairs(Cow::Borrowed(matrix), n, q, gap_floor)
 }
 
 fn leading_eigenpairs(
     mut covariance: Cow<'_, [f64]>,
     n: usize,
     q: usize,
+    gap_floor: f64,
 ) -> Result<SymmetricEigen, CoreError> {
     let steps = (2 * q + 16).max(64);
     if n >= 256 && steps < n / 2 {
-        if let Some(pairs) = partial_eigenvectors(&covariance, n, q, steps)? {
+        if let Some(pairs) = partial_eigenvectors(&covariance, n, q, steps, gap_floor)? {
             return Ok(SymmetricEigen {
                 values: pairs.values,
                 vectors: pairs.vectors,
@@ -147,9 +157,9 @@ fn leading_eigenpairs(
         }
     }
     let mut pairs = dense_eigenpairs(covariance.to_mut(), n, (q + 1).min(n))?;
-    let tied = has_tied_values(&pairs.values);
-    let cutoff_tied =
-        q < n && pairs.values[q - 1] - pairs.values[q] <= 8.0 * eigen_tolerance(pairs.values[0]);
+    let tied = has_tied_values(&pairs.values, gap_floor);
+    let cutoff_tied = q < n
+        && pairs.values[q - 1] - pairs.values[q] <= eigen_gap_tolerance(pairs.values[0], gap_floor);
     pairs.values.truncate(q);
     pairs.vectors.truncate(q * n);
     Ok(SymmetricEigen {
@@ -216,12 +226,12 @@ pub(crate) struct Eigenpairs {
     pub(crate) vectors: Vec<f64>,
 }
 
-fn eigen_tolerance(leading: f64) -> f64 {
-    2e-12 * leading.abs().max(1.0)
+fn eigen_gap_tolerance(leading: f64, gap_floor: f64) -> f64 {
+    (1.6e-11 * leading.abs()).max(gap_floor)
 }
 
-fn has_tied_values(values: &[f64]) -> bool {
-    let tolerance = 8.0 * eigen_tolerance(values[0]);
+fn has_tied_values(values: &[f64], gap_floor: f64) -> bool {
+    let tolerance = eigen_gap_tolerance(values[0], gap_floor);
     values.windows(2).any(|pair| pair[0] - pair[1] <= tolerance)
 }
 
@@ -547,6 +557,7 @@ fn partial_eigenvectors(
     n: usize,
     q: usize,
     steps: usize,
+    gap_floor: f64,
 ) -> Result<Option<Eigenpairs>, CoreError> {
     const STARTS: usize = 2;
     let capacity = steps + STARTS;
@@ -630,7 +641,7 @@ fn partial_eigenvectors(
             retained,
             true,
         );
-        let tolerance = eigen_tolerance(ritz.values[0]);
+        let tolerance = eigen_gap_tolerance(ritz.values[0], gap_floor) / 8.0;
         let residuals_small = ritz.vectors.chunks_exact(steps).take(q + 1).all(|vector| {
             coupling
                 .chunks_exact(steps)
@@ -658,9 +669,11 @@ fn partial_eigenvectors(
                     <= tolerance
             });
             return Ok(
-                (certified && !has_tied_values(&ritz.values[..=q])).then(|| Eigenpairs {
-                    values: ritz.values[..q].to_vec(),
-                    vectors: (0..q).flat_map(transpose).collect(),
+                (certified && !has_tied_values(&ritz.values[..=q], gap_floor)).then(|| {
+                    Eigenpairs {
+                        values: ritz.values[..q].to_vec(),
+                        vectors: (0..q).flat_map(transpose).collect(),
+                    }
                 }),
             );
         }
@@ -700,7 +713,7 @@ mod tests {
         for (i, &v) in [10.0, 9.0, 8.0].iter().enumerate() {
             matrix[i * n + i] = v;
         }
-        assert!(partial_eigenvectors(&matrix, n, q, steps)
+        assert!(partial_eigenvectors(&matrix, n, q, steps, 1.6e-11)
             .unwrap()
             .is_some());
         assert!(!symmetric_eigenpairs(&matrix, n, q).unwrap().tied);
@@ -711,7 +724,7 @@ mod tests {
             for (i, &v) in leading.iter().enumerate() {
                 matrix[i * n + i] = v;
             }
-            assert!(partial_eigenvectors(&matrix, n, q, steps)
+            assert!(partial_eigenvectors(&matrix, n, q, steps, 1.6e-11)
                 .unwrap()
                 .is_none());
             assert!(symmetric_eigenpairs(&matrix, n, q).unwrap().tied);
