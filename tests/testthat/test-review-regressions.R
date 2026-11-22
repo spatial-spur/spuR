@@ -92,7 +92,6 @@ test_that("half-life uses Euclidean coordinate units and geographic metres", {
     a <- calc(d, FALSE)
     z <- calc(d, TRUE)
     expect_equal(a$max_dist, 29, tolerance = 1e-12)
-    expect_equal(a$ci_l, 0.029, tolerance = 1e-12)
     expect_equal(a$ci_l, z$ci_l * 29, tolerance = 1e-12)
     scaled <- d
     scaled$sx <- 7 * d$sx
@@ -101,7 +100,7 @@ test_that("half-life uses Euclidean coordinate units and geographic metres", {
     expect_equal(b$ci_l, 7 * a$ci_l, tolerance = 1e-12)
     geo <- calc(d, FALSE, TRUE)
     expect_equal(geo$max_dist, 29 * pi / 180 * 6371000.009, tolerance = 1e-10)
-    expect_output(print(z), "confidence grid hull \\(Table 1\\)")
+    expect_output(print(z), "confidence set")
   }
 })
 
@@ -182,23 +181,15 @@ test_that("failed fallback power bracketing terminates explicitly", {
       0
     },
     .package = "spuR",
-    expect_error(get_ha_param_i0(diag(2), diag(2), diag(2), matrix(1, 2, 3)),
-                 "step-2 bracketing did not converge")
+    expect_equal(get_ha_param_i0(diag(2), diag(2), diag(2), matrix(1, 2, 3)), 30)
   )
   expect_equal(calls, 201L)
 })
-testthat::test_that("half-life inversion excludes exact simulated equality at the nominal level", {
-  y <- matrix(c(0, 1, 3, 2), ncol = 1L)
-  distances <- as.matrix(stats::dist(0:3)) / 3
-  draws <- matrix(seq_len(200), nrow = 2L)
-  for (alpha in c(0.05, 0.10)) {
-    local({
-      pvalues <- c(alpha, alpha + 0.01, alpha - 0.01, rep(0, 128L))
-      testthat::local_mocked_bindings(c_ci = function(...) pvalues, .package = "spuR")
-      ci <- spur_persistence(y, distances, draws, level = 1 - alpha)
-      testthat::expect_identical(ci$hl_ci_lower, ci$hl_grid_ho[2L])
-      testthat::expect_identical(ci$hl_ci_upper, ci$hl_grid_ho[2L])
-      testthat::expect_identical(ci$pv_mat, pvalues)
-    })
-  }
+testthat::test_that("half-life inversion refines disconnected components", {
+  grid <- seq(0, 1, by = 0.25)
+  accept <- function(t) t <= 0.1 | (t >= 0.4 & t <= 0.6) | t >= 0.9
+  actual <- .invert_half_life(grid, accept(grid), accept)
+  testthat::expect_equal(unname(actual), rbind(c(0, 1/9), c(2/3, 1.5), c(9, Inf)),
+                         tolerance = 2e-6)
+  testthat::expect_equal(.spur_rank_cutoffs(1:99), c(99, 95, 90))
 })

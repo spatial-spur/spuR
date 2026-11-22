@@ -1,5 +1,5 @@
 .run_spur_test <- function(Y, distmat, emat, is_i0, X_in = NULL, q_x = NULL) {
-  dims <- .validate_core_spur_inputs(distmat, emat)
+  dims <- .validate_core_spur_inputs(distmat, emat, blocks = 2L)
   design <- .prepare_spur_diagnostics(Y, distmat, dims$q, X_in = X_in, q_x = q_x)
   if (is_i0) .spur_i0(design, distmat, emat) else .spur_i1(design, distmat, emat)
 }
@@ -22,7 +22,8 @@
       stop("`X_in` row count must match `distmat`.")
     }
     if (is.null(q_x)) q_x <- .spur_residual_basis(X_in)
-    y_info <- .validate_spur_residual_y(Y, q_x)
+    center_response <- any(apply(as.matrix(X_in), 2L, function(x) all(x == x[1L])))
+    y_info <- .validate_spur_residual_y(Y, q_x, center_response)
     resid_dof <- n - ncol(q_x)
     if (q > resid_dof) {
       stop(sprintf(
@@ -30,11 +31,8 @@
         q, resid_dof
       ))
     }
-    # Apply M = I - Q_x Q_x' on both sides of the kernel without building M.
-    # The constant kernel disappears under M. Removing it first avoids loss
-    # of precision in the small covariance that determines the eigenspace.
-    sigma <- expm1(-decay(0.999) * distmat)
-    left <- .residualize_spur(sigma, q_x)
+    # The constant direction cancels the origin terms of the LBM covariance.
+    left <- .residualize_spur(-0.5 * distmat, q_x)
     bm <- t(.residualize_spur(t(left), q_x))
     bm <- 0.5 * (bm + t(bm))
     basis <- .extract_spur_basis(bm, q)
@@ -53,7 +51,8 @@
 }
 
 .spur_projected_covariance <- function(distmat, basis, rate) {
-  om <- crossprod(basis, exp(-rate * distmat) %*% basis)
+  kernel <- if (is.infinite(rate)) distmat == 0 else exp(-rate * distmat)
+  om <- crossprod(basis, kernel %*% basis)
   0.5 * (om + t(om))
 }
 
@@ -67,25 +66,29 @@
 }
 
 .spur_i0 <- function(design, distmat, emat) {
+  q <- ncol(design$basis)
+  tuning <- emat[q + seq_len(q), , drop = FALSE]
+  emat <- emat[seq_len(q), , drop = FALSE]
   om_ho <- .spur_projected_covariance(distmat, design$basis, design$decay(0.001))
   if (!.spur_shapes_differ(om_ho, design$bm)) {
     stop("SPUR experiment is uninformative: covariance shapes are proportional.")
   }
-  ha_parm <- get_ha_param_i0(om_ho, om_ho, design$bm, emat)
+  ha_parm <- get_ha_param_i0(om_ho, om_ho, design$bm, tuning)
   om_ha <- om_ho + ha_parm * design$bm
   ch_omi_ho <- chol(solve(om_ho))
   ch_omi_ha <- chol(solve(om_ha))
   lr <- .spur_lr(design$response, ch_omi_ho, ch_omi_ha, observed = TRUE)
 
-  rho_grid <- seq(0.0001, 0.03, length.out = 30L)
-  probs <- 1 - c(0.01, 0.05, 0.10)
+  floor_corr <- mean(lvech(distmat) == 0)
+  rho_grid <- c(floor_corr, seq(0.0001, 0.03, length.out = 30L))
   pvalues <- matrix(NA_real_, length(rho_grid), length(lr))
-  cvalues <- matrix(NA_real_, length(rho_grid), length(probs))
+  cvalues <- matrix(NA_real_, length(rho_grid), 3L)
   for (i in seq_along(rho_grid)) {
-    omega <- .spur_projected_covariance(distmat, design$basis, design$decay(rho_grid[i]))
+    rate <- if (i == 1L) Inf else design$decay(rho_grid[i])
+    omega <- .spur_projected_covariance(distmat, design$basis, rate)
     lr_ho <- .spur_lr(t(chol(omega)) %*% emat, ch_omi_ho, ch_omi_ha)
-    cvalues[i, ] <- stats::quantile(lr_ho, probs, names = FALSE)
-    pvalues[i, ] <- vapply(lr, function(obs) mean(lr_ho > obs), 0.0)
+    cvalues[i, ] <- .spur_rank_cutoffs(lr_ho)
+    pvalues[i, ] <- vapply(lr, function(obs) (1 + sum(lr_ho >= obs)) / (length(lr_ho) + 1), 0.0)
   }
 
   list(
@@ -100,6 +103,9 @@
 }
 
 .spur_i1 <- function(design, distmat, emat) {
+  q <- ncol(design$basis)
+  tuning <- emat[q + seq_len(q), , drop = FALSE]
+  emat <- emat[seq_len(q), , drop = FALSE]
   covariance <- function(rate) .spur_projected_covariance(distmat, design$basis, rate)
   rates <- vapply(c(0.01, 0.5, 0.95), design$decay, 0.0)
   shapes <- lapply(rates, covariance)
@@ -108,7 +114,7 @@
     stop("SPUR experiment is uninformative: covariance shapes are proportional.")
   }
 
-  ha <- .fit_spur_i1(design$bm, emat, covariance, rates, shapes)
+  ha <- .fit_spur_i1(design$bm, tuning, covariance, rates, shapes)
   ch_omi_ho <- chol(solve(design$bm))
   ch_omi_ha <- chol(solve(ha$covariance))
   lr_ho <- .spur_lr(t(chol(design$bm)) %*% emat, ch_omi_ho, ch_omi_ha)
@@ -116,8 +122,8 @@
 
   list(
     LR = lr,
-    pvalue = vapply(lr, function(obs) mean(lr_ho > obs), 0.0),
-    cv_vec = stats::quantile(lr_ho, 1 - c(0.01, 0.05, 0.10), names = FALSE),
+    pvalue = vapply(lr, function(obs) (1 + sum(lr_ho >= obs)) / (length(lr_ho) + 1), 0.0),
+    cv_vec = .spur_rank_cutoffs(lr_ho),
     ha_parm = ha$rate
   )
 }
@@ -139,11 +145,13 @@
   omega <- shapes[[1L]]
   pow <- power(omega)
   steps <- 1L
+  best <- list(rate = upper, covariance = omega, power = pow)
   while (pow < 0.5) {
-    if (steps >= 200L) stop("SPUR I(1) step-2 bracketing did not converge.")
+    if (steps >= 200L) return(best)
     upper <- 2 * upper
     omega <- covariance(upper)
     pow <- power(omega)
+    if (pow > best$power) best <- list(rate = upper, covariance = omega, power = pow)
     steps <- steps + 1L
   }
 
@@ -161,4 +169,15 @@
   }
 
   list(rate = rate, covariance = omega)
+}
+
+.spur_rank_cutoffs <- function(draws) {
+  ranks <- (length(draws) + 1L) %/% c(100L, 20L, 10L)
+  active <- ranks > 0L
+  cutoffs <- rep(Inf, 3L)
+  if (any(active)) {
+    indices <- length(draws) - ranks[active] + 1L
+    cutoffs[active] <- sort.int(draws, partial = indices)[indices]
+  }
+  cutoffs
 }

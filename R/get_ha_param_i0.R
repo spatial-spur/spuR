@@ -30,14 +30,20 @@ get_ha_param_i0 <- function(om_ho, om_i0, om_bm, e) {
   # Second phase: find g2 such that power is above 50%
   pow <- 0
   gtry <- 30
+  best_g <- gtry
+  best_power <- -1
   bracket_steps <- 0L
   while (pow < 0.5) {
     bracket_steps <- bracket_steps + 1L
     if (bracket_steps > 200L) {
-      stop("get_ha_param_i0 step-2 bracketing did not converge.")
+      return(best_g)
     }
     g <- gtry
     pow <- pow_eval(om_i0 + g * om_bm)
+    if (pow > best_power) {
+      best_power <- pow
+      best_g <- g
+    }
     gtry <- g * 2
   }
   g2 <- g

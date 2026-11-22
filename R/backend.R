@@ -111,7 +111,13 @@
 }
 
 .is_spur_rust_loaded <- function(sym) {
-  is.loaded(sym, PACKAGE = "spuR") && isTRUE(.spur_build_info()$spur_api_version == 4L)
+  if (!is.loaded(sym, PACKAGE = "spuR")) {
+    return(FALSE)
+  }
+  info <- .spur_build_info()
+  isTRUE(info$spur_api_version == 5L &&
+    length(info$spec_version) == 1L &&
+    utils::compareVersion(info$spec_version, "0.3.7") >= 0L)
 }
 
 .check_spur_rust_result <- function(res) {
@@ -147,7 +153,7 @@
   forced <- identical(backend_resolved, "rust")
   if (!.is_spur_rust_loaded(sym)) {
     if (forced) {
-      stop("`backend = \"rust\"` was requested, but a compatible native Rust backend is not loaded in `spuR`. Rebuild with SPUR API 4.", call. = FALSE)
+      stop("`backend = \"rust\"` was requested, but a compatible native Rust backend is not loaded in `spuR`. Rebuild with SPUR API 5 and methods spec 0.3.7 or newer.", call. = FALSE)
     }
     return("native_unavailable")
   }
@@ -199,10 +205,6 @@
   res <- .check_spur_rust_result(res)
 
   tied <- isTRUE(res$tied)
-  if (tied && identical(backend_resolved, "auto")) {
-    return(list(res = NULL, tied = TRUE))
-  }
-
   if (isTRUE(is_i0)) {
     full <- list(
       LR = as.numeric(res$LR),

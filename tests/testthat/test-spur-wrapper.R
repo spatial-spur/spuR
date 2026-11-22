@@ -158,7 +158,7 @@ testthat::test_that("print.spur_result matches summary.spur_result", {
 
   testthat::expect_identical(print_txt, summary_txt)
 })
-testthat::test_that("spur transforms the evaluated model on one sample and consumes one draw matrix", {
+testthat::test_that("spur transforms the evaluated model on one sample and consumes one pair of draw blocks", {
   df <- spur_fixture_data(n = 75L)
   df$positive <- df$am - min(df$am) + 1
   df$positive[c(1L, 4L)] <- NA_real_
@@ -168,7 +168,7 @@ testthat::test_that("spur transforms the evaluated model on one sample and consu
   q <- 8L
   nrep <- 500L
   set.seed(42)
-  .draw_emat(q, nrep)
+  .draw_emat(2L * q, nrep)
   expected_rng <- .Random.seed
 
   out <- spur(f, df, q, nrep, lon = "lon", lat = "lat", seed = 42,

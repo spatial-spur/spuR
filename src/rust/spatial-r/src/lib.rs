@@ -353,6 +353,9 @@ fn build_r_spur_i1_list(out: SpurI1Output) -> extendr_api::Result<List> {
 }
 
 fn build_r_spur_hl_list(out: SpurHalfLifeOutput) -> extendr_api::Result<List> {
+    let n_components = out.components.len();
+    let bounds = out.components.into_iter().flatten().collect::<Vec<_>>();
+    let components = row_major_to_rmatrix(&bounds, n_components, 2)?;
     List::from_names_and_values(
         [
             "hl_ci_lower",
@@ -360,6 +363,7 @@ fn build_r_spur_hl_list(out: SpurHalfLifeOutput) -> extendr_api::Result<List> {
             "max_dist",
             "pv_mat",
             "hl_grid_ho",
+            "components",
             "tied",
         ],
         [
@@ -368,6 +372,7 @@ fn build_r_spur_hl_list(out: SpurHalfLifeOutput) -> extendr_api::Result<List> {
             Robj::from(out.max_dist),
             Robj::from(out.pv_mat),
             Robj::from(out.hl_grid_ho),
+            Robj::from(components),
             Robj::from(out.tied),
         ],
     )
@@ -393,7 +398,13 @@ fn run_spur_test_r_impl(
         )));
     }
     let n_y = y.ncols();
-    let q = emat.nrows();
+    let draw_rows = emat.nrows();
+    if draw_rows % 2 != 0 {
+        return Err(Error::Other(
+            "SPUR diagnostic emat must have 2*q rows".to_string(),
+        ));
+    }
+    let q = draw_rows / 2;
     let nrep = emat.ncols();
     let metric = if latlong {
         Metric::GreatCircleFractionLonLat
@@ -403,7 +414,7 @@ fn run_spur_test_r_impl(
 
     let coords_rm = col_major_to_row_major(coords.data(), n, d)?;
     let y_rm = col_major_to_row_major(y.data(), n, n_y)?;
-    let emat_rm = col_major_to_row_major(emat.data(), q, nrep)?;
+    let emat_rm = col_major_to_row_major(emat.data(), draw_rows, nrep)?;
     let (x_rm, k_x) = match x_in {
         Nullable::Null => (None, 0usize),
         Nullable::NotNull(xm) => {
@@ -680,7 +691,13 @@ pub fn run_spur_pipeline_r(
     }
     let k_x = x_in.ncols();
     let n_tr = transform_vars.ncols();
-    let q = emat.nrows();
+    let draw_rows = emat.nrows();
+    if draw_rows % 2 != 0 {
+        return Err(Error::Other(
+            "SPUR diagnostic emat must have 2*q rows".to_string(),
+        ));
+    }
+    let q = draw_rows / 2;
     let nrep = emat.ncols();
     let metric = if latlong {
         Metric::GreatCircleFractionLonLat
@@ -690,7 +707,7 @@ pub fn run_spur_pipeline_r(
 
     let coords_rm = col_major_to_row_major(coords.data(), n, d)?;
     let x_rm = col_major_to_row_major(x_in.data(), n, k_x)?;
-    let emat_rm = col_major_to_row_major(emat.data(), q, nrep)?;
+    let emat_rm = col_major_to_row_major(emat.data(), draw_rows, nrep)?;
     let tr_rm = col_major_to_row_major(transform_vars.data(), n, n_tr)?;
 
     let out = run_spur_pipeline(&SpurPipelineRequest {

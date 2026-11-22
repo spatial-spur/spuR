@@ -2,7 +2,7 @@
 
 use super::{
     center_columns, covariance_shapes_differ, factor_omega, prepare_y_projections,
-    select_leading_basis, validate_emat, OmegaPairFactor, SpurGeometry, RHO_BM, TILE_COLS,
+    select_leading_basis, validate_emat, OmegaPairFactor, SpurGeometry, TILE_COLS,
 };
 use crate::distance::Metric;
 use crate::threads::{is_serial, run_with_threads};
@@ -11,9 +11,9 @@ use rayon::prelude::*;
 
 pub(super) const MAX_HALFLIFE_TILE_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const HL_HA_LEN: usize = 50;
-const HL_HO_LEN: usize = HL_HO_SMALL_LEN + HL_HO_LARGE_LEN + 1;
-const HL_HO_LARGE_LEN: usize = 30;
-const HL_HO_SMALL_LEN: usize = 100;
+const HALF_LIFE_SEARCH_STEPS: usize = 128;
+pub const HALF_LIFE_MAX_COMPONENTS: usize = HALF_LIFE_SEARCH_STEPS / 2 + 1;
+const HALF_LIFE_BOUND_TOL: f64 = 1e-7;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SpurHalfLifeRequest<'a> {
@@ -33,6 +33,7 @@ pub struct SpurHalfLifeRequest<'a> {
 pub struct SpurHalfLifeOutput {
     pub ci_lower: f64,
     pub ci_upper: f64,
+    pub components: Vec<[f64; 2]>,
     pub max_dist: f64,
     pub pv_mat: Vec<f64>,
     pub hl_grid_ho: Vec<f64>,
@@ -126,6 +127,7 @@ pub(super) fn add_halflife_likelihood_terms(
 #[inline(never)]
 fn halflife_log_draw_sum(
     alternatives: &[OmegaPairFactor],
+    log_weights: &[f64],
     packed_forms: &[f64],
     draws: &[f64],
     cols: usize,
@@ -146,7 +148,7 @@ fn halflife_log_draw_sum(
         } else {
             packed_forms[j * cols + c]
         };
-        log_ha[j] = ha.ch_omi.log_sqrt_det - 0.5 * q * form.ln();
+        log_ha[j] = log_weights[j] + ha.ch_omi.log_sqrt_det - 0.5 * q * form.ln();
     }
     Ok(log_sum_exp(&log_ha) - log_null_density)
 }
@@ -179,11 +181,144 @@ pub(super) fn log_sum_exp(terms: &[f64]) -> f64 {
 pub(super) fn accepts_halflife_null(exceedances: usize, nrep: usize, level: f64) -> bool {
     // Compare the complement from the integer count so an exact grid boundary
     // is not accepted due to rounding 1 - level.
-    (nrep - exceedances) as f64 / (nrep as f64) < level
+    (nrep - exceedances) as f64 / ((nrep + 1) as f64) < level
+}
+
+/// Composite five-point Gauss--Legendre quadrature on ten segments of [0, 1].
+/// The segments get shorter near zero, where small inter-site distances matter.
+pub(super) fn half_life_mixture() -> ([f64; HL_HA_LEN], [f64; HL_HA_LEN]) {
+    let nodes = [
+        -0.906179845938664,
+        -0.5384693101056831,
+        0.0,
+        0.5384693101056831,
+        0.906179845938664,
+    ];
+    let weights = [
+        0.2369268850561891,
+        0.4786286704993665,
+        128.0 / 225.0,
+        0.4786286704993665,
+        0.2369268850561891,
+    ];
+    let mut rates = [0.0; HL_HA_LEN];
+    let mut masses = [0.0; HL_HA_LEN];
+    let mut left = 0.0;
+    for segment in 0..10 {
+        let right = (2_u32.pow(segment) as f64) / 512.0;
+        let half_width = (right - left) / 2.0;
+        for j in 0..5 {
+            let hl = left + half_width * (1.0 + nodes[j]);
+            let index = segment as usize * 5 + j;
+            rates[index] = std::f64::consts::LN_2 / hl;
+            masses[index] = half_width * weights[j];
+        }
+        left = right;
+    }
+    (rates, masses)
+}
+
+fn from_compact_half_life(t: f64) -> f64 {
+    t / (1.0 - t)
+}
+
+pub(super) fn half_life_covariances(
+    geom: &SpurGeometry,
+    mr: &[f64],
+    q: usize,
+    points: &[f64],
+) -> Vec<Vec<f64>> {
+    let rates: Vec<_> = points
+        .iter()
+        .map(|&t| std::f64::consts::LN_2 * (1.0 - t) / t)
+        .collect();
+    let regular: Vec<_> = rates
+        .iter()
+        .copied()
+        .filter(|rate| rate.is_finite() && *rate >= 0.01)
+        .collect();
+    let mut regular = geom.projected_omega_grid(&regular, mr, q).into_iter();
+    rates
+        .into_iter()
+        .map(|rate| {
+            if rate.is_finite() && rate >= 0.01 {
+                return regular.next().expect("regular half-life covariance");
+            }
+            let kernel: Vec<_> = geom
+                .norm_distmat
+                .iter()
+                .map(|&d| {
+                    if rate.is_infinite() {
+                        if d == 0.0 {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    } else if rate == 0.0 {
+                        -0.5 * d
+                    } else {
+                        0.5 * (-rate * d).exp_m1() / rate
+                    }
+                })
+                .collect();
+            let mut kr = vec![0.0; geom.n * q];
+            linalg::multiply(&kernel, mr, &mut kr, geom.n, geom.n, q, false);
+            let mut omega = vec![0.0; q * q];
+            linalg::multiply(mr, &kr, &mut omega, q, geom.n, q, true);
+            super::symmetrize(&mut omega, q);
+            omega
+        })
+        .collect()
+}
+
+pub(super) fn invert_half_life(
+    grid: &[f64],
+    accepted: &[bool],
+    evaluate: impl Fn(&[f64]) -> Result<Vec<bool>, CoreError>,
+) -> Result<Vec<[f64; 2]>, CoreError> {
+    let mut brackets: Vec<_> = grid
+        .windows(2)
+        .zip(accepted.windows(2))
+        .filter(|(_, flags)| flags[0] != flags[1])
+        .map(|(points, flags)| (points[0], points[1], flags[0]))
+        .collect();
+    while brackets
+        .first()
+        .is_some_and(|&(lo, hi, _)| hi - lo > HALF_LIFE_BOUND_TOL)
+    {
+        let midpoints: Vec<_> = brackets
+            .iter()
+            .map(|&(lo, hi, _)| (lo + hi) / 2.0)
+            .collect();
+        let status = evaluate(&midpoints)?;
+        for ((lo, hi, left_accepted), (mid, mid_accepted)) in
+            brackets.iter_mut().zip(midpoints.into_iter().zip(status))
+        {
+            if mid_accepted == *left_accepted {
+                *lo = mid;
+            } else {
+                *hi = mid;
+            }
+        }
+    }
+    let mut components = Vec::new();
+    let mut start = 0.0;
+    // Use the outside bracket endpoints so boundary rounding includes the accepted side.
+    for (lo, hi, left_accepted) in brackets {
+        if left_accepted {
+            components.push([from_compact_half_life(start), from_compact_half_life(hi)]);
+        } else {
+            start = lo;
+        }
+    }
+    if accepted.last().copied().unwrap_or(false) {
+        components.push([from_compact_half_life(start), f64::INFINITY]);
+    }
+    Ok(components)
 }
 
 pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOutput, CoreError> {
-    validate_emat(req.emat, req.n, req.q, req.nrep)?;
+    validate_emat(req.emat, req.n, req.q, req.nrep, 1)?;
     if !req.level.is_finite() || req.level <= 0.0 || req.level >= 1.0 {
         return Err(CoreError::invalid_input(
             "confidence level must lie strictly in (0, 1)",
@@ -207,47 +342,27 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
     }
 
     run_with_threads(req.nthreads, || {
-        let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
+        let geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
         let q = req.q;
         let n = req.n;
         let nrep = req.nrep;
 
-        let c_bm = geom.get_cbar(RHO_BM)?;
-        let sigdm_bm = geom.kernel_dm(c_bm);
+        let sigdm_bm = geom.sigma_lbm_dm();
         let (basis_r, tied) = select_leading_basis(&sigdm_bm, n, q)?;
         let mut mr = basis_r.clone();
         center_columns(&mut mr, n, q);
         let p_vec = prepare_y_projections(req.y, n, 1, &basis_r, q)?;
 
-        let mut hl_grid_ho = Vec::with_capacity(HL_HO_LEN);
-        for i in 0..HL_HO_SMALL_LEN {
-            hl_grid_ho.push(0.001 + (1.0 - 0.001) * (i as f64) / ((HL_HO_SMALL_LEN - 1) as f64));
-        }
-        for i in 0..HL_HO_LARGE_LEN {
-            hl_grid_ho.push(1.01 + (3.0 - 1.01) * (i as f64) / ((HL_HO_LARGE_LEN - 1) as f64));
-        }
-        hl_grid_ho.push(100.0);
-
-        let hl_grid_ha: Vec<f64> = (0..HL_HA_LEN)
-            .map(|i| 0.001 + (1.0 - 0.001) * (i as f64) / ((HL_HA_LEN - 1) as f64))
+        let grid: Vec<_> = (0..=HALF_LIFE_SEARCH_STEPS)
+            .map(|i| i as f64 / HALF_LIFE_SEARCH_STEPS as f64)
             .collect();
-
-        let neg_ln_half = -(0.5_f64).ln();
-        let c_grid_ho: Vec<f64> = hl_grid_ho.iter().map(|&h| neg_ln_half / h).collect();
-        let c_grid_ha: Vec<f64> = hl_grid_ha.iter().map(|&h| neg_ln_half / h).collect();
-
-        let mut c_all = Vec::with_capacity(HL_HO_LEN + HL_HA_LEN);
-        c_all.extend_from_slice(&c_grid_ho);
-        c_all.extend_from_slice(&c_grid_ha);
-        let om_all = geom.projected_omega_grid(&c_all, &mr, q);
-
-        // If every tested covariance has the same shape, the angular likelihood
-        // is constant. Strict simulation exceedances then have no meaningful
-        // interpretation, even when q > 1 (e.g. an equilateral triangle).
-        let reference_shape = &om_all[0];
+        let (rates, weights) = half_life_mixture();
+        let log_weights = weights.map(f64::ln);
+        let om_ha = geom.projected_omega_grid(&rates, &mr, q);
+        let om_ho = half_life_covariances(&geom, &mr, q, &grid);
         let mut informative = false;
-        for candidate in &om_all[1..] {
-            if covariance_shapes_differ(candidate, reference_shape, q)? {
+        for candidate in om_ho[1..].iter().chain(&om_ha) {
+            if covariance_shapes_differ(candidate, &om_ho[0], q)? {
                 informative = true;
                 break;
             }
@@ -257,35 +372,16 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                 "half-life experiment is uninformative: retained covariance shapes are proportional",
             ));
         }
-
-        let (om_ho_slice, om_ha_slice) = om_all.split_at(HL_HO_LEN);
-        let ho_factors: Vec<OmegaPairFactor> = if is_serial() {
-            om_ho_slice
-                .iter()
-                .map(|om| factor_omega(om, q))
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            om_ho_slice
-                .par_iter()
-                .map(|om| factor_omega(om, q))
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        let ha_factors: Vec<OmegaPairFactor> = if is_serial() {
-            om_ha_slice
-                .iter()
-                .map(|om| factor_omega(om, q))
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            om_ha_slice
-                .par_iter()
-                .map(|om| factor_omega(om, q))
-                .collect::<Result<Vec<_>, _>>()?
-        };
+        let ha_factors: Vec<_> = om_ha
+            .iter()
+            .map(|omega| factor_omega(omega, q))
+            .collect::<Result<_, _>>()?;
 
         let q_f = q as f64;
         let ha_x_log: Vec<f64> = ha_factors
             .iter()
-            .map(|ha| {
+            .zip(log_weights)
+            .map(|(ha, log_weight)| {
                 let mut xc = vec![0.0_f64; q];
                 linalg::multiply(&ha.ch_omi.upper, &p_vec, &mut xc, q, q, 1, false);
                 let qnorm: f64 = xc.iter().map(|&v| v * v).sum();
@@ -294,7 +390,7 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                         "projected SPUR vector has zero quadratic form",
                     ));
                 }
-                Ok(ha.ch_omi.log_sqrt_det - 0.5 * q_f * qnorm.ln())
+                Ok(log_weight + ha.ch_omi.log_sqrt_det - 0.5 * q_f * qnorm.ln())
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -356,7 +452,7 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
             let obs_sum = log_obs_sum.exp();
 
             let det_ratios: [f64; HL_HA_LEN] = std::array::from_fn(|j| {
-                (ha_factors[j].ch_omi.log_sqrt_det - ho.ch_omi.log_sqrt_det).exp()
+                weights[j] * (ha_factors[j].ch_omi.log_sqrt_det - ho.ch_omi.log_sqrt_det).exp()
             });
             let use_fast_pow = packed
                 && q <= 60
@@ -489,11 +585,19 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                         && sum_ha_over_ho[c] >= f64::MIN_POSITIVE
                         && emat_inv[c].is_finite()
                     {
-                        sum_ha_over_ho[c] > obs_sum
+                        sum_ha_over_ho[c] >= obs_sum
                     } else {
                         let log_ho = ho.ch_omi.log_sqrt_det - 0.5 * q_f * norm.ln();
-                        halflife_log_draw_sum(&ha_factors, q_tile, e_tile, cols, c, q_f, log_ho)?
-                            > log_obs_sum
+                        halflife_log_draw_sum(
+                            &ha_factors,
+                            &log_weights,
+                            q_tile,
+                            e_tile,
+                            cols,
+                            c,
+                            q_f,
+                            log_ho,
+                        )? >= log_obs_sum
                     };
                     if exceeds {
                         exceed += 1;
@@ -503,45 +607,48 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
             Ok(exceed)
         };
 
-        let exceedances = if is_serial() {
-            let mut scratch = make_scratch();
-            ho_factors
-                .iter()
-                .map(|ho| eval_null_hl(&mut scratch, ho))
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            ho_factors
-                .par_iter()
-                .with_min_len(4)
-                .map_init(make_scratch, eval_null_hl)
-                .collect::<Result<Vec<_>, _>>()?
-        };
-
-        let mut ci_lower = f64::INFINITY;
-        let mut ci_upper = f64::NEG_INFINITY;
-        let mut any_accepted = false;
-        for (&count, &hl) in exceedances.iter().zip(&hl_grid_ho) {
-            if accepts_halflife_null(count, nrep, req.level) {
-                any_accepted = true;
-                ci_lower = ci_lower.min(hl);
-                ci_upper = ci_upper.max(hl);
+        let evaluate = |covariances: &[Vec<f64>]| -> Result<Vec<usize>, CoreError> {
+            let at = |scratch: &mut HalfLifeScratch, omega: &Vec<f64>| {
+                eval_null_hl(scratch, &factor_omega(omega, q)?)
+            };
+            if is_serial() {
+                let mut scratch = make_scratch();
+                covariances
+                    .iter()
+                    .map(|omega| at(&mut scratch, omega))
+                    .collect()
+            } else {
+                covariances
+                    .par_iter()
+                    .with_min_len(4)
+                    .map_init(make_scratch, at)
+                    .collect()
             }
-        }
-        if !any_accepted {
-            ci_lower = f64::NAN;
-            ci_upper = f64::NAN;
-        }
-        let pv_mat = exceedances
-            .into_iter()
-            .map(|count| count as f64 / nrep as f64)
+        };
+        let counts = evaluate(&om_ho)?;
+        let accepted: Vec<_> = counts
+            .iter()
+            .map(|&count| accepts_halflife_null(count, nrep, req.level))
             .collect();
-
+        let components = invert_half_life(&grid, &accepted, |points| {
+            let omegas = half_life_covariances(&geom, &mr, q, points);
+            Ok(evaluate(&omegas)?
+                .into_iter()
+                .map(|count| accepts_halflife_null(count, nrep, req.level))
+                .collect())
+        })?;
+        let ci_lower = components.first().map_or(f64::NAN, |interval| interval[0]);
+        let ci_upper = components.last().map_or(f64::NAN, |interval| interval[1]);
         Ok(SpurHalfLifeOutput {
             ci_lower,
             ci_upper,
+            components,
             max_dist: geom.max_dist,
-            pv_mat,
-            hl_grid_ho,
+            pv_mat: counts
+                .into_iter()
+                .map(|count| (count + 1) as f64 / (nrep + 1) as f64)
+                .collect(),
+            hl_grid_ho: grid.into_iter().map(from_compact_half_life).collect(),
             tied,
         })
     })?

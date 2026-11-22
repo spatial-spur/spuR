@@ -288,7 +288,7 @@ spur <- function(formula,
 
   reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_pipeline")
   if (!is.null(seed)) set.seed(seed)
-  emat <- .draw_emat(q = q, nrep = nrep)
+  emat <- .draw_emat(q = 2L * q, nrep = nrep)
 
   kinds <- c("i0", "i1", "i0resid", "i1resid")
   tied <- stats::setNames(rep(FALSE, length(kinds)), kinds)
@@ -303,16 +303,12 @@ spur <- function(formula,
     )
     pipe <- .check_spur_rust_result(pipe)
     tied[] <- vapply(pipe[kinds], function(test) isTRUE(test$tied), logical(1L))
-    if (any(tied) && identical(backend_resolved, "auto")) {
-      reason <- "tied_eigenspace"
-    } else {
-      diagnostics <- pipe[kinds]
-      transformed <- pipe$transformed_vars
-    }
+    diagnostics <- pipe[kinds]
+    transformed <- pipe$transformed_vars
   }
   if (is.null(diagnostics)) {
     d <- .normalized_distmat(coord_info$coords, coord_info$latlong)
-    dims <- .validate_core_spur_inputs(d, emat)
+    dims <- .validate_core_spur_inputs(d, emat, blocks = 2L)
     decay <- .make_spur_decay_solver(d)
     bm <- get_sigma_lbm_dm(d)
     eig <- if (!.use_partial_spur_basis(dims$n, dims$q)) eigen(bm, symmetric = TRUE)

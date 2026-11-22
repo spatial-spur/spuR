@@ -55,7 +55,7 @@ spurtest_i1(am ~ 1, data = spur_example, lon = "lon", lat = "lat", seed = 42)
 # Residual-based I(0) test
 spurtest_i0resid(am ~ gini, data = spur_example, lon = "lon", lat = "lat", seed = 42)
 
-# Half-life confidence grid hull
+# Half-life confidence set
 spurhalflife(am ~ 1, data = spur_example, lon = "lon", lat = "lat", seed = 42)
 
 # Spatial transformation — pass your analysis formula to transform all variables
@@ -82,11 +82,11 @@ require the co-located share of observation pairs to lie below that value.
 
 Euclidean absolute half-lives use the original coordinate units. Geographic absolute
 half-lives use metres, and `normdist = TRUE` reports fractions of the sample diameter.
-The bounds summarize the accepted candidates on the finite Table 1 grid of
-Müller & Watson (2024). The grid jumps from 3 to 100 sample diameters.
-Acceptance at 100 yields `ci_u = NA` and the replication display `Inf`.
-Inspect `full$hl_grid_ho` and `full$pv_mat` for the tested candidates
-and their Monte Carlo p-values.
+The continuous half-life inversion returns `components`, their hull in
+`ci_l` and `ci_u`, and the initial search probes and p-values in
+`full$hl_grid_ho` and `full$pv_mat`. The search evaluates both limit laws and
+refines detected changes in acceptance. Narrow components between initial
+probes can escape detection.
 
 A fixed seed reproduces the host draws. Finite simulations can still differ
 with the basis chosen by the backend, especially in tied or nearly tied

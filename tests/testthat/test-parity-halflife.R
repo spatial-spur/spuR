@@ -55,8 +55,8 @@ testthat::test_that("SPUR half-life parity across options", {
     s_ci_l <- if (case$normdist) as.numeric(stata$ci_l) else as.numeric(stata$ci_l / stata$max_dist)
     testthat::expect_lte(abs(as.numeric(r_ci_l) - as.numeric(s_ci_l)), 0.05)
 
-    if (is.na(r_out$ci_u) || is.na(stata$ci_u)) {
-      testthat::expect_true(is.na(r_out$ci_u) && is.na(stata$ci_u))
+    if (is.infinite(r_out$ci_u) || is.na(stata$ci_u)) {
+      testthat::expect_true(is.infinite(r_out$ci_u) && is.na(stata$ci_u))
     } else {
       r_ci_u <- if (case$normdist) r_out$ci_u else r_out$ci_u / r_out$max_dist
       s_ci_u <- if (case$normdist) as.numeric(stata$ci_u) else as.numeric(stata$ci_u / stata$max_dist)

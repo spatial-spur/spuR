@@ -178,7 +178,7 @@ spur_skip_if_no_matlab_or_mw <- local({
     }
 
     mw_root <- spur_mw_root()
-    needed_file <- file.path(mw_root, "Matlab", "functions", "Spatial_I0_Test.m")
+    needed_file <- file.path(mw_root, "matlab_functions", "lbm_gls_matrix.m")
     if (!nzchar(mw_root) || !file.exists(needed_file)) {
       checked <<- TRUE
       available <<- FALSE
@@ -190,11 +190,7 @@ spur_skip_if_no_matlab_or_mw <- local({
       spur_matlab_addpath_line(file.path(mw_root, "Matlab", "functions")),
       spur_matlab_addpath_line(file.path(mw_root, "matlab_functions")),
       spur_matlab_addpath_line(file.path(mw_root, "cscpc")),
-      "ok = exist('Spatial_I0_Test', 'file') == 2;",
-      "ok = ok && exist('Spatial_I1_Test', 'file') == 2;",
-      "ok = ok && exist('Spatial_I0_Test_Residual', 'file') == 2;",
-      "ok = ok && exist('Spatial_I1_Test_Residual', 'file') == 2;",
-      "ok = ok && exist('c_ci', 'file') == 2;",
+      "ok = exist('lbm_gls_matrix', 'file') == 2;",
       "if ~ok, error('MW Matlab SPUR functions are not available on path.'); end",
       "disp('MW Matlab parity probe OK');",
       "exit(0);",
@@ -212,184 +208,6 @@ spur_skip_if_no_matlab_or_mw <- local({
     invisible(NULL)
   }
 })
-
-spur_run_matlab_spurtest <- function(df,
-                                     test_type,
-                                     dep_var,
-                                     indep_vars = character(0),
-                                     q,
-                                     nrep,
-                                     latlong) {
-  mw_root <- spur_mw_root()
-  in_csv <- tempfile(fileext = ".csv")
-  out_csv <- tempfile(fileext = ".csv")
-
-  vars <- c(dep_var, indep_vars, "s_1", "s_2")
-  if (!all(vars %in% names(df))) {
-    stop("Missing required columns for Matlab spurtest parity run.")
-  }
-
-  use_rows <- stats::complete.cases(df[, vars, drop = FALSE])
-  in_mat <- as.matrix(df[use_rows, vars, drop = FALSE])
-  utils::write.table(
-    in_mat,
-    file = in_csv,
-    sep = ",",
-    row.names = FALSE,
-    col.names = FALSE,
-    quote = FALSE
-  )
-
-  latlong_flag <- if (isTRUE(latlong)) 1L else 0L
-  n_x <- length(indep_vars)
-
-  script <- c(
-    "try",
-    spur_matlab_addpath_line(file.path(mw_root, "Matlab", "functions")),
-    spur_matlab_addpath_line(file.path(mw_root, "matlab_functions")),
-    spur_matlab_addpath_line(file.path(mw_root, "cscpc")),
-    sprintf("in_mat = csvread('%s');", spur_matlab_quote(spur_matlab_path(in_csv))),
-    "if isempty(in_mat), error('Input matrix is empty.'); end",
-    "Y = in_mat(:,1);",
-    sprintf("n_x = %d;", as.integer(n_x)),
-    "if n_x > 0",
-    "  X = [ones(size(in_mat,1),1), in_mat(:,2:(1 + n_x))];",
-    "else",
-    "  X = ones(size(in_mat,1),1);",
-    "end",
-    "s = in_mat(:,(2 + n_x):(3 + n_x));",
-    spur_matlab_distmat_lines(latlong_flag),
-    "rng(123);",
-    sprintf("emat = randn(%d, %d);", as.integer(q), as.integer(nrep)),
-    sprintf("test_type = '%s';", test_type),
-    "if strcmp(test_type, 'i0')",
-    "  SP = Spatial_I0_Test(Y, distmat, emat);",
-    "  cv = SP.cvalue(:);",
-    "elseif strcmp(test_type, 'i1')",
-    "  SP = Spatial_I1_Test(Y, distmat, emat);",
-    "  cv = SP.cv_vec(:);",
-    "elseif strcmp(test_type, 'i0resid')",
-    "  SP = Spatial_I0_Test_Residual(Y, X, distmat, emat);",
-    "  cv = SP.cvalue(:);",
-    "elseif strcmp(test_type, 'i1resid')",
-    "  SP = Spatial_I1_Test_Residual(Y, X, distmat, emat);",
-    "  cv = SP.cv_vec(:);",
-    "else",
-    "  error('Unsupported test_type.');",
-    "end",
-    "out_vec = [SP.pvalue(1), SP.LR(1), SP.ha_parm, cv(1), cv(2), cv(3)];",
-    sprintf("csvwrite('%s', out_vec);", spur_matlab_quote(spur_matlab_path(out_csv))),
-    "exit(0);",
-    "catch ME",
-    "disp(ME.message);",
-    "exit(1);",
-    "end"
-  )
-
-  run <- spur_run_matlab_script(script)
-  if (run$rc != 0L) {
-    stop(sprintf("Matlab spurtest run failed (rc=%s). Script: %s", run$rc, run$script_file))
-  }
-
-  out <- utils::read.csv(out_csv, header = FALSE, check.names = FALSE)
-  vals <- as.numeric(out[1, ])
-  data.frame(
-    pvalue = vals[1],
-    teststat = vals[2],
-    ha_param = vals[3],
-    cv1 = vals[4],
-    cv2 = vals[5],
-    cv3 = vals[6]
-  )
-}
-
-spur_run_matlab_halflife <- function(df,
-                                     var,
-                                     q,
-                                     nrep,
-                                     level,
-                                     latlong,
-                                     normdist) {
-  mw_root <- spur_mw_root()
-  in_csv <- tempfile(fileext = ".csv")
-  out_csv <- tempfile(fileext = ".csv")
-
-  vars <- c(var, "s_1", "s_2")
-  if (!all(vars %in% names(df))) {
-    stop("Missing required columns for Matlab half-life parity run.")
-  }
-
-  use_rows <- stats::complete.cases(df[, vars, drop = FALSE])
-  in_mat <- as.matrix(df[use_rows, vars, drop = FALSE])
-  utils::write.table(
-    in_mat,
-    file = in_csv,
-    sep = ",",
-    row.names = FALSE,
-    col.names = FALSE,
-    quote = FALSE
-  )
-
-  latlong_flag <- if (isTRUE(latlong)) 1L else 0L
-  normdist_flag <- if (isTRUE(normdist)) 1L else 0L
-
-  script <- c(
-    "try",
-    spur_matlab_addpath_line(file.path(mw_root, "Matlab", "functions")),
-    spur_matlab_addpath_line(file.path(mw_root, "matlab_functions")),
-    spur_matlab_addpath_line(file.path(mw_root, "cscpc")),
-    sprintf("in_mat = csvread('%s');", spur_matlab_quote(spur_matlab_path(in_csv))),
-    "if isempty(in_mat), error('Input matrix is empty.'); end",
-    "Y = in_mat(:,1);",
-    "s = in_mat(:,2:3);",
-    spur_matlab_distmat_lines(latlong_flag),
-    "rng(123);",
-    sprintf("emat = randn(%d, %d);", as.integer(q), as.integer(nrep)),
-    "n_hl = 100;",
-    "hl_grid_ho = linspace(0.001,1,n_hl)';",
-    "hl_grid_ho = [hl_grid_ho; linspace(1.01,3,30)'; 100];",
-    "n_hl_ha = 50;",
-    "hl_grid_ha = linspace(0.001,1,n_hl_ha)';",
-    "c_grid_ho = -log(0.5)./hl_grid_ho;",
-    "c_grid_ha = -log(0.5)./hl_grid_ha;",
-    "pv_mat = c_ci(Y,distmat,emat,c_grid_ho,c_grid_ha);",
-    sprintf("ii = pv_mat > (1 - (%s / 100));", format(level)),
-    "hl = hl_grid_ho(ii == 1);",
-    "if isempty(hl), error('No accepted half-life grid points.'); end",
-    "ci_l = min(hl);",
-    "ci_u = max(hl);",
-    "if ci_u >= 100, ci_u = NaN; end",
-    sprintf("if %d == 1", latlong_flag),
-    "  max_dist = max(max(distmat_raw)) * 3.14159265359 * 6371000.009 * 2;",
-    "else",
-    "  max_dist = max(max(distmat_raw));",
-    "end",
-    sprintf("if %d == 0", normdist_flag),
-    "  ci_l = ci_l * max_dist;",
-    "  ci_u = ci_u * max_dist;",
-    "end",
-    "out_vec = [ci_l, ci_u, max_dist];",
-    sprintf("csvwrite('%s', out_vec);", spur_matlab_quote(spur_matlab_path(out_csv))),
-    "exit(0);",
-    "catch ME",
-    "disp(ME.message);",
-    "exit(1);",
-    "end"
-  )
-
-  run <- spur_run_matlab_script(script)
-  if (run$rc != 0L) {
-    stop(sprintf("Matlab half-life run failed (rc=%s). Script: %s", run$rc, run$script_file))
-  }
-
-  out <- utils::read.csv(out_csv, header = FALSE, check.names = FALSE)
-  vals <- as.numeric(out[1, ])
-  data.frame(
-    ci_l = vals[1],
-    ci_u = vals[2],
-    max_dist = vals[3]
-  )
-}
 
 spur_run_matlab_spurtransform <- function(df,
                                           vars,

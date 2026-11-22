@@ -114,6 +114,7 @@ pub struct SymmetricEigen {
     pub values: Vec<f64>,
     pub vectors: Vec<f64>,
     pub tied: bool,
+    pub cutoff_tied: bool,
 }
 
 pub(crate) fn symmetric_eigenpairs(
@@ -141,17 +142,21 @@ fn leading_eigenpairs(
                 values: pairs.values,
                 vectors: pairs.vectors,
                 tied: false,
+                cutoff_tied: false,
             });
         }
     }
     let mut pairs = dense_eigenpairs(covariance.to_mut(), n, (q + 1).min(n))?;
     let tied = has_tied_values(&pairs.values);
+    let cutoff_tied =
+        q < n && pairs.values[q - 1] - pairs.values[q] <= 8.0 * eigen_tolerance(pairs.values[0]);
     pairs.values.truncate(q);
     pairs.vectors.truncate(q * n);
     Ok(SymmetricEigen {
         values: pairs.values,
         vectors: pairs.vectors,
         tied,
+        cutoff_tied,
     })
 }
 

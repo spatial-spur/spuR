@@ -161,7 +161,7 @@ lvech <- function(S) {
 }
 
 #' @keywords internal
-.validate_spur_residual_y <- function(Y, q_x, name = "Y") {
+.validate_spur_residual_y <- function(Y, q_x, center_response, name = "Y") {
   if (is.vector(Y)) {
     Y <- matrix(Y, ncol = 1L)
   } else {
@@ -184,12 +184,14 @@ lvech <- function(S) {
     if (max(col) == min(col)) {
       stop(sprintf("Response `%s` has zero variation; SPUR inference requires non-constant `%s`.", name, name))
     }
-    # The design spans a constant. Subtract before scaling to retain small
-    # representable differences in the response.
-    centered <- col - col[1L]
-    if (any(!is.finite(centered))) {
-      scaled <- col / max(abs(col))
-      centered <- scaled - scaled[1L]
+    centered <- col
+    if (center_response) {
+      # An exact constant column allows subtraction before scaling.
+      centered <- col - col[1L]
+      if (any(!is.finite(centered))) {
+        scaled <- col / max(abs(col))
+        centered <- scaled - scaled[1L]
+      }
     }
     col_scaled <- centered / max(abs(centered))
     col_norm <- .safe_vec_norm(col_scaled)
@@ -229,7 +231,7 @@ lvech <- function(S) {
 }
 
 #' @keywords internal
-.validate_core_spur_inputs <- function(distmat, emat, min_q = 2L) {
+.validate_core_spur_inputs <- function(distmat, emat, min_q = 2L, blocks = 1L) {
   if (!is.matrix(distmat) || !is.numeric(distmat) || nrow(distmat) != ncol(distmat) || nrow(distmat) < 2L) {
     stop("`distmat` must be a square numeric matrix with at least 2 rows.")
   }
@@ -239,7 +241,10 @@ lvech <- function(S) {
   if (!is.matrix(emat) || !is.numeric(emat)) {
     stop("`emat` must be a numeric matrix.")
   }
-  q <- nrow(emat)
+  if (nrow(emat) %% blocks != 0L) {
+    stop("Diagnostic `emat` must have two q-row blocks.")
+  }
+  q <- nrow(emat) %/% blocks
   nrep <- ncol(emat)
   n <- nrow(distmat)
   if (q < min_q) {

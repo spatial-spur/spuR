@@ -1,163 +1,114 @@
-#' Spatial Persistence Core Routine
-#'
-#' Internal translation of SPUR Mata `spatial_persistence` and `c_ci`.
-#'
-#' @param Z Outcome matrix.
-#' @param distmat Normalized distance matrix.
-#' @param emat Monte Carlo draw matrix.
-#' @param level Confidence level between 0 and 1.
-#' @return List with lower/upper half-life confidence bounds.
+.half_life_mixture <- function() {
+  nodes <- c(-0.906179845938664, -0.5384693101056831, 0,
+             0.5384693101056831, 0.906179845938664)
+  weights <- c(0.2369268850561891, 0.4786286704993665, 128 / 225,
+               0.4786286704993665, 0.2369268850561891)
+  edges <- c(0, 2^(-9:0))
+  width <- diff(edges) / 2
+  list(
+    points = as.vector(outer(1 + nodes, width) + rep(head(edges, -1L), each = 5L)),
+    weights = as.vector(outer(weights, width))
+  )
+}
+
+.invert_half_life <- function(grid, accepted, accepts) {
+  components <- matrix(numeric(), 0L, 2L)
+  start <- 0
+  transitions <- which(head(accepted, -1L) != tail(accepted, -1L))
+  for (i in transitions) {
+    left <- grid[i]
+    right <- grid[i + 1L]
+    while (right - left > 1e-7) {
+      mid <- (left + right) / 2
+      if (accepts(mid) == accepted[i]) left <- mid else right <- mid
+    }
+    if (accepted[i]) {
+      components <- rbind(components, c(start, right))
+    } else {
+      start <- left
+    }
+  }
+  if (tail(accepted, 1L)) components <- rbind(components, c(start, 1))
+  colnames(components) <- c("lower", "upper")
+  components / (1 - components)
+}
+
 #' @keywords internal
 spur_persistence <- function(Z, distmat, emat, level) {
-  dims <- .validate_core_spur_inputs(distmat, emat, min_q = 2L)
+  dims <- .validate_core_spur_inputs(distmat, emat)
   if (length(level) != 1L || !is.finite(level) || level <= 0 || level >= 1) {
     stop("Invalid level.")
   }
   y_info <- .validate_spur_y(Z, name = "Z")
   if (ncol(y_info$Y_dm) != 1L || nrow(y_info$Y_dm) != dims$n) {
-    stop("Half-life inference requires univariate `Z` of length nrow(distmat).")
+    stop("Half-life inference requires univariate Z of length nrow(distmat).")
   }
 
-  n_hl <- 100
-  hl_grid_ho <- c(
-    seq(from = 0.001, to = 1, length.out = n_hl),
-    seq(from = 1.01, to = 3, length.out = 30),
-    100
-  )
-  n_hl_ha <- 50
-  hl_grid_ha <- seq(from = 0.001, to = 1, length.out = n_hl_ha)
-
-  c_grid_ho <- -log(0.5) / hl_grid_ho
-  c_grid_ha <- -log(0.5) / hl_grid_ha
-
-  pv_mat <- c_ci(
-    Y = Z,
-    distmat = distmat,
-    emat = emat,
-    c_grid_ho = c_grid_ho,
-    c_grid_ha = c_grid_ha,
-    y_info = y_info
-  )
-
-  # Compare the complement from the simulation count so equality at nominal
-  # levels such as 90% stays excluded by the strict acceptance rule.
-  non_exceedances <- dims$nrep - round(pv_mat * dims$nrep)
-  ii <- as.vector(non_exceedances / dims$nrep < level)
-  hl <- hl_grid_ho[ii]
-  if (!length(hl)) {
-    return(list(
-      hl_ci_lower = NA_real_,
-      hl_ci_upper = NA_real_,
-      pv_mat = as.numeric(pv_mat),
-      hl_grid_ho = hl_grid_ho
-    ))
-  }
-
-  list(
-    hl_ci_lower = min(hl),
-    hl_ci_upper = max(hl),
-    pv_mat = as.numeric(pv_mat),
-    hl_grid_ho = hl_grid_ho
-  )
-}
-
-#' @keywords internal
-c_ci <- function(Y, distmat, emat, c_grid_ho, c_grid_ha, y_info = NULL) {
-  dims <- .validate_core_spur_inputs(distmat, emat, min_q = 2L)
   q <- dims$q
-  if (is.null(y_info)) {
-    y_info <- .validate_spur_y(Y, name = "Y")
-  }
-  if (ncol(y_info$Y_dm) != 1L || nrow(y_info$Y_dm) != dims$n) {
-    stop("Half-life inference requires univariate `Y` of length nrow(distmat).")
-  }
-
-  n_c_ho <- length(c_grid_ho)
-  n_c_ha <- length(c_grid_ha)
-
-  rho_bm <- 0.999
-  c_bm <- get_cbar(rho_bm, distmat)
-  sigdm_bm <- get_sigma_dm(distmat, c_bm)
-  R <- .extract_spur_basis(sigdm_bm, q)
-  P_mat <- .project_spur_y(y_info, R)
-  X <- P_mat[, 1L, drop = FALSE]
-
-  ch_om_mat <- vector("list", n_c_ho)
-  ch_omi_mat <- vector("list", n_c_ho)
-  log_det_mat <- numeric(n_c_ho)
-  reference_shape <- NULL
-  informative <- FALSE
-  for (i in seq_len(n_c_ho)) {
-    sigdm <- get_sigma_dm(distmat, c_grid_ho[i])
-    om <- crossprod(R, sigdm %*% R)
-    om <- 0.5 * (om + t(om))
-    if (is.null(reference_shape)) reference_shape <- om
-    informative <- informative || .spur_shapes_differ(om, reference_shape)
-    ch_om_mat[[i]] <- chol(om)
-    omi <- solve(om)
-    omi <- 0.5 * (omi + t(omi))
-    ch_omi <- chol(omi)
-    ch_omi_mat[[i]] <- ch_omi
-    log_det_mat[i] <- sum(log(diag(ch_omi)))
-  }
-
-  ch_omi_mat_ha <- vector("list", n_c_ha)
-  log_det_mat_ha <- numeric(n_c_ha)
-  log_ha_X <- numeric(n_c_ha)
-  for (j in seq_len(n_c_ha)) {
-    sigdm <- get_sigma_dm(distmat, c_grid_ha[j])
-    om <- crossprod(R, sigdm %*% R)
-    om <- 0.5 * (om + t(om))
-    informative <- informative || .spur_shapes_differ(om, reference_shape)
-    omi <- solve(om)
-    omi <- 0.5 * (omi + t(omi))
-    ch_omi_ha <- chol(omi)
-    ch_omi_mat_ha[[j]] <- ch_omi_ha
-    log_det_ha <- sum(log(diag(ch_omi_ha)))
-    log_det_mat_ha[j] <- log_det_ha
-    q_x <- sum((ch_omi_ha %*% X)^2)
-    if (!is.finite(q_x) || q_x <= 0) {
-      stop("Projected SPUR vector has zero quadratic form.")
+  nrep <- dims$nrep
+  basis <- .extract_spur_basis(get_sigma_lbm_dm(distmat), q)
+  projected <- sweep(basis, 2L, colMeans(basis), "-")
+  observed <- .project_spur_y(y_info, basis)
+  covariance <- function(h) {
+    kernel <- if (h == 0) {
+      distmat == 0
+    } else if (is.infinite(h)) {
+      -0.5 * distmat
+    } else {
+      rate <- log(2) / h
+      if (rate < 0.01) 0.5 * expm1(-rate * distmat) / rate else exp(-rate * distmat)
     }
-    log_ha_X[j] <- log_det_ha - 0.5 * q * log(q_x)
+    omega <- crossprod(projected, kernel %*% projected)
+    0.5 * (omega + t(omega))
   }
 
-  if (!informative) {
+  grid <- seq(0, 1, length.out = 129L)
+  h_grid <- grid / (1 - grid)
+  nulls <- lapply(h_grid, covariance)
+  mixture <- .half_life_mixture()
+  alternatives <- lapply(mixture$points, covariance)
+  if (!any(vapply(c(nulls[-1L], alternatives), .spur_shapes_differ, logical(1L), b = nulls[[1L]]))) {
     stop("Half-life experiment is uninformative: covariance shapes are proportional.")
   }
-  pv_mat <- matrix(NA_real_, nrow = n_c_ho, ncol = 1)
-  nrep <- ncol(emat)
+  precision_factor <- function(omega) {
+    inverse <- solve(omega)
+    chol(0.5 * (inverse + t(inverse)))
+  }
+  factors <- lapply(alternatives, precision_factor)
+  log_weights <- log(mixture$weights) + vapply(factors, function(f) sum(log(diag(f))), 0.0)
+  log_density <- function(upper, values, log_weight) {
+    log_weight - 0.5 * q * log(colSums((upper %*% values)^2))
+  }
+  observed_terms <- vapply(seq_along(factors), function(j) {
+    log_density(factors[[j]], observed, log_weights[j])
+  }, 0.0)
+  peak <- max(observed_terms)
+  observed_mix <- peak + log(sum(exp(observed_terms - peak)))
+  draw_norm <- 0.5 * q * log(colSums(emat^2))
 
-  for (i in seq_len(n_c_ho)) {
-    ch_null <- ch_om_mat[[i]]
-    e <- t(ch_null) %*% emat
-
-    ch_omi <- ch_omi_mat[[i]]
-    log_det_ho <- log_det_mat[i]
-    log_ho <- log_det_ho - 0.5 * q * log(colSums((ch_omi %*% e)^2))
-
-    q_x_ho <- sum((ch_omi %*% X)^2)
-    if (!is.finite(q_x_ho) || q_x_ho <= 0) {
-      stop("Projected SPUR vector has zero quadratic form.")
-    }
-    log_ho_X <- log_det_ho - 0.5 * q * log(q_x_ho)
-
-    log_ha_mat <- matrix(NA_real_, nrow = nrep, ncol = n_c_ha)
-    for (j in seq_len(n_c_ha)) {
-      ch_omi_ha <- ch_omi_mat_ha[[j]]
-      log_ha_mat[, j] <- log_det_mat_ha[j] - 0.5 * q * log(colSums((ch_omi_ha %*% e)^2))
-    }
-
-    log_ha_max <- apply(log_ha_mat, 1L, max)
-    log_ha_avg <- log_ha_max + log(rowMeans(exp(log_ha_mat - log_ha_max)))
-    log_lr <- log_ha_avg - log_ho
-
-    log_ha_X_max <- max(log_ha_X)
-    log_ha_X_avg <- log_ha_X_max + log(mean(exp(log_ha_X - log_ha_X_max)))
-    log_lr_X <- log_ha_X_avg - log_ho_X
-
-    pv_mat[i, 1] <- mean(log_lr > log_lr_X)
+  exceedances <- function(omega) {
+    simulated <- t(chol(omega)) %*% emat
+    upper <- precision_factor(omega)
+    observed_score <- observed_mix + 0.5 * q * log(sum((upper %*% observed)^2))
+    log_terms <- vapply(seq_along(factors), function(j) {
+      log_density(factors[[j]], simulated, log_weights[j])
+    }, numeric(nrep))
+    dim(log_terms) <- c(nrep, length(factors))
+    peak <- apply(log_terms, 1L, max)
+    scores <- peak + log(rowSums(exp(log_terms - peak))) + draw_norm
+    sum(scores >= observed_score)
   }
 
-  pv_mat
+  counts <- vapply(nulls, exceedances, 0.0)
+  accepted <- (nrep - counts) / (nrep + 1) < level
+  components <- .invert_half_life(grid, accepted, function(t) {
+    (nrep - exceedances(covariance(t / (1 - t)))) / (nrep + 1) < level
+  })
+  list(
+    hl_ci_lower = if (nrow(components)) unname(components[1L, 1L]) else NA_real_,
+    hl_ci_upper = if (nrow(components)) unname(components[nrow(components), 2L]) else NA_real_,
+    components = components,
+    pv_mat = (1 + counts) / (nrep + 1),
+    hl_grid_ho = h_grid
+  )
 }

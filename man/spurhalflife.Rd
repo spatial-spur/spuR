@@ -2,7 +2,7 @@
 % Please edit documentation in R/spur_formula_api.R
 \name{spurhalflife}
 \alias{spurhalflife}
-\title{SPUR Half-Life Confidence Grid}
+\title{SPUR Half-Life Confidence Set}
 \usage{
 spurhalflife(
   formula,
@@ -49,18 +49,17 @@ spurhalflife(
 }
 \value{
 A list of class \code{"spur_halflife"} with \code{ci_l}, \code{ci_u}, \code{max_dist},
-and \code{full}.
+\code{components}, and \code{full}.
 }
 \description{
-Reports the range of accepted half-lives on the finite grid used to
-replicate Table 1 of Mueller and Watson (2024).
+Inverts the continuous half-life tests of Mueller and Watson (2024).
 }
 \details{
-The bounds are the smallest and largest accepted grid points.
-The grid starts at 0.001 sample diameters and jumps from 3 to 100.
-If the point at 100 is accepted, \code{ci_u} is \code{NA} and prints as \code{Inf}
-by replication convention. The numerical grid and p-values are
-available in \code{full$hl_grid_ho} and \code{full$pv_mat}.
+The calculation evaluates zero and infinite half-life explicitly and refines
+detected changes in acceptance. Inspect \code{components} for detected
+confidence-set components and \code{ci_l}, \code{ci_u} for their hull. The
+initial probes and p-values are in \code{full$hl_grid_ho} and
+\code{full$pv_mat}. Narrow components between probes can escape detection.
 }
 \examples{
 \donttest{

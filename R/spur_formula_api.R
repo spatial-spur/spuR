@@ -258,7 +258,7 @@ spurtest_i0 <- function(formula,
     stop("`q` must be less than the number of observations.")
   }
   if (!is.null(seed)) set.seed(seed)
-  emat <- .draw_emat(q = q, nrep = nrep)
+  emat <- .draw_emat(q = 2L * q, nrep = nrep)
 
   reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i0")
   tied_from_rust <- FALSE
@@ -355,7 +355,7 @@ spurtest_i1 <- function(formula,
     stop("`q` must be less than the number of observations.")
   }
   if (!is.null(seed)) set.seed(seed)
-  emat <- .draw_emat(q = q, nrep = nrep)
+  emat <- .draw_emat(q = 2L * q, nrep = nrep)
 
   reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i1")
   tied_from_rust <- FALSE
@@ -457,7 +457,7 @@ spurtest_i0resid <- function(formula,
     ))
   }
   if (!is.null(seed)) set.seed(seed)
-  emat <- .draw_emat(q = q, nrep = nrep)
+  emat <- .draw_emat(q = 2L * q, nrep = nrep)
 
   reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i0_resid")
   tied_from_rust <- FALSE
@@ -561,7 +561,7 @@ spurtest_i1resid <- function(formula,
     ))
   }
   if (!is.null(seed)) set.seed(seed)
-  emat <- .draw_emat(q = q, nrep = nrep)
+  emat <- .draw_emat(q = 2L * q, nrep = nrep)
 
   reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i1_resid")
   tied_from_rust <- FALSE
@@ -606,10 +606,9 @@ spurtest_i1resid <- function(formula,
   )
 }
 
-#' SPUR Half-Life Confidence Grid
+#' SPUR Half-Life Confidence Set
 #'
-#' Reports the range of accepted half-lives on the finite grid used to
-#' replicate Table 1 of Mueller and Watson (2024).
+#' Inverts the continuous half-life tests of Mueller and Watson (2024).
 #'
 #' @param formula Formula identifying a single variable (`y ~ 1` or `~ y`).
 #' @param data Data frame containing test and coordinate variables.
@@ -625,12 +624,12 @@ spurtest_i1resid <- function(formula,
 #' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
 #' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_halflife"` with `ci_l`, `ci_u`, `max_dist`,
-#'   and `full`.
-#' @details The bounds are the smallest and largest accepted grid points.
-#'   The grid starts at 0.001 sample diameters and jumps from 3 to 100.
-#'   If the point at 100 is accepted, `ci_u` is `NA` and prints as `Inf`
-#'   by replication convention. The numerical grid and p-values are
-#'   available in `full$hl_grid_ho` and `full$pv_mat`.
+#'   `components`, and `full`.
+#' @details The calculation evaluates both limit laws and refines detected
+#'   changes in acceptance. Inspect `components` for detected components,
+#'   and `ci_l` and `ci_u` for their hull. A component between search probes
+#'   can escape detection. Initial probes and p-values are in
+#'   `full$hl_grid_ho` and `full$pv_mat`.
 #' @examples
 #' \donttest{
 #' data(spur_example)
@@ -704,20 +703,19 @@ spurhalflife <- function(formula,
     )
     rust_res <- .check_spur_rust_result(rust_res)
     tied_from_rust <- isTRUE(rust_res$tied)
-    if (!tied_from_rust || identical(backend_resolved, "rust")) {
-      used_rust <- TRUE
-      ci <- list(
-        hl_ci_lower = as.numeric(rust_res$hl_ci_lower),
-        hl_ci_upper = as.numeric(rust_res$hl_ci_upper),
-        pv_mat = as.numeric(rust_res$pv_mat),
-        hl_grid_ho = as.numeric(rust_res$hl_grid_ho),
-        backend = "rust",
-        tied = tied_from_rust
-      )
-      max_dist <- as.numeric(rust_res$max_dist)
-      if (isTRUE(coord_info$latlong)) {
-        max_dist <- max_dist * .SPUR_EARTH_CIRCUMFERENCE_M
-      }
+    used_rust <- TRUE
+    ci <- list(
+      hl_ci_lower = as.numeric(rust_res$hl_ci_lower),
+      hl_ci_upper = as.numeric(rust_res$hl_ci_upper),
+      pv_mat = as.numeric(rust_res$pv_mat),
+      hl_grid_ho = as.numeric(rust_res$hl_grid_ho),
+      components = rust_res$components,
+      backend = "rust",
+      tied = tied_from_rust
+    )
+    max_dist <- as.numeric(rust_res$max_dist)
+    if (isTRUE(coord_info$latlong)) {
+      max_dist <- max_dist * .SPUR_EARTH_CIRCUMFERENCE_M
     }
   }
 
@@ -732,11 +730,10 @@ spurhalflife <- function(formula,
 
   ci_l <- ci$hl_ci_lower
   ci_u <- ci$hl_ci_upper
-  if (!is.na(ci_u) && ci_u >= 100) {
-    ci_u <- NA_real_
-  }
-
+  components <- ci$components
+  colnames(components) <- c("lower", "upper")
   if (!isTRUE(normdist)) {
+    components <- components * max_dist
     ci_l <- ci_l * max_dist
     ci_u <- ci_u * max_dist
   }
@@ -750,9 +747,9 @@ spurhalflife <- function(formula,
   }
 
   if (isTRUE(verbose)) {
-    cat(sprintf("Spatial half-life %s%% confidence grid hull (Table 1, in %s)\n", level, units))
+    cat(sprintf("Spatial half-life %s%% confidence set (%s)\n", level, units))
     cat("---------------------------------------\n")
-    .print_halflife_bounds(ci_l, ci_u)
+    .print_halflife_components(components)
     cat("---------------------------------------\n")
   }
 
@@ -761,6 +758,7 @@ spurhalflife <- function(formula,
       ci_l = ci_l,
       ci_u = ci_u,
       max_dist = max_dist,
+      components = components,
       full = ci,
       backend = if (used_rust) "rust" else "fallback",
       tied = tied_from_rust

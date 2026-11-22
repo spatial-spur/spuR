@@ -40,11 +40,11 @@ get_r <- function(sig, qmax) {
     }, add = TRUE)
     res <- RSpectra::eigs_sym(
       sig,
-      k = qmax,
+      k = qmax + 1L,
       which = "LA",
       opts = list(initvec = cos(seq_len(n) * 0.6180339887498949))
     )
-    if (length(res$values) < qmax || ncol(res$vectors) < qmax) {
+    if (length(res$values) < qmax + 1L || ncol(res$vectors) < qmax + 1L) {
       eigen(sig, symmetric = TRUE)
     } else {
       res
@@ -55,10 +55,15 @@ get_r <- function(sig, qmax) {
   .select_spur_eigenvectors(eig_out, qmax)
 }
 
-.use_partial_spur_basis <- function(n, q) q < n && n >= 500L
+.use_partial_spur_basis <- function(n, q) q + 1L < n && n >= 500L
 
 .select_spur_eigenvectors <- function(eig, q) {
-  idx <- order(eig$values, decreasing = TRUE)[seq_len(q)]
+  order <- order(eig$values, decreasing = TRUE)
+  sorted <- eig$values[order]
+  if (length(sorted) > q && sorted[q] - sorted[q + 1L] <= 1.6e-11 * max(1, sorted[1L])) {
+    stop("Requested q splits a tied eigenspace. Choose q at an eigenvalue gap.")
+  }
+  idx <- order[seq_len(q)]
   values <- eig$values[idx]
   vectors <- eig$vectors[, idx, drop = FALSE]
 

@@ -16,7 +16,7 @@ testthat::test_that("spuR diagnostics match fallback with frozen emat (geodesic 
   q <- 8L
   nrep <- 1000L
   set.seed(42)
-  base_emat <- matrix(stats::rnorm(q * nrep), nrow = q, ncol = nrep)
+  base_emat <- matrix(stats::rnorm(2L * q * nrep), nrow = 2L * q, ncol = nrep)
   x_in <- cbind(1, df$x1, df$x2)
 
   configs <- list(
@@ -71,7 +71,7 @@ testthat::test_that("spuR diagnostics match fallback with frozen emat (geodesic 
       testthat::expect_equal(ru$cv, fb$cv, tolerance = 1e-9)
       testthat::expect_equal(ru$pvalue, fb$pvalue, tolerance = 1e-12)
       if (identical(pair$name, "i0")) {
-        testthat::expect_length(ru$full$rho_grid, 30L)
+        testthat::expect_length(ru$full$rho_grid, 31L)
         testthat::expect_equal(ru$full$pvalue_mat, fb$full$pvalue_mat, tolerance = 1e-12)
         testthat::expect_equal(ru$full$cvalue_mat, fb$full$cvalue_mat, tolerance = 1e-9)
         testthat::expect_equal(ru$pvalue, max(ru$full$pvalue_mat), tolerance = 1e-15)
@@ -173,7 +173,7 @@ testthat::test_that("spurhalflife matches fallback with frozen emat and preserve
         )
       )
       testthat::expect_identical(ru$backend, "rust")
-      testthat::expect_length(ru$full$pv_mat, 131L)
+      testthat::expect_length(ru$full$pv_mat, 129L)
       testthat::expect_equal(ru$max_dist, fb$max_dist, tolerance = 1e-10)
       testthat::expect_equal(ru$ci_l, fb$ci_l, tolerance = 1e-10)
       if (is.na(fb$ci_u)) {
@@ -267,7 +267,7 @@ testthat::test_that("tied eigenspace triggers auto fallback and backend validati
     )
     testthat::expect_identical(ru_i0$backend, "rust")
     testthat::expect_true(ru_i0$tied)
-    testthat::expect_identical(auto_i0$backend, "fallback")
+    testthat::expect_identical(auto_i0$backend, "rust")
     testthat::expect_true(auto_i0$tied)
   }
 
@@ -303,11 +303,29 @@ testthat::test_that("a stale SPUR native library routes auto to the fallback", {
   sym <- "wrap__rust_run_spur_i0"
   testthat::skip_if_not(is.loaded(sym, PACKAGE = "spuR"))
   testthat::local_mocked_bindings(
-    .spur_build_info = function() list(spur_api_version = 3L),
+    .spur_build_info = function() list(spur_api_version = 5L, spec_version = "0.3.6"),
     .package = "spuR"
   )
   testthat::expect_identical(.spur_rust_fallback_reason("auto", sym), "native_unavailable")
-  testthat::expect_error(.spur_rust_fallback_reason("rust", sym), "SPUR API 4")
+  testthat::expect_error(.spur_rust_fallback_reason("rust", sym), "methods spec 0.3.7")
+})
+
+testthat::test_that("residual tests preserve inference with a nearly constant nuisance column", {
+  set.seed(123L)
+  s <- seq(0, 1, length.out = 60L)
+  d <- data.frame(s = s, x = 1 + 1e-8 * s, y = rnorm(length(s)))
+  shifted <- transform(d, y = y + 1e9 * x)
+  backends <- c("fallback", if (is.loaded("wrap__rust_run_spur_i0_resid", PACKAGE = "spuR")) "rust")
+  for (backend in backends) {
+    test <- function(data) {
+      spurtest_i0resid(y ~ 0 + x, data, coords_euclidean = "s", q = 8L, nrep = 3000L,
+                      seed = 42L, backend = backend, nthreads = 1L)
+    }
+    base <- test(d)
+    with_nuisance <- test(shifted)
+    testthat::expect_equal(with_nuisance$teststat, base$teststat, tolerance = 1e-6)
+    testthat::expect_equal(with_nuisance$pvalue, base$pvalue)
+  }
 })
 
 testthat::test_that("residual tests require the constant direction and the pipeline requires an intercept", {

@@ -22,13 +22,13 @@ pub use spur_op::{
     run_spur_halflife, run_spur_i0, run_spur_i0_resid, run_spur_i1, run_spur_i1_resid,
     run_spur_pipeline, run_spur_transform, SpurHalfLifeOutput, SpurHalfLifeRequest, SpurI0Output,
     SpurI1Output, SpurPipelineOutput, SpurPipelineRequest, SpurTestRequest, SpurTransformKind,
-    SpurTransformRequest,
+    SpurTransformRequest, HALF_LIFE_MAX_COMPONENTS,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const SPEC_VERSION: &str = "0.3.5";
+pub const SPEC_VERSION: &str = "0.3.7";
 pub const SCPC_API_VERSION: usize = 7;
-pub const SPUR_API_VERSION: usize = 4;
+pub const SPUR_API_VERSION: usize = 5;
 
 /// Returns the active linear algebra provider compiled into `spatial-core`.
 pub const fn linalg_provider() -> &'static str {

@@ -73,7 +73,7 @@ testthat::test_that("verbose flag for spurhalflife only affects printing", {
         verbose = TRUE
       )
     },
-    regexp = "Spatial half-life .* confidence grid hull"
+    regexp = "Spatial half-life .* confidence set"
   )
 
   testthat::expect_equal(silent_out$ci_l, verbose_out$ci_l, tolerance = 0)

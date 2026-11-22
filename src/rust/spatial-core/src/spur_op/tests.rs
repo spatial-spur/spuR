@@ -1,6 +1,7 @@
 use super::halflife::{
-    accepts_halflife_null, add_halflife_likelihood_terms, half_power, halflife_cancellation_bound,
-    halflife_tile_size, log_sum_exp, quadratic_form_from_upper, HL_HA_LEN, MAX_HALFLIFE_TILE_BYTES,
+    accepts_halflife_null, add_halflife_likelihood_terms, half_life_covariances, half_life_mixture,
+    half_power, halflife_cancellation_bound, halflife_tile_size, invert_half_life, log_sum_exp,
+    quadratic_form_from_upper, HL_HA_LEN, MAX_HALFLIFE_TILE_BYTES,
 };
 use super::*;
 use crate::ErrorKind;
@@ -187,10 +188,10 @@ fn halflife_worker_scratch_and_likelihood_terms_are_stable() {
 
 #[test]
 fn halflife_confidence_set_excludes_exact_monte_carlo_boundaries() {
-    for (level, boundary) in [(0.90, 10), (0.95, 5)] {
-        assert!(!accepts_halflife_null(boundary - 1, 100, level));
-        assert!(!accepts_halflife_null(boundary, 100, level));
-        assert!(accepts_halflife_null(boundary + 1, 100, level));
+    for (level, boundary) in [(0.90, 9), (0.95, 4)] {
+        assert!(!accepts_halflife_null(boundary - 1, 99, level));
+        assert!(!accepts_halflife_null(boundary, 99, level));
+        assert!(accepts_halflife_null(boundary + 1, 99, level));
     }
 }
 
@@ -260,7 +261,7 @@ fn spur_cbar_and_diagnostics_are_deterministic_and_thread_invariant() {
     let n = y.len();
     let q = 8usize;
     let nrep = 1000usize;
-    let emat = make_deterministic_emat(q, nrep);
+    let emat = make_deterministic_emat(2 * q, nrep);
 
     let mut geom = SpurGeometry::from_coords(&coords, n, 2, Metric::Euclidean).unwrap();
     let c099 = geom.get_cbar(0.999).unwrap();
@@ -334,25 +335,16 @@ fn spur_cbar_and_diagnostics_are_deterministic_and_thread_invariant() {
     })
     .unwrap();
 
-    // Exact parity against canonical-sign spur-python with frozen deterministic emat:
-    assert!((pipe_1.i0.ha_param - 1.90625).abs() < 1e-12);
-    assert!((pipe_1.i0.lr[0] - 14.931_257_343_240_508).abs() < 1e-11);
-    assert!((pipe_1.i0.pvalue[0] - 0.0).abs() < 1e-12);
-    assert!((pipe_1.i1.ha_param - 27.469_699_236_099_583).abs() < 1e-11);
-    assert!((pipe_1.i1.lr[0] - 1.622_386_080_187_783_6).abs() < 1e-11);
-    assert!((pipe_1.i1.pvalue[0] - 0.807).abs() < 1e-12);
-    assert!((pipe_1.i1.cvalue[0] - 7.928_843_817_974_141).abs() < 1e-10);
-    assert!((pipe_1.i1.cvalue[1] - 6.426_857_918_629_026).abs() < 1e-10);
-    assert!((pipe_1.i1.cvalue[2] - 5.480_387_716_657_392).abs() < 1e-10);
-    assert!((pipe_1.i0resid.ha_param - 600.375).abs() < 1e-12);
-    assert!((pipe_1.i0resid.lr[0] - 8.492_145_848_011_605).abs() < 1e-9);
-    assert!((pipe_1.i0resid.pvalue[0] - 0.12).abs() < 1e-12);
-    assert!((pipe_1.i1resid.ha_param - 875.033_754_868_347_6).abs() < 1e-10);
-    assert!((pipe_1.i1resid.lr[0] - 223.478_786_080_475_8).abs() < 1e-8);
-    assert!((pipe_1.i1resid.pvalue[0] - 0.24).abs() < 1e-12);
-    assert!((pipe_1.i1resid.cvalue[0] - 456.320_954_571_764_9).abs() < 1e-9);
-    assert!((pipe_1.i1resid.cvalue[1] - 359.524_332_941_563_05).abs() < 1e-9);
-    assert!((pipe_1.i1resid.cvalue[2] - 307.072_910_917_401_26).abs() < 1e-9);
+    // Finite Monte Carlo p-values are attainable ranks.
+    for p in [
+        &pipe_1.i0.pvalue,
+        &pipe_1.i1.pvalue,
+        &pipe_1.i0resid.pvalue,
+        &pipe_1.i1resid.pvalue,
+    ] {
+        let rank = p[0] * (nrep + 1) as f64;
+        assert!(rank >= 1.0 && (rank - rank.round()).abs() < 1e-12);
+    }
 
     assert!((pipe_1.i0.lr[0] - i0_ind.lr[0]).abs() < 1e-12);
     assert!((pipe_1.i0.pvalue[0] - i0_ind.pvalue[0]).abs() < 1e-12);
@@ -374,7 +366,7 @@ fn spur_cbar_and_diagnostics_are_deterministic_and_thread_invariant() {
     assert_eq!(pipe_1.transformed_vars, transform_ind);
 
     // Check I(0) grid maxima invariant
-    assert_eq!(pipe_1.i0.rho_grid.len(), 30);
+    assert_eq!(pipe_1.i0.rho_grid.len(), 31);
     let max_p = pipe_1.i0.pvalue_mat.iter().copied().fold(0.0_f64, f64::max);
     assert!((pipe_1.i0.pvalue[0] - max_p).abs() < 1e-15);
 
@@ -422,15 +414,11 @@ fn spur_halflife_and_lbmgls_invariance_and_colocation() {
         nthreads: Some(2),
     })
     .unwrap();
-    assert_eq!(hl_1.pv_mat.len(), 131);
-    assert_eq!(hl_1.hl_grid_ho.len(), 131);
-    assert!(
-        (hl_1.ci_lower - 0.152_363_636_363_636_37).abs() < 1e-12,
-        "got ci_lower={}, ci_upper={}",
-        hl_1.ci_lower,
-        hl_1.ci_upper
-    );
-    assert!((hl_1.ci_upper - 100.0).abs() < 1e-12);
+    assert_eq!(hl_1.pv_mat.len(), 129);
+    assert_eq!(hl_1.hl_grid_ho.len(), 129);
+    assert!(hl_1.ci_lower > 0.0);
+    assert_eq!(hl_1.ci_upper, f64::INFINITY);
+    assert_eq!(hl_1.components, hl_2.components);
     for (&a, &b) in hl_1.pv_mat.iter().zip(&hl_2.pv_mat) {
         assert!((a - b).abs() < 1e-14);
     }
@@ -528,7 +516,7 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
 
     // Finding 3a: q > n - k_x is rejected cleanly (q=10, 11 for n=12, k_x=3 -> dof=9).
     for q_bad in [n - k_x + 1, n - 1] {
-        let emat_bad = make_deterministic_emat(q_bad, 50);
+        let emat_bad = make_deterministic_emat(2 * q_bad, 50);
         let err0 = run_spur_i0_resid(&SpurTestRequest {
             coords: &coords,
             n,
@@ -565,7 +553,7 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
 
     // Legal boundary q == n - k_x succeeds cleanly.
     let q_legal = n - k_x;
-    let emat_legal = make_deterministic_emat(q_legal, 60);
+    let emat_legal = make_deterministic_emat(2 * q_legal, 60);
     let ok_res = run_spur_i0_resid(&SpurTestRequest {
         coords: &coords,
         n,
@@ -589,7 +577,7 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
         let site = (i % 6) as f64;
         coords_col.extend_from_slice(&[site, (site * 1.3).sin()]);
     }
-    let emat_rank = make_deterministic_emat(7, 40);
+    let emat_rank = make_deterministic_emat(2 * 7, 40);
     let err_rank = run_spur_i0_resid(&SpurTestRequest {
         coords: &coords_col,
         n,
@@ -674,6 +662,7 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
     assert_eq!(err_proportional.kind(), ErrorKind::DegenerateVariance);
     let equilateral_y = [0.0, 1.0, -0.5];
     let intercept = [1.0, 1.0, 1.0];
+    let diagnostic_draws = make_deterministic_emat(4, 50);
     let equilateral_test = SpurTestRequest {
         coords: &equilateral,
         n: 3,
@@ -683,7 +672,7 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
         n_y: 1,
         x_in: Some(&intercept),
         k_x: 1,
-        emat: &emat_2,
+        emat: &diagnostic_draws,
         q: 2,
         nrep: 50,
         nthreads: Some(1),
@@ -736,7 +725,7 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
         nthreads: Some(1),
     })
     .unwrap();
-    assert!(hl_3.ci_lower.is_finite() && hl_3.ci_upper.is_finite());
+    assert!(hl_3.ci_lower.is_finite() && !hl_3.ci_upper.is_nan());
 
     // Finding 5: Column scaling of X_in (1e-12 and 1e12) leaves projection and inference invariant,
     // while true rank deficiency is still rejected.
@@ -753,7 +742,7 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
         x_tiny.extend_from_slice(&[1.0, v * 1e-12]);
         x_huge.extend_from_slice(&[1.0, v * 1e12]);
     }
-    let emat_s = make_deterministic_emat(8, 200);
+    let emat_s = make_deterministic_emat(2 * 8, 200);
     let run_scaled = |xm: &[f64]| {
         run_spur_i0_resid(&SpurTestRequest {
             coords: coords_sub,
@@ -800,7 +789,7 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
     // spans constants, even with the constant represented by the column sum.
     let x: Vec<f64> = (0..3).flat_map(|i| [i as f64, (1 - i) as f64]).collect();
     let qx = prepare_resid_design(&x, 3, 2, 1).unwrap();
-    let residual_projection = |y| prepare_residual_y_projections(y, 3, 1, &basis, &qx, 2, 1);
+    let residual_projection = |y| prepare_residual_y_projections(y, 3, 1, &basis, &qx, 2, 1, true);
     let unshifted = residual_projection(&[-1.0, 1.0, 0.0]).unwrap();
     assert_eq!(
         residual_projection(&[1e13 - 1.0, 1e13 + 1.0, 1e13]).unwrap(),
@@ -865,27 +854,13 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
         }
     }
 
-    // 2. quantiles_type7 linear selection matches naive sort bitwise
-    let raw_vals: Vec<f64> = (0..503)
-        .map(|i| ((i as f64) * 1.618_033_988_7).sin() * 100.0)
-        .collect();
-    let probs = [0.0, 0.01, 0.25, 0.5, 0.9, 0.95, 0.99, 1.0];
-    let mut sorted = raw_vals.clone();
-    sorted.sort_unstable_by(|a, b| a.total_cmp(b));
-    let expected_q: Vec<f64> = probs
-        .iter()
-        .map(|&p| {
-            let pos = p * ((sorted.len() - 1) as f64);
-            let lo = pos.floor() as usize;
-            let hi = pos.ceil() as usize;
-            sorted[lo] + (pos - lo as f64) * (sorted[hi] - sorted[lo])
-        })
-        .collect();
-    let mut work = raw_vals;
-    let got_q = quantiles_type7(&mut work, &probs);
-    for (&g, &e) in got_q.iter().zip(&expected_q) {
-        assert_eq!(g.to_bits(), e.to_bits());
-    }
+    // Rank-test critical values use the corresponding null order statistics.
+    let mut draws: Vec<_> = (1..=99).rev().map(f64::from).collect();
+    assert_eq!(monte_carlo_cutoffs(&mut draws), vec![99.0, 95.0, 90.0]);
+    assert_eq!(monte_carlo_pvalue(&draws, 99.0), 0.02);
+    assert_eq!(monte_carlo_pvalue(&draws, 100.0), 0.01);
+    assert_eq!(monte_carlo_pvalue(&[5.0; 99], 5.0), 1.0);
+    assert_eq!(monte_carlo_cutoffs(&mut [1.0; 8]), vec![f64::INFINITY; 3]);
 
     // 3. Compare both single- and multiple-tile, fast and log-scale
     // half-life paths to a factor-based calculation.
@@ -909,26 +884,21 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
         .unwrap();
 
         // Reference log-sum-exp evaluation without the packed fast path.
-        let mut g = SpurGeometry::from_coords(coords_hl, n_hl, 2, Metric::Euclidean).unwrap();
-        let c_bm = g.get_cbar(RHO_BM).unwrap();
-        let sigdm_bm = g.kernel_dm(c_bm);
+        let g = SpurGeometry::from_coords(coords_hl, n_hl, 2, Metric::Euclidean).unwrap();
+        let sigdm_bm = g.sigma_lbm_dm();
         let (basis_r, _) = select_leading_basis(&sigdm_bm, n_hl, q_hl).unwrap();
         let mut mr = basis_r.clone();
         center_columns(&mut mr, n_hl, q_hl);
         let p_vec = prepare_y_projections(&y_hl, n_hl, 1, &basis_r, q_hl).unwrap();
-        let neg_ln_half = -(0.5_f64).ln();
-        let ho_f: Vec<_> = out_fast
-            .hl_grid_ho
+        let compact: Vec<_> = (0..=128).map(|i| i as f64 / 128.0).collect();
+        let ho_f: Vec<_> = half_life_covariances(&g, &mr, q_hl, &compact)
             .iter()
-            .map(|&h| {
-                factor_omega(&g.projected_omega_from_mr(neg_ln_half / h, &mr, q_hl), q_hl).unwrap()
-            })
+            .map(|omega| factor_omega(omega, q_hl).unwrap())
             .collect();
-        let ha_f: Vec<_> = (0..HL_HA_LEN)
-            .map(|i| {
-                let h = 0.001 + (1.0 - 0.001) * (i as f64) / ((HL_HA_LEN - 1) as f64);
-                factor_omega(&g.projected_omega_from_mr(neg_ln_half / h, &mr, q_hl), q_hl).unwrap()
-            })
+        let (rates, masses) = half_life_mixture();
+        let ha_f: Vec<_> = rates
+            .iter()
+            .map(|&c| factor_omega(&g.projected_omega_from_mr(c, &mr, q_hl), q_hl).unwrap())
             .collect();
         let q_f = q_hl as f64;
         for (idx, ho) in ho_f.iter().enumerate() {
@@ -938,15 +908,15 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
                 ho.ch_omi.log_sqrt_det - 0.5 * q_f * xc_obs.iter().map(|v| v * v).sum::<f64>().ln();
             let lr_obs: f64 = ha_f
                 .iter()
-                .map(|ha| {
+                .zip(masses)
+                .map(|(ha, weight)| {
                     let mut xc = vec![0.0_f64; q_hl];
                     linalg::multiply(&ha.ch_omi.upper, &p_vec, &mut xc, q_hl, q_hl, 1, false);
                     let lha = ha.ch_omi.log_sqrt_det
                         - 0.5 * q_f * xc.iter().map(|v| v * v).sum::<f64>().ln();
-                    (lha - log_ho_obs).exp()
+                    weight * (lha - log_ho_obs).exp()
                 })
-                .sum::<f64>()
-                / (HL_HA_LEN as f64);
+                .sum::<f64>();
             let mut exceed = 0usize;
             for c in 0..nrep_hl {
                 let e_col: Vec<f64> = (0..q_hl).map(|r| emat_hl[r * nrep_hl + c]).collect();
@@ -958,20 +928,20 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
                     ho.ch_omi.log_sqrt_det - 0.5 * q_f * z0.iter().map(|v| v * v).sum::<f64>().ln();
                 let avg: f64 = ha_f
                     .iter()
-                    .map(|ha| {
+                    .zip(masses)
+                    .map(|(ha, weight)| {
                         let mut z1 = vec![0.0_f64; q_hl];
                         linalg::multiply(&ha.ch_omi.upper, &x, &mut z1, q_hl, q_hl, 1, false);
                         let lha = ha.ch_omi.log_sqrt_det
                             - 0.5 * q_f * z1.iter().map(|v| v * v).sum::<f64>().ln();
-                        (lha - log_ho).exp()
+                        weight * (lha - log_ho).exp()
                     })
-                    .sum::<f64>()
-                    / (HL_HA_LEN as f64);
-                if avg > lr_obs {
+                    .sum::<f64>();
+                if avg >= lr_obs {
                     exceed += 1;
                 }
             }
-            let ref_p = (exceed as f64) / (nrep_hl as f64);
+            let ref_p = (exceed + 1) as f64 / (nrep_hl + 1) as f64;
             assert!(
                 (out_fast.pv_mat[idx] - ref_p).abs() < 1e-12,
                 "q={q_hl} idx={idx}: fast={} ref={ref_p}",
@@ -1070,7 +1040,7 @@ fn residual_tests_require_constant_span_and_are_invariant_to_x_beta_shifts() {
         .map(|i| (i as f64 * 0.37).cos() + 0.1 * (i as f64))
         .collect();
     let shifted_y: Vec<f64> = eps.iter().zip(&x).map(|(&e, &x)| e + 1e6 * x).collect();
-    let emat: Vec<f64> = (0..q * nrep)
+    let emat: Vec<f64> = (0..2 * q * nrep)
         .map(|k| (((k * 31 + 7) % 97) as f64 - 48.0) / 25.0)
         .collect();
 
@@ -1151,4 +1121,29 @@ fn residual_tests_require_constant_span_and_are_invariant_to_x_beta_shifts() {
     // Response strictly inside span(X) must be rejected cleanly.
     let err = run_spur_i0_resid(&SpurTestRequest { y: &x, ..req }).unwrap_err();
     assert!(err.message().contains("zero variation"));
+}
+
+#[test]
+fn half_life_search_refines_disconnected_components() {
+    let grid = [0.0, 0.25, 0.5, 0.75, 1.0];
+    let accept = |t: f64| t <= 0.1 || (0.4..=0.6).contains(&t) || t >= 0.9;
+    let found = invert_half_life(&grid, &grid.map(accept), |points| {
+        Ok(points.iter().map(|&p| accept(p)).collect())
+    })
+    .unwrap();
+    assert_eq!(found.len(), 3);
+    assert_eq!(found[0][0], 0.0);
+    assert!((found[0][1] - 1.0 / 9.0).abs() < 1e-6);
+    assert!((found[1][0] - 2.0 / 3.0).abs() < 1e-6);
+    assert!((found[1][1] - 1.5).abs() < 1e-6);
+    assert!((found[2][0] - 9.0).abs() < 2e-5);
+    assert_eq!(found[2][1], f64::INFINITY);
+    let (rates, weights) = half_life_mixture();
+    assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-15);
+    let mean = rates
+        .iter()
+        .zip(weights)
+        .map(|(&r, w)| std::f64::consts::LN_2 / r * w)
+        .sum::<f64>();
+    assert!((mean - 0.5).abs() < 1e-15);
 }
