@@ -1,9 +1,7 @@
 //! Regression-side preparation for exact and Nyström SCPC. All matrices are row-major.
 
-use crate::{
-    checked_len, linalg, nystrom::normalize_coords, run_approx_scpc, run_exact_scpc,
-    ApproxScpcRequest, CoreError, ExactScpcRequest, Metric, ScpcOutput,
-};
+use crate::scpc_op::{run_approx_scpc, run_exact_scpc, ApproxScpcRequest, ExactScpcRequest};
+use crate::{checked_len, linalg, nystrom::normalize_coords, CoreError, Metric, ScpcOutput};
 
 const RANK_TOL: f64 = 1e-10;
 

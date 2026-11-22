@@ -56,11 +56,7 @@ extern SEXP wrap__rust_run_spur_transform(
     SEXP coords,
     SEXP latlong,
     SEXP radius,
-    SEXP strict_lt,
-    SEXP exclude_zero_distances,
     SEXP cluster_id,
-    SEXP return_matrix,
-    SEXP demean_lbmgls,
     SEXP nthreads
 );
 
@@ -71,7 +67,6 @@ extern SEXP wrap__rust_run_spur_pipeline(
     SEXP x_in,
     SEXP emat,
     SEXP transform_vars,
-    SEXP demean_lbmgls,
     SEXP nthreads
 );
 
@@ -82,8 +77,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"wrap__rust_run_spur_i0_resid", (DL_FUNC) &wrap__rust_run_spur_i0_resid, 6},
     {"wrap__rust_run_spur_i1_resid", (DL_FUNC) &wrap__rust_run_spur_i1_resid, 6},
     {"wrap__rust_run_spur_halflife", (DL_FUNC) &wrap__rust_run_spur_halflife, 6},
-    {"wrap__rust_run_spur_transform", (DL_FUNC) &wrap__rust_run_spur_transform, 12},
-    {"wrap__rust_run_spur_pipeline", (DL_FUNC) &wrap__rust_run_spur_pipeline, 8},
+    {"wrap__rust_run_spur_transform", (DL_FUNC) &wrap__rust_run_spur_transform, 8},
+    {"wrap__rust_run_spur_pipeline", (DL_FUNC) &wrap__rust_run_spur_pipeline, 7},
     {NULL, NULL, 0}
 };
 #else

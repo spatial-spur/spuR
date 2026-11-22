@@ -259,9 +259,9 @@ spurtest_i0 <- function(formula,
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
-  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_i0")
+  reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i0")
   tied_from_rust <- FALSE
-  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+  if (is.null(reason)) {
     rust_attempt <- .try_spur_test_rust(
       coords = coord_info$coords,
       latlong = coord_info$latlong,
@@ -287,7 +287,7 @@ spurtest_i0 <- function(formula,
   }
 
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
-  res <- spur_i0_test(Y = y, distmat = distmat, emat = emat)
+  res <- .run_spur_test(y, distmat, emat, is_i0 = TRUE)
   .format_spur_test_from_full(
     res,
     test_type = "I(0)",
@@ -356,9 +356,9 @@ spurtest_i1 <- function(formula,
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
-  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_i1")
+  reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i1")
   tied_from_rust <- FALSE
-  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+  if (is.null(reason)) {
     rust_attempt <- .try_spur_test_rust(
       coords = coord_info$coords,
       latlong = coord_info$latlong,
@@ -384,7 +384,7 @@ spurtest_i1 <- function(formula,
   }
 
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
-  res <- spur_i1_test(Y = y, distmat = distmat, emat = emat)
+  res <- .run_spur_test(y, distmat, emat, is_i0 = FALSE)
   .format_spur_test_from_full(
     res,
     test_type = "I(1)",
@@ -457,9 +457,9 @@ spurtest_i0resid <- function(formula,
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
-  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_i0_resid")
+  reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i0_resid")
   tied_from_rust <- FALSE
-  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+  if (is.null(reason)) {
     rust_attempt <- .try_spur_test_rust(
       coords = coord_info$coords,
       latlong = coord_info$latlong,
@@ -486,7 +486,7 @@ spurtest_i0resid <- function(formula,
   }
 
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
-  res <- spur_i0_resid_test(Y = parsed$Y, X_in = parsed$X_in, distmat = distmat, emat = emat)
+  res <- .run_spur_test(parsed$Y, distmat, emat, is_i0 = TRUE, X_in = parsed$X_in)
   .format_spur_test_from_full(
     res,
     test_type = "I(0) Residual",
@@ -559,9 +559,9 @@ spurtest_i1resid <- function(formula,
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
-  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_i1_resid")
+  reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i1_resid")
   tied_from_rust <- FALSE
-  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+  if (is.null(reason)) {
     rust_attempt <- .try_spur_test_rust(
       coords = coord_info$coords,
       latlong = coord_info$latlong,
@@ -588,7 +588,7 @@ spurtest_i1resid <- function(formula,
   }
 
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
-  res <- spur_i1_resid_test(Y = parsed$Y, X_in = parsed$X_in, distmat = distmat, emat = emat)
+  res <- .run_spur_test(parsed$Y, distmat, emat, is_i0 = FALSE, X_in = parsed$X_in)
   .format_spur_test_from_full(
     res,
     test_type = "I(1) Residual",
@@ -671,13 +671,13 @@ spurhalflife <- function(formula,
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
-  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_halflife")
+  reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_halflife")
   tied_from_rust <- FALSE
   used_rust <- FALSE
   ci <- NULL
   max_dist <- NA_real_
 
-  if (!identical(backend_resolved, "fallback") && rust_loaded) {
+  if (is.null(reason)) {
     e_m <- as.matrix(emat)
     storage.mode(e_m) <- "double"
     .mark_spur_accelerate_used()
@@ -852,8 +852,9 @@ spurtransform <- function(formula,
     stop("prefix must be a valid name prefix.")
   }
 
-  rust_loaded <- .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_transform")
-  use_rust_path <- !identical(backend_resolved, "fallback") && rust_loaded
+  use_rust_path <- is.null(.spur_rust_fallback_reason(
+    backend_resolved, "wrap__rust_run_spur_transform"
+  ))
 
   cluster_group <- if (transformation == "cluster") {
     factor(data[[clustvar]])
@@ -894,7 +895,8 @@ spurtransform <- function(formula,
         (transformation == "cluster" || nrow(y_mat) >= 2L || identical(backend_resolved, "rust"))) {
       .transform_vars_rust(y_mat, coord_info, transformation, radius, cluster, nthreads_resolved)
     } else if (transformation == "lbmgls") {
-      .apply_lbm_transform(.normalized_distmat(coord_info$coords, coord_info$latlong), y_mat)
+      distances <- .normalized_distmat(coord_info$coords, coord_info$latlong)
+      .apply_lbm_transform(y_mat, eigen(get_sigma_lbm_dm(distances), symmetric = TRUE))
     } else {
       make_transform(coord_info$coords, transformation, radius, cluster, coord_info$latlong) %*% y_mat
     }

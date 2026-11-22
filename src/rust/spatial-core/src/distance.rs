@@ -44,10 +44,6 @@ impl GeographicPoint {
     }
 }
 
-pub fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64, radius: f64) -> f64 {
-    2.0 * radius * GeographicPoint::new(lat1, lon1).half_angle(GeographicPoint::new(lat2, lon2))
-}
-
 pub(crate) struct Distances<'a> {
     coordinates: &'a [f64],
     width: usize,

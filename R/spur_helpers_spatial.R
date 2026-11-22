@@ -77,40 +77,24 @@ get_distmat_euclidean <- function(s) {
 #'
 #' @param s A numeric matrix where rows represent locations and columns are
 #'   `lat` and `lon`.
-#' @return A numeric matrix of pairwise great-circle distances in normalized
-#'   units, matching the SPUR Mata `getdistmat()` implementation.
+#' @return A numeric matrix of pairwise great-circle distances as fractions of
+#'   the circumference.
 #' @keywords internal
 get_distmat_lat_lon <- function(s) {
   n <- nrow(s)
   distmat <- matrix(0, nrow = n, ncol = n)
 
-  # Degrees-to-radians conversion
-  c <- pi / 180
-  s <- as.matrix(s)
+  radians <- as.matrix(s) * (pi / 180)
+  cos_lat <- cos(radians[, 1])
 
-  for (i in 1:n) {
-    d <- 0.5 * c * (sweep(s, 2, s[i, ], "-"))
-    h <- sin(d[, 1])^2 + cos(c * s[i, 1]) * cos(c * s[, 1]) * sin(d[, 2])^2
-    distmat[, i] <- asin(sqrt(pmin(pmax(h, 0), 1))) / pi
+  for (i in seq_len(n)) {
+    lat_sin <- sin((radians[i, 1] - radians[, 1]) * 0.5)
+    lon_sin <- sin((radians[i, 2] - radians[, 2]) * 0.5)
+    h <- lat_sin * lat_sin + cos_lat[i] * cos_lat * lon_sin * lon_sin
+    distmat[, i] <- (1 / pi) * asin(sqrt(pmin(pmax(h, 0), 1)))
   }
 
   distmat
-}
-
-#' Cluster Vector as Matrix
-#'
-#' Internal helper to convert cluster IDs into a column matrix and optionally
-#' subset rows using a logical index.
-#'
-#' @param cluster_values Vector of cluster IDs.
-#' @param use_rows Optional logical index vector.
-#' @return A matrix (column vector) of cluster values for selected observations.
-#' @keywords internal
-get_cluster_matrix <- function(cluster_values, use_rows = NULL) {
-  if (!is.null(use_rows)) {
-    cluster_values <- cluster_values[use_rows]
-  }
-  as.matrix(cluster_values)
 }
 
 #' @keywords internal

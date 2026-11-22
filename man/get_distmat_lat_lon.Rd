@@ -11,8 +11,8 @@ get_distmat_lat_lon(s)
 \code{lat} and \code{lon}.}
 }
 \value{
-A numeric matrix of pairwise great-circle distances in normalized
-units, matching the SPUR Mata \code{getdistmat()} implementation.
+A numeric matrix of pairwise great-circle distances as fractions of
+the circumference.
 }
 \description{
 Computes the matrix of great-circle distances between all pairs of locations

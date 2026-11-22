@@ -36,22 +36,3 @@
     mean(lr_a > cv)
   }
 }
-
-#' Compute Power Using Quadratic Forms
-#'
-#' Computes the power of the test by comparing likelihood ratios derived from two sets
-#' of covariance matrices. It computes:
-#' \deqn{
-#'   \text{lr\_o} = \frac{qe}{qa\_o} \quad \text{and} \quad \text{lr\_a} = \frac{qo\_a}{qe},
-#' }
-#' where \eqn{qe} is the column sum of \eqn{e^2}. The critical value is the 95th percentile of
-#' \eqn{lr\_o}, and power is computed as the proportion of \eqn{lr\_a} exceeding that critical value.
-#'
-#' @param om0 A numeric matrix representing the null covariance matrix.
-#' @param om1 A numeric matrix representing the alternative covariance matrix.
-#' @param e A numeric matrix of test statistics or error terms.
-#' @return A numeric scalar representing the computed power.
-#' @keywords internal
-get_pow_qf <- function(om0, om1, e) {
-  .make_pow_qf_evaluator(om0 = om0, e = e)(om1 = om1)
-}

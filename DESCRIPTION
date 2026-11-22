@@ -30,7 +30,7 @@ Depends:
 Imports:
     stats,
     RSpectra,
-    scpcR (>= 0.1.3.9000)
+    scpcR (>= 0.1.3.9001)
 Suggests:
     geodist,
     testthat (>= 3.0.0)

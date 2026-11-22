@@ -15,7 +15,7 @@ make_transform(
 \arguments{
 \item{s}{A numeric matrix of spatial coordinates.}
 
-\item{transformation}{One of \code{"nn"}, \code{"iso"}, \code{"cluster"}, or \code{"lbmgls"}.}
+\item{transformation}{One of \code{"nn"}, \code{"iso"}, or \code{"cluster"}.}
 
 \item{radius}{Numeric radius for the isotropic transformation.}
 

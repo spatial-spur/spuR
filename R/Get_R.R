@@ -25,7 +25,7 @@ get_r <- function(sig, qmax) {
 
   # Use iterative partial eigendecomposition only when matrix is large.
   # For small n, full eigen() is more stable for strict parity checks.
-  use_rspectra <- qmax < n && n >= 500L
+  use_rspectra <- .use_partial_spur_basis(n, qmax)
   eig_out <- if (use_rspectra) {
     had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
     if (had_seed) {
@@ -52,13 +52,19 @@ get_r <- function(sig, qmax) {
   } else {
     eigen(sig, symmetric = TRUE)
   }
-  idx <- order(eig_out$values, decreasing = TRUE)
-  values <- eig_out$values[idx][seq_len(qmax)]
-  vectors <- eig_out$vectors[, idx, drop = FALSE][, seq_len(qmax), drop = FALSE]
+  .select_spur_eigenvectors(eig_out, qmax)
+}
+
+.use_partial_spur_basis <- function(n, q) q < n && n >= 500L
+
+.select_spur_eigenvectors <- function(eig, q) {
+  idx <- order(eig$values, decreasing = TRUE)[seq_len(q)]
+  values <- eig$values[idx]
+  vectors <- eig$vectors[, idx, drop = FALSE]
 
   # Canonicalize eigenvector signs to match spatial-core: largest-magnitude
   # entry positive (earliest index within a roundoff tolerance).
-  for (j in seq_len(qmax)) {
+  for (j in seq_len(q)) {
     col <- vectors[, j]
     magnitudes <- abs(col)
     peak <- max(magnitudes)

@@ -128,7 +128,6 @@ pub fn row_major_to_rmatrix(
     Ok(mat)
 }
 
-#[cfg_attr(feature = "exports", extendr)]
 #[allow(clippy::too_many_arguments)]
 pub fn rust_run_model_scpc(
     coords: RMatrix<f64>,
@@ -563,33 +562,24 @@ pub fn run_spur_halflife_r(
 pub fn run_spur_transform_r(
     kind: &str,
     n: i32,
-    y: Nullable<RMatrix<f64>>,
+    y: RMatrix<f64>,
     coords: Nullable<RMatrix<f64>>,
     latlong: bool,
     radius: Nullable<f64>,
-    strict_lt: bool,
-    exclude_zero_distances: bool,
     cluster_id: Nullable<Integers>,
-    return_matrix: bool,
-    demean_lbmgls: bool,
     nthreads: Nullable<i32>,
 ) -> extendr_api::Result<List> {
     let n_usize = usize::try_from(n)
         .map_err(|_| Error::Other("transform requires a nonnegative sample size".into()))?;
     let nthreads_usize = parse_r_nthreads(nthreads)?;
     let tr_kind = match kind {
-        "nn" => SpurTransformKind::Nn {
-            exclude_zero_distances,
-        },
+        "nn" => SpurTransformKind::Nn,
         "iso" => {
             let r = match radius {
                 Nullable::NotNull(v) => v,
                 Nullable::Null => return Err(Error::Other("iso transform requires radius".into())),
             };
-            SpurTransformKind::Iso {
-                radius: r,
-                strict_lt,
-            }
+            SpurTransformKind::Iso { radius: r }
         }
         "cluster" => SpurTransformKind::Cluster,
         "lbmgls" => SpurTransformKind::LbmGls,
@@ -624,20 +614,14 @@ pub fn run_spur_transform_r(
     };
 
     let cluster_vec = parse_r_index_vec(cluster_id, n_usize, "cluster_id", "observations")?;
-    let (y_rm, n_y) = match y {
-        Nullable::Null => (None, 0usize),
-        Nullable::NotNull(ym) => {
-            if ym.nrows() != n_usize || ym.ncols() == 0 {
-                return Err(Error::Other(format!(
-                    "Y dimensions ({} x {}) incompatible with n = {n_usize}",
-                    ym.nrows(),
-                    ym.ncols()
-                )));
-            }
-            let ny = ym.ncols();
-            (Some(col_major_to_row_major(ym.data(), n_usize, ny)?), ny)
-        }
-    };
+    let n_y = y.ncols();
+    if y.nrows() != n_usize || n_y == 0 {
+        return Err(Error::Other(format!(
+            "Y dimensions ({} x {n_y}) incompatible with n = {n_usize}",
+            y.nrows()
+        )));
+    }
+    let y_rm = col_major_to_row_major(y.data(), n_usize, n_y)?;
 
     let out = run_spur_transform(&SpurTransformRequest {
         coords: coords_rm.as_deref(),
@@ -646,23 +630,14 @@ pub fn run_spur_transform_r(
         metric,
         kind: tr_kind,
         cluster_id: cluster_vec.as_deref(),
-        y: y_rm.as_deref(),
+        y: &y_rm,
         n_y,
-        return_matrix,
-        demean_lbmgls,
         nthreads: nthreads_usize,
     })
     .map_err(core_err)?;
 
-    let mat_obj: Robj = match out.matrix {
-        Some(ref m) => row_major_to_rmatrix(m, n_usize, n_usize)?.into(),
-        None => r!(NULL),
-    };
-    let tr_obj: Robj = match out.transformed {
-        Some(ref t) => row_major_to_rmatrix(t, n_usize, n_y)?.into(),
-        None => r!(NULL),
-    };
-    List::from_names_and_values(["matrix", "transformed"], [mat_obj, tr_obj])
+    let transformed = row_major_to_rmatrix(&out, n_usize, n_y)?;
+    List::from_names_and_values(["transformed"], [transformed])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -673,7 +648,6 @@ pub fn run_spur_pipeline_r(
     x_in: RMatrix<f64>,
     emat: RMatrix<f64>,
     transform_vars: RMatrix<f64>,
-    demean_lbmgls: bool,
     nthreads: Nullable<i32>,
 ) -> extendr_api::Result<List> {
     let nthreads_usize = parse_r_nthreads(nthreads)?;
@@ -732,7 +706,6 @@ pub fn run_spur_pipeline_r(
         nrep,
         transform_vars: &tr_rm,
         n_transform_vars: n_tr,
-        demean_lbmgls,
         nthreads: nthreads_usize,
     })
     .map_err(core_err)?;
@@ -750,127 +723,6 @@ pub fn run_spur_pipeline_r(
     )
 }
 
-#[cfg(feature = "exports")]
-#[extendr]
-pub fn rust_run_spur_i0(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    y: RMatrix<f64>,
-    emat: RMatrix<f64>,
-    nthreads: Nullable<i32>,
-) -> extendr_api::Result<List> {
-    run_spur_i0_r(coords, latlong, y, emat, nthreads)
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-pub fn rust_run_spur_i1(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    y: RMatrix<f64>,
-    emat: RMatrix<f64>,
-    nthreads: Nullable<i32>,
-) -> extendr_api::Result<List> {
-    run_spur_i1_r(coords, latlong, y, emat, nthreads)
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-pub fn rust_run_spur_i0_resid(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    y: RMatrix<f64>,
-    x_in: RMatrix<f64>,
-    emat: RMatrix<f64>,
-    nthreads: Nullable<i32>,
-) -> extendr_api::Result<List> {
-    run_spur_i0_resid_r(coords, latlong, y, x_in, emat, nthreads)
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-pub fn rust_run_spur_i1_resid(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    y: RMatrix<f64>,
-    x_in: RMatrix<f64>,
-    emat: RMatrix<f64>,
-    nthreads: Nullable<i32>,
-) -> extendr_api::Result<List> {
-    run_spur_i1_resid_r(coords, latlong, y, x_in, emat, nthreads)
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-pub fn rust_run_spur_halflife(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    y: Doubles,
-    emat: RMatrix<f64>,
-    level: f64,
-    nthreads: Nullable<i32>,
-) -> extendr_api::Result<List> {
-    run_spur_halflife_r(coords, latlong, y, emat, level, nthreads)
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-#[allow(clippy::too_many_arguments)]
-pub fn rust_run_spur_transform(
-    kind: &str,
-    n: i32,
-    y: Nullable<RMatrix<f64>>,
-    coords: Nullable<RMatrix<f64>>,
-    latlong: bool,
-    radius: Nullable<f64>,
-    strict_lt: bool,
-    exclude_zero_distances: bool,
-    cluster_id: Nullable<Integers>,
-    return_matrix: bool,
-    demean_lbmgls: bool,
-    nthreads: Nullable<i32>,
-) -> extendr_api::Result<List> {
-    run_spur_transform_r(
-        kind,
-        n,
-        y,
-        coords,
-        latlong,
-        radius,
-        strict_lt,
-        exclude_zero_distances,
-        cluster_id,
-        return_matrix,
-        demean_lbmgls,
-        nthreads,
-    )
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-#[allow(clippy::too_many_arguments)]
-pub fn rust_run_spur_pipeline(
-    coords: RMatrix<f64>,
-    latlong: bool,
-    y: Doubles,
-    x_in: RMatrix<f64>,
-    emat: RMatrix<f64>,
-    transform_vars: RMatrix<f64>,
-    demean_lbmgls: bool,
-    nthreads: Nullable<i32>,
-) -> extendr_api::Result<List> {
-    run_spur_pipeline_r(
-        coords,
-        latlong,
-        y,
-        x_in,
-        emat,
-        transform_vars,
-        demean_lbmgls,
-        nthreads,
-    )
-}
-
 /// Return compiled `spatial-core` version, active linear algebra provider, and ABI versions.
 pub fn build_info_r() -> List {
     list!(
@@ -883,26 +735,6 @@ pub fn build_info_r() -> List {
         scpc_api_version = spatial_core::SCPC_API_VERSION as i32,
         spur_api_version = spatial_core::SPUR_API_VERSION as i32
     )
-}
-
-#[cfg(feature = "exports")]
-#[extendr]
-pub fn rust_build_info() -> List {
-    build_info_r()
-}
-
-#[cfg(feature = "exports")]
-extendr_module! {
-    mod spatial_r;
-    fn rust_run_model_scpc;
-    fn rust_build_info;
-    fn rust_run_spur_i0;
-    fn rust_run_spur_i1;
-    fn rust_run_spur_i0_resid;
-    fn rust_run_spur_i1_resid;
-    fn rust_run_spur_halflife;
-    fn rust_run_spur_transform;
-    fn rust_run_spur_pipeline;
 }
 
 #[cfg(test)]

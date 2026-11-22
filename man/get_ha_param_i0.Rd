@@ -20,7 +20,6 @@ A numeric scalar representing the parameter \code{g}.
 }
 \description{
 Determines the parameter \code{g} such that the power of the test is approximately 50\%.
-The power is computed by the function \code{get_pow_qf()}, and \code{g} is determined
-through an iterative bisection procedure.
+An iterative bisection procedure computes \code{g} using the power of a quadratic-form test.
 }
 \keyword{internal}

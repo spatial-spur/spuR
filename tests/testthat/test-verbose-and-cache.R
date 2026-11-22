@@ -124,22 +124,3 @@ testthat::test_that("verbose flag for spurtransform only affects printing", {
     tolerance = 0
   )
 })
-
-testthat::test_that("cached power evaluator matches get_pow_qf", {
-  set.seed(1)
-  q <- 7L
-  nrep <- 2000L
-
-  A <- crossprod(matrix(stats::rnorm(q * q), q, q)) + diag(q)
-  B <- crossprod(matrix(stats::rnorm(q * q), q, q)) + diag(q)
-  e <- matrix(stats::rnorm(q * nrep), q, nrep)
-
-  make_eval <- get(".make_pow_qf_evaluator", envir = asNamespace("spuR"))
-  pow_qf <- get("get_pow_qf", envir = asNamespace("spuR"))
-  eval_fn <- make_eval(om0 = A, e = e)
-
-  pow_direct <- pow_qf(om0 = A, om1 = B, e = e)
-  pow_cached <- eval_fn(B)
-
-  testthat::expect_equal(pow_direct, pow_cached, tolerance = 0)
-})

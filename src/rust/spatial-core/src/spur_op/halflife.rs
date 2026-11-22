@@ -1,7 +1,7 @@
 //! SPUR half-life likelihoods, simulation, and confidence-set inversion.
 
 use super::{
-    col_demean_matrix, covariance_shapes_differ, factor_omega, prepare_y_projections,
+    center_columns, covariance_shapes_differ, factor_omega, prepare_y_projections,
     select_leading_basis, validate_emat, OmegaPairFactor, SpurGeometry, RHO_BM, TILE_COLS,
 };
 use crate::distance::Metric;
@@ -215,7 +215,8 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
         let c_bm = geom.get_cbar(RHO_BM)?;
         let sigdm_bm = geom.kernel_dm(c_bm);
         let (basis_r, tied) = select_leading_basis(&sigdm_bm, n, q)?;
-        let mr = col_demean_matrix(&basis_r, n, q);
+        let mut mr = basis_r.clone();
+        center_columns(&mut mr, n, q);
         let p_vec = prepare_y_projections(req.y, n, 1, &basis_r, q)?;
 
         let mut hl_grid_ho = Vec::with_capacity(HL_HO_LEN);

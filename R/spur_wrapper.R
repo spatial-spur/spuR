@@ -263,13 +263,14 @@ spur <- function(formula,
   design <- stats::model.matrix(levels_model)
   has_intercept <- "(Intercept)" %in% colnames(design)
   x_in <- design
+  q_x <- NULL
   if (!has_intercept) {
     if (ncol(x_in) == 0L) {
       stop("Intercept-free regression formula for spur() must include at least one regressor.", call. = FALSE)
     }
     q_x <- .orthonormal_design_basis(x_in)
     const_vec <- rep(1, nrow(x_in))
-    const_resid <- const_vec - as.numeric(q_x %*% crossprod(q_x, const_vec))
+    const_resid <- .residualize_spur(const_vec, q_x)
     if (sqrt(sum(const_resid^2)) <= 1e-10 * sqrt(nrow(x_in))) {
       stop(
         "The intercept-free design spans a constant, so the transformed regression would be rank-deficient. Use an explicit intercept.",
@@ -296,29 +297,19 @@ spur <- function(formula,
   storage.mode(variables) <- "double"
   storage.mode(x_in) <- "double"
 
-  rust_available <- !identical(backend_resolved, "fallback") &&
-    .require_spur_rust_if_requested(backend_resolved, "wrap__rust_run_spur_pipeline")
+  reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_pipeline")
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
   kinds <- c("i0", "i1", "i0resid", "i1resid")
   tied <- stats::setNames(rep(FALSE, length(kinds)), kinds)
-  forked_accelerate <- .is_spur_rust_loaded("wrap__rust_run_spur_pipeline") &&
-    .spur_inherited_accelerate()
-  reason <- if (identical(backend_resolved, "fallback")) {
-    "requested"
-  } else if (forked_accelerate) {
-    "forked_process"
-  } else {
-    "native_unavailable"
-  }
   diagnostics <- NULL
-  if (rust_available) {
+  if (is.null(reason)) {
     .mark_spur_accelerate_used()
     pipe <- .Call(
       "wrap__rust_run_spur_pipeline",
       .swap_coords_for_rust(coord_info$coords, coord_info$latlong),
-      isTRUE(coord_info$latlong), as.numeric(y), x_in, emat, variables, TRUE,
+      isTRUE(coord_info$latlong), as.numeric(y), x_in, emat, variables,
       nthreads_resolved, PACKAGE = "spuR"
     )
     pipe <- .check_spur_rust_result(pipe)
@@ -328,19 +319,26 @@ spur <- function(formula,
     } else {
       diagnostics <- pipe[kinds]
       transformed <- pipe$transformed_vars
-      reason <- NULL
     }
   }
   if (is.null(diagnostics)) {
     d <- .normalized_distmat(coord_info$coords, coord_info$latlong)
-    y_mat <- matrix(y, ncol = 1L)
+    dims <- .validate_core_spur_inputs(d, emat)
+    decay <- .make_spur_decay_solver(d)
+    bm <- get_sigma_lbm_dm(d)
+    eig <- if (!.use_partial_spur_basis(dims$n, dims$q)) eigen(bm, symmetric = TRUE)
+    levels <- .prepare_spur_diagnostics(y, d, dims$q, decay = decay, bm = bm, eig = eig)
     diagnostics <- list(
-      i0 = spur_i0_test(y_mat, d, emat),
-      i1 = spur_i1_test(y_mat, d, emat),
-      i0resid = spur_i0_resid_test(y_mat, x_in, d, emat),
-      i1resid = spur_i1_resid_test(y_mat, x_in, d, emat)
+      i0 = .spur_i0(levels, d, emat),
+      i1 = .spur_i1(levels, d, emat)
     )
-    transformed <- .apply_lbm_transform(d, variables)
+    if (is.null(eig)) eig <- eigen(bm, symmetric = TRUE)
+    transformed <- .apply_lbm_transform(variables, eig)
+    rm(bm, eig)
+
+    residuals <- .prepare_spur_diagnostics(y, d, dims$q, X_in = x_in, decay = decay, q_x = q_x)
+    diagnostics$i0resid <- .spur_i0(residuals, d, emat)
+    diagnostics$i1resid <- .spur_i1(residuals, d, emat)
   }
 
   operation_backend <- if (is.null(reason)) "rust" else "fallback"

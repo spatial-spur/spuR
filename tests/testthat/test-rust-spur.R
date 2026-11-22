@@ -341,15 +341,24 @@ testthat::test_that("intercept-free residual tests, constant-span guard, and for
     )
   }
 
+  fork_checks <- 0L
   testthat::with_mocked_bindings(
     .is_spur_rust_loaded = function(sym = "wrap__rust_run_spur_pipeline") TRUE,
-    .spur_inherited_accelerate = function() TRUE,
+    .spur_inherited_accelerate = function() {
+      fork_checks <<- fork_checks + 1L
+      TRUE
+    },
     .package = "spuR",
     {
       fork_res <- spur(y ~ x1, data = df, q = 8L, nrep = 400L, seed = 42L,
                        coords_euclidean = c("sx", "sy"), backend = "auto")
       testthat::expect_identical(fork_res$backend, "fallback")
       testthat::expect_identical(fork_res$fallback_reasons$diagnostics_and_transform, "forked_process")
+      testthat::expect_identical(fork_checks, 1L)
+      fallback_res <- spur(y ~ x1, data = df, q = 8L, nrep = 400L, seed = 42L,
+                           coords_euclidean = c("sx", "sy"), backend = "fallback")
+      testthat::expect_identical(fallback_res$fallback_reasons$diagnostics_and_transform, "requested")
+      testthat::expect_identical(fork_checks, 1L)
     }
   )
 

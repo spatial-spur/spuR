@@ -30,24 +30,47 @@ fn load_bench_200_spur() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     (y, x_in, coords)
 }
 
+// Build an explicit transformation matrix as an independent reference for
+// the streamed NN/ISO operations, including their parallel path.
+fn dense_neighbor_reference(req: &SpurTransformRequest<'_>) -> Vec<f64> {
+    let n = req.n;
+    let distances = distance_matrix(req.coords.unwrap(), n, req.d, req.metric).unwrap();
+    let mut contrast = vec![0.0; n * n];
+    for (i, (dst, src)) in contrast
+        .chunks_exact_mut(n)
+        .zip(distances.chunks_exact(n))
+        .enumerate()
+    {
+        let radius = match req.kind {
+            SpurTransformKind::Nn => src
+                .iter()
+                .copied()
+                .filter(|&d| d > 0.0)
+                .fold(f64::INFINITY, f64::min),
+            SpurTransformKind::Iso { radius } => radius,
+            _ => unreachable!(),
+        };
+        let count = src.iter().filter(|&&d| 0.0 < d && d <= radius).count();
+        if count > 0 {
+            for (cell, &d) in dst.iter_mut().zip(src) {
+                if 0.0 < d && d <= radius {
+                    *cell = -1.0 / count as f64;
+                }
+            }
+            dst[i] = 1.0;
+        }
+    }
+    let mut out = vec![0.0; req.y.len()];
+    linalg::multiply(&contrast, req.y, &mut out, n, n, req.n_y, false);
+    out
+}
+
 #[test]
-fn streamed_neighbor_transforms_match_matrix_paths() {
+fn streamed_neighbor_transforms_match_dense_reference() {
     let coords = [0.0, 0.0, 1.0, 2.0, 6.0];
     let y = [1.0, 3.0, 5.0, 7.0, 9.0];
-    let nn = SpurTransformKind::Nn {
-        exclude_zero_distances: false,
-    };
-    let nn_excluded = SpurTransformKind::Nn {
-        exclude_zero_distances: true,
-    };
-    let iso = SpurTransformKind::Iso {
-        radius: 1.0,
-        strict_lt: false,
-    };
-    let iso_strict = SpurTransformKind::Iso {
-        radius: 1.0,
-        strict_lt: true,
-    };
+    let nn = SpurTransformKind::Nn;
+    let iso = SpurTransformKind::Iso { radius: 1.0 };
     let base = SpurTransformRequest {
         coords: Some(&coords),
         n: coords.len(),
@@ -55,79 +78,54 @@ fn streamed_neighbor_transforms_match_matrix_paths() {
         metric: Metric::Euclidean,
         kind: nn,
         cluster_id: None,
-        y: Some(&y),
+        y: &y,
         n_y: 1,
-        return_matrix: false,
-        demean_lbmgls: false,
         nthreads: Some(1),
     };
-    let compare = |base: SpurTransformRequest<'_>| {
-        let dense = run_spur_transform(&SpurTransformRequest {
-            return_matrix: true,
-            ..base
-        })
-        .unwrap();
-        let streamed = run_spur_transform(&base).unwrap();
-        assert!(dense.matrix.is_some());
-        assert!(streamed.matrix.is_none());
-        let values = streamed.transformed.unwrap();
-        for (&actual, expected) in values.iter().zip(dense.transformed.unwrap()) {
+    let compare = |req: SpurTransformRequest<'_>| {
+        let expected = dense_neighbor_reference(&req);
+        let values = run_spur_transform(&req).unwrap();
+        for (&actual, expected) in values.iter().zip(expected) {
             assert!((actual - expected).abs() < 1e-12);
         }
         values
     };
     for (kind, expected) in [
-        (nn, [-2.0, 2.0, 4.0 / 3.0, 2.0, 2.0]),
-        (nn_excluded, [-4.0, -2.0, 4.0 / 3.0, 2.0, 2.0]),
+        (nn, [-4.0, -2.0, 4.0 / 3.0, 2.0, 2.0]),
         (iso, [-4.0, -2.0, 4.0 / 3.0, 2.0, 0.0]),
-        (iso_strict, [0.0; 5]),
     ] {
         let values = compare(SpurTransformRequest { kind, ..base });
         for (actual, expected) in values.into_iter().zip(expected) {
             assert!((actual - expected).abs() < 1e-12);
         }
     }
-    assert_eq!(
-        compare(SpurTransformRequest {
-            coords: Some(&[5.0; 3]),
-            n: 3,
-            y: Some(&[1.0, 3.0, 5.0]),
-            ..base
-        }),
-        vec![-3.0, 0.0, 3.0]
-    );
-    for return_matrix in [false, true] {
-        let err = run_spur_transform(&SpurTransformRequest {
-            coords: Some(&[5.0; 3]),
-            n: 3,
-            kind: nn_excluded,
-            y: Some(&[1.0, 3.0, 5.0]),
-            return_matrix,
-            ..base
-        })
-        .unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    }
+    let err = run_spur_transform(&SpurTransformRequest {
+        coords: Some(&[5.0; 3]),
+        n: 3,
+        y: &[1.0, 3.0, 5.0],
+        ..base
+    })
+    .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(
         compare(SpurTransformRequest {
             coords: Some(&[0.0, 1e-200, 1e160]),
             n: 3,
-            kind: nn_excluded,
-            y: Some(&[1.0, 3.0, 5.0]),
+            y: &[1.0, 3.0, 5.0],
             ..base
         }),
         vec![-2.0, 2.0, 3.0]
     );
     let coords_many: Vec<f64> = (0..80).flat_map(|i| [i as f64, (i % 5) as f64]).collect();
     let y_many: Vec<f64> = (0..160).map(|i| (i as f64).sin()).collect();
-    for kind in [nn, iso] {
+    for kind in [nn, SpurTransformKind::Iso { radius: 0.01 }] {
         compare(SpurTransformRequest {
             coords: Some(&coords_many),
             n: 80,
             d: 2,
             metric: Metric::GreatCircleFractionLatLon,
             kind,
-            y: Some(&y_many),
+            y: &y_many,
             n_y: 2,
             nthreads: Some(4),
             ..base
@@ -137,24 +135,19 @@ fn streamed_neighbor_transforms_match_matrix_paths() {
 
 #[test]
 fn cluster_transform_allows_one_observation() {
-    for return_matrix in [false, true] {
-        let result = run_spur_transform(&SpurTransformRequest {
-            coords: None,
-            n: 1,
-            d: 0,
-            metric: Metric::Euclidean,
-            kind: SpurTransformKind::Cluster,
-            cluster_id: Some(&[0]),
-            y: Some(&[2.0, -3.0]),
-            n_y: 2,
-            return_matrix,
-            demean_lbmgls: false,
-            nthreads: Some(1),
-        })
-        .unwrap();
-        assert_eq!(result.matrix, return_matrix.then(|| vec![0.0]));
-        assert_eq!(result.transformed.unwrap(), [0.0; 2]);
-    }
+    let result = run_spur_transform(&SpurTransformRequest {
+        coords: None,
+        n: 1,
+        d: 0,
+        metric: Metric::Euclidean,
+        kind: SpurTransformKind::Cluster,
+        cluster_id: Some(&[0]),
+        y: &[2.0, -3.0],
+        n_y: 2,
+        nthreads: Some(1),
+    })
+    .unwrap();
+    assert_eq!(result, [0.0; 2]);
 }
 
 #[test]
@@ -255,7 +248,6 @@ fn spur_cbar_and_diagnostics_are_deterministic_and_thread_invariant() {
         nrep,
         transform_vars: &x_in,
         n_transform_vars: 3,
-        demean_lbmgls: false,
         nthreads: Some(1),
     })
     .unwrap();
@@ -272,7 +264,6 @@ fn spur_cbar_and_diagnostics_are_deterministic_and_thread_invariant() {
         nrep,
         transform_vars: &x_in,
         n_transform_vars: 3,
-        demean_lbmgls: false,
         nthreads: Some(4),
     })
     .unwrap();
@@ -332,6 +323,19 @@ fn spur_cbar_and_diagnostics_are_deterministic_and_thread_invariant() {
     assert!((pipe_1.i0.ha_param - i0_ind.ha_param).abs() < 1e-12);
     assert!((pipe_1.i0resid.lr[0] - i0r_ind.lr[0]).abs() < 1e-12);
     assert!((pipe_1.i0resid.pvalue[0] - i0r_ind.pvalue[0]).abs() < 1e-12);
+    let transform_ind = run_spur_transform(&SpurTransformRequest {
+        coords: Some(&coords),
+        n,
+        d: 2,
+        metric: Metric::Euclidean,
+        y: &x_in,
+        n_y: 3,
+        kind: SpurTransformKind::LbmGls,
+        cluster_id: None,
+        nthreads: Some(1),
+    })
+    .unwrap();
+    assert_eq!(pipe_1.transformed_vars, transform_ind);
 
     // Check I(0) grid maxima invariant
     assert_eq!(pipe_1.i0.rho_grid.len(), 30);
@@ -414,67 +418,59 @@ fn spur_halflife_and_lbmgls_invariance_and_colocation() {
         assert!((a - b).abs() < 1e-12, "p_orig={a}, p_aff={b}");
     }
 
-    // Co-located LBM-GLS rank < n - 1 and zero constant vector action:
-    let coords_col = vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-    let mut y_col = vec![1.0, 2.0, -1.0, 0.5, 3.0];
-    let ones = vec![1.0_f64; 5];
-    y_col.extend(ones);
-    // Pass 5 x 2 row-major matrix [y_col, ones]:
-    let mut y_mat = vec![0.0_f64; 10];
-    for i in 0..5 {
-        y_mat[i * 2] = [1.0, 2.0, -1.0, 0.5, 3.0][i];
-        y_mat[i * 2 + 1] = 1.0;
-    }
-    let lbm = run_spur_transform(&SpurTransformRequest {
+    // Co-located LBM-GLS rank < n - 1 and zero constant vector action.
+    let coords_col = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+    // Pass the 5 x 2 row-major matrix [y, ones].
+    let y_mat = [1.0, 1.0, 2.0, 1.0, -1.0, 1.0, 0.5, 1.0, 3.0, 1.0];
+    let req = SpurTransformRequest {
         coords: Some(&coords_col),
         n: 5,
         d: 2,
         metric: Metric::Euclidean,
         kind: SpurTransformKind::LbmGls,
         cluster_id: None,
-        y: Some(&y_mat),
+        y: &y_mat,
         n_y: 2,
-        return_matrix: true,
-        demean_lbmgls: false,
         nthreads: Some(1),
-    })
-    .unwrap();
-    let h_mat = lbm.matrix.unwrap();
-    // Verify H is symmetric and removes constants, without adding 11'/n.
-    for i in 0..5 {
-        assert!((lbm.transformed.as_ref().unwrap()[i * 2 + 1]).abs() < 1e-12);
-        // Co-located rows 0 and 1 must have equal rows in H:
-        for j in 0..5 {
-            assert!((h_mat[i * 5 + j] - h_mat[j * 5 + i]).abs() < 1e-12);
+    };
+    let lbm = run_spur_transform(&req).unwrap();
+
+    // Reference H = V diag(lambda^-1/2) V' for the centered covariance -P D P / 2.
+    let geometry = SpurGeometry::from_coords(&coords_col, 5, 2, Metric::Euclidean).unwrap();
+    let mut sigma: Vec<f64> = geometry.norm_distmat.iter().map(|d| -0.5 * d).collect();
+    double_demean(&mut sigma, 5);
+    let pairs = basis::dense_eigenpairs(&mut sigma, 5, 5).unwrap();
+    let mut h = [0.0; 25];
+    let mut rank = 0;
+    for (vector, &val) in pairs.vectors.chunks_exact(5).zip(&pairs.values) {
+        if val > 1e-10 {
+            rank += 1;
+            for i in 0..5 {
+                for j in 0..5 {
+                    h[i * 5 + j] += vector[i] * vector[j] / val.sqrt();
+                }
+            }
         }
     }
-    for j in 0..5 {
-        assert!((h_mat[j] - h_mat[5 + j]).abs() < 1e-12);
+    assert_eq!(rank, 3);
+    let mut expected = [0.0; 10];
+    linalg::multiply(&h, &y_mat, &mut expected, 5, 5, 2, false);
+    center_columns(&mut expected, 5, 2);
+    for (&actual, expected) in lbm.iter().zip(expected) {
+        assert!((actual - expected).abs() < 1e-12);
     }
+    for row in lbm.chunks_exact(2) {
+        assert!(row[1].abs() < 1e-12);
+    }
+    assert!((lbm[0] - lbm[2]).abs() < 1e-12);
+    assert!(lbm.chunks_exact(2).map(|r| r[0]).sum::<f64>().abs() < 1e-12);
 
-    // Iso isolated node stays zero row:
     let iso = run_spur_transform(&SpurTransformRequest {
-        coords: Some(&coords_col),
-        n: 5,
-        d: 2,
-        metric: Metric::Euclidean,
-        kind: SpurTransformKind::Iso {
-            radius: 0.5,
-            strict_lt: true,
-        },
-        cluster_id: None,
-        y: None,
-        n_y: 0,
-        return_matrix: true,
-        demean_lbmgls: false,
-        nthreads: None,
+        kind: SpurTransformKind::Iso { radius: 0.5 },
+        ..req
     })
     .unwrap();
-    let iso_m = iso.matrix.unwrap();
-    // Points (1,0), (0,1), (1,1) are >= 1.0 apart, so rows 2, 3, 4 have zero neighbors -> 0 rows.
-    for r in 2..5 {
-        assert!(iso_m[r * 5..(r + 1) * 5].iter().all(|&v| v == 0.0));
-    }
+    assert_eq!(iso, vec![0.0; 10]);
 }
 
 #[test]
@@ -763,6 +759,21 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
     let basis = [1.0 / 2.0_f64.sqrt(), -1.0 / 2.0_f64.sqrt(), 0.0];
     let p = prepare_y_projections(&[1e13, 1e13 + 1.0, 1e13 - 1.0], 3, 1, &basis, 1).unwrap();
     assert!(p[0].is_finite() && p[0] != 0.0);
+
+    // Residual degeneracy is invariant to an additive offset when the design
+    // spans constants, even with the constant represented by the column sum.
+    let x: Vec<f64> = (0..3).flat_map(|i| [i as f64, (1 - i) as f64]).collect();
+    let qx = orthonormal_design_basis(&x, 3, 2).unwrap();
+    let residual_projection = |y| prepare_residual_y_projections(y, 3, 1, &basis, &qx, 2, 1);
+    let unshifted = residual_projection(&[-1.0, 1.0, 0.0]).unwrap();
+    assert_eq!(
+        residual_projection(&[1e13 - 1.0, 1e13 + 1.0, 1e13]).unwrap(),
+        unshifted
+    );
+    assert_eq!(
+        residual_projection(&[-f64::MAX, f64::MAX, 0.0]).unwrap(),
+        unshifted
+    );
 }
 
 #[test]
@@ -770,7 +781,7 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
     // 1. projected_omega_grid parity for n < 256 and n > 256 (serial & parallel)
     let (_, _, coords_200) = load_bench_200_spur();
     let geom_200 = SpurGeometry::from_coords(&coords_200, 200, 2, Metric::Euclidean).unwrap();
-    let (basis_200, _, mr_200, _) = prepare_lbm_basis(&geom_200, 8).unwrap();
+    let (basis_200, _, mr_200, _) = prepare_lbm_basis(&geom_200.sigma_lbm_dm(), 200, 8).unwrap();
     let c_vals = [0.25, 1.5, 8.0, 42.0, 120.0];
     let grid_serial = run_with_threads(Some(1), || {
         geom_200.projected_omega_grid(&c_vals, &mr_200, 8)
@@ -801,7 +812,7 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
         })
         .collect();
     let geom_big = SpurGeometry::from_coords(&coords_big, n_big, 2, Metric::Euclidean).unwrap();
-    let (_, _, mr_big, _) = prepare_lbm_basis(&geom_big, 6).unwrap();
+    let (_, _, mr_big, _) = prepare_lbm_basis(&geom_big.sigma_lbm_dm(), n_big, 6).unwrap();
     let big_serial = run_with_threads(Some(1), || {
         geom_big.projected_omega_grid(&c_vals, &mr_big, 6)
     })
@@ -866,7 +877,8 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
         let c_bm = g.get_cbar(RHO_BM).unwrap();
         let sigdm_bm = g.kernel_dm(c_bm);
         let (basis_r, _) = select_leading_basis(&sigdm_bm, n_hl, q_hl).unwrap();
-        let mr = col_demean_matrix(&basis_r, n_hl, q_hl);
+        let mut mr = basis_r.clone();
+        center_columns(&mut mr, n_hl, q_hl);
         let p_vec = prepare_y_projections(&y_hl, n_hl, 1, &basis_r, q_hl).unwrap();
         let neg_ln_half = -(0.5_f64).ln();
         let ho_f: Vec<_> = out_fast
@@ -978,26 +990,22 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
 
     // Sparse and extreme cluster IDs must map cleanly without OOM or overflow.
     let y_cl = [1.0, 3.0, 10.0, 20.0];
-    let out_cl = run_spur_transform(&SpurTransformRequest {
+    let tr = run_spur_transform(&SpurTransformRequest {
         kind: SpurTransformKind::Cluster,
         n: 4,
         d: 0,
         metric: Metric::Euclidean,
         coords: None,
-        y: Some(&y_cl),
+        y: &y_cl,
         n_y: 1,
         cluster_id: Some(&[usize::MAX, 1_000_000_000, usize::MAX, 1_000_000_000]),
-        return_matrix: true,
-        demean_lbmgls: false,
         nthreads: Some(1),
     })
     .unwrap();
-    let tr = out_cl.transformed.unwrap();
     assert!((tr[0] - (-4.5)).abs() < 1e-12);
     assert!((tr[1] - (-8.5)).abs() < 1e-12);
     assert!((tr[2] - 4.5).abs() < 1e-12);
     assert!((tr[3] - 8.5).abs() < 1e-12);
-    assert!(out_cl.matrix.is_some());
 }
 
 #[test]
@@ -1009,7 +1017,9 @@ fn residual_tests_without_intercept_are_invariant_to_x_beta_shifts() {
         .flat_map(|i| [((i * 17) % 41) as f64 / 41.0, ((i * 29) % 43) as f64 / 43.0])
         .collect();
     let x_in: Vec<f64> = (0..n).map(|i| 1.5 + (i as f64 * 0.23).sin()).collect();
-    let eps: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).cos() + 0.1 * (i as f64)).collect();
+    let eps: Vec<f64> = (0..n)
+        .map(|i| (i as f64 * 0.37).cos() + 0.1 * (i as f64))
+        .collect();
     let shifted_y: Vec<f64> = eps.iter().zip(&x_in).map(|(&e, &x)| e + 1e6 * x).collect();
     let emat: Vec<f64> = (0..q * nrep)
         .map(|k| (((k * 31 + 7) % 97) as f64 - 48.0) / 25.0)

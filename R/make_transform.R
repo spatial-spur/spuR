@@ -3,7 +3,7 @@
 #' Internal constructor for SPUR spatial transformation matrices.
 #'
 #' @param s A numeric matrix of spatial coordinates.
-#' @param transformation One of `"nn"`, `"iso"`, `"cluster"`, or `"lbmgls"`.
+#' @param transformation One of `"nn"`, `"iso"`, or `"cluster"`.
 #' @param radius Numeric radius for the isotropic transformation.
 #' @param cluster Numeric cluster ids for the cluster transformation.
 #' @param latlong Logical; if `TRUE`, treat coordinates as latitude/longitude.
@@ -28,9 +28,6 @@ make_transform <- function(s,
       stop("Cluster vector required for cluster transformation.")
     }
     return(cluster_matrix(cluster = cluster))
-  }
-  if (transformation == "lbmgls") {
-    return(lbm_gls_matrix(s = s, latlong = latlong))
   }
   stop("Invalid transformation.")
 }
@@ -72,13 +69,10 @@ nn_matrix <- function(s, latlong = FALSE) {
 #' @keywords internal
 iso_matrix <- function(s, radius, latlong = FALSE) {
   distmat <- if (isTRUE(latlong)) {
+    radius <- radius / .SPUR_EARTH_CIRCUMFERENCE_M
     get_distmat_lat_lon(s)
   } else {
     get_distmat_euclidean(s)
-  }
-
-  if (isTRUE(latlong)) {
-    distmat <- distmat * .SPUR_EARTH_CIRCUMFERENCE_M
   }
 
   dist_below_b <- distmat > 0 & distmat <= radius
@@ -104,30 +98,13 @@ cluster_matrix <- function(cluster) {
   diag(n) - clust_mat
 }
 
-#' LBM-GLS Transformation Matrix
-#'
-#' Direct translation of `lbm_gls_matrix.mata`.
-#'
-#' @param s A numeric matrix of spatial coordinates.
-#' @param latlong Logical; if `TRUE`, coordinates are latitude/longitude.
-#' @return A numeric matrix.
-#' @keywords internal
-lbm_gls_matrix <- function(s, latlong = FALSE) {
-  fit <- .lbm_spectral_factors(.normalized_distmat(s, latlong))
-  tcrossprod(sweep(fit$vectors, 2L, fit$inverse_sqrt, "*"), fit$vectors)
-}
-
-.lbm_spectral_factors <- function(distmat) {
-  eig <- eigen(get_sigma_lbm_dm(distmat), symmetric = TRUE)
+.apply_lbm_transform <- function(variables, eig) {
   keep <- eig$values > 1e-10
   if (!any(keep)) {
     stop("LBM-GLS covariance has no eigenvalues above 1e-10.")
   }
-  list(vectors = eig$vectors[, keep, drop = FALSE], inverse_sqrt = 1 / sqrt(eig$values[keep]))
-}
-
-.apply_lbm_transform <- function(distmat, variables) {
-  fit <- .lbm_spectral_factors(distmat)
-  transformed <- fit$vectors %*% (crossprod(fit$vectors, variables) * fit$inverse_sqrt)
+  vectors <- eig$vectors[, keep, drop = FALSE]
+  inverse_sqrt <- 1 / sqrt(eig$values[keep])
+  transformed <- vectors %*% (crossprod(vectors, variables) * inverse_sqrt)
   sweep(transformed, 2L, colMeans(transformed), "-")
 }

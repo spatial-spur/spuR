@@ -7,6 +7,23 @@ review_spur_data <- function(n = 40L) {
   data.frame(y = rnorm(n), x = rnorm(n), sx = runif(n), sy = runif(n))
 }
 
+test_that("geographic ISO includes a pair at the radius", {
+  d <- data.frame(
+    lat = c(-1.0036422005124446, 37.11177842377785),
+    lon = c(10.076763636412846, -142.9944155287363),
+    y = c(1, 4)
+  )
+  radius <- get_distmat_lat_lon(as.matrix(d[c("lat", "lon")]))[1, 2] * .SPUR_EARTH_CIRCUMFERENCE_M
+  for (backend in review_backends()) {
+    transform <- function(r) {
+      spurtransform(~y, d, lat = "lat", lon = "lon", transformation = "iso",
+                    radius = r, backend = backend, nthreads = 1L)$h_y
+    }
+    expect_equal(transform(radius), c(-3, 3))
+    expect_equal(transform(radius * (1 - 1e-12)), c(0, 0))
+  }
+})
+
 test_that("ordinary seeded SPUR calls agree and leave the same RNG state", {
   d <- review_spur_data(100L)
   if (!"rust" %in% review_backends()) skip("native SPUR is not installed")
@@ -90,6 +107,8 @@ test_that("SPUR rejects invalid ranks and uninformative experiments", {
 
 test_that("SPUR residual projection is invariant to regressor units and response location", {
   d <- review_spur_data(100L)
+  # These increments are exactly representable before and after adding 1e13.
+  d$y <- round(256 * d$y) / 256
   for (backend in review_backends()) {
     a <- spurtest_i0resid(y ~ x, d, coords_euclidean = c("sx", "sy"), q = 8L,
                           nrep = 200L, seed = 7L, backend = backend)
@@ -104,11 +123,15 @@ test_that("SPUR residual projection is invariant to regressor units and response
     }
     # A large offset used to trip a check against the uncentered response scale.
     changed <- d
-    changed$y <- d$y + 1e9
-    b <- spurtest_i0resid(y ~ x, changed, coords_euclidean = c("sx", "sy"), q = 8L,
-                          nrep = 200L, seed = 7L, backend = backend)
-    expect_equal(b$teststat, a$teststat, tolerance = 1e-6)
-    expect_equal(b$pvalue, a$pvalue, tolerance = 1e-12)
+    changed$y <- d$y + 1e13
+    for (fn in list(spurtest_i0resid, spurtest_i1resid)) {
+      base <- fn(y ~ x, d, coords_euclidean = c("sx", "sy"), q = 8L,
+                 nrep = 200L, seed = 7L, backend = backend)
+      shifted <- fn(y ~ x, changed, coords_euclidean = c("sx", "sy"), q = 8L,
+                    nrep = 200L, seed = 7L, backend = backend)
+      expect_equal(shifted$teststat, base$teststat, tolerance = 1e-12)
+      expect_equal(shifted$pvalue, base$pvalue, tolerance = 1e-12)
+    }
   }
 })
 

@@ -12,8 +12,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 extendr-api = { version = "0.7", features = ["result_condition"] }
-spatial-r = { path = "spatial-r", default-features = false }
-spatial-core = { path = "spatial-core" }
+spatial-r = { path = "spatial-r" }
 
 [profile.release]
 opt-level = 3

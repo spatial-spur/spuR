@@ -96,8 +96,8 @@ lvech <- function(S) {
 }
 
 #' @keywords internal
-.extract_spur_basis <- function(sigdm, q) {
-  r_out <- get_r(sigdm, q)
+.extract_spur_basis <- function(sigdm, q, eig = NULL) {
+  r_out <- if (is.null(eig)) get_r(sigdm, q) else .select_spur_eigenvectors(eig, q)
   ds <- r_out$DS
   lead <- ds[1L]
   tail <- ds[q]
@@ -144,6 +144,11 @@ lvech <- function(S) {
 }
 
 #' @keywords internal
+.residualize_spur <- function(values, q_x) {
+  values - q_x %*% crossprod(q_x, values)
+}
+
+#' @keywords internal
 .validate_spur_residual_y <- function(Y, q_x, name = "Y") {
   if (is.vector(Y)) {
     Y <- matrix(Y, ncol = 1L)
@@ -161,17 +166,28 @@ lvech <- function(S) {
   n_y <- ncol(Y)
   y_res <- matrix(0, nrow = n, ncol = n_y)
   y_res_norm <- numeric(n_y)
+  constant <- rep(1 / sqrt(n), n)
+  constant_resid <- .residualize_spur(.residualize_spur(constant, q_x), q_x)
+  has_constant <- .safe_vec_norm(constant_resid) <= 64 * .Machine$double.eps
 
   for (j in seq_len(n_y)) {
     col <- as.double(Y[, j])
-    raw_max <- max(abs(col))
-    if (max(col) - min(col) == 0 || !is.finite(raw_max) || raw_max == 0) {
+    if (max(col) == min(col)) {
       stop(sprintf("Response `%s` has zero variation; SPUR inference requires non-constant `%s`.", name, name))
     }
-    col_scaled <- col / raw_max
+    if (has_constant) {
+      # Translation leaves the residual unchanged when X spans a constant.
+      # Subtract before scaling to retain small representable differences.
+      centered <- col - col[1L]
+      if (any(!is.finite(centered))) {
+        scaled <- col / max(abs(col))
+        centered <- scaled - scaled[1L]
+      }
+      col <- centered
+    }
+    col_scaled <- col / max(abs(col))
     col_norm <- .safe_vec_norm(col_scaled)
-    u <- col_scaled - as.numeric(q_x %*% crossprod(q_x, col_scaled))
-    u <- u - as.numeric(q_x %*% crossprod(q_x, u))
+    u <- .residualize_spur(.residualize_spur(col_scaled, q_x), q_x)
     u_max <- max(abs(u))
     u_norm <- .safe_vec_norm(u)
     if (!is.finite(u_max) || u_max == 0 || !is.finite(u_norm) || u_norm <= 1e-12 * col_norm) {
@@ -204,19 +220,6 @@ lvech <- function(S) {
     stop("Projected SPUR covariance has non-positive trace.")
   }
   max(abs(a / ta - b / tb)) > 1e-12
-}
-
-#' @keywords internal
-.validate_spur_i1_shapes <- function(distmat, R, M = NULL) {
-  mr <- if (is.null(M)) sweep(R, 2L, colMeans(R), "-") else M %*% R
-  shapes <- lapply(c(0.01, 0.5, 0.95), function(rho) {
-    c_val <- get_cbar(rho, distmat)
-    crossprod(mr, exp(-c_val * distmat) %*% mr)
-  })
-  if (!.spur_shapes_differ(shapes[[1L]], shapes[[2L]]) &&
-      !.spur_shapes_differ(shapes[[1L]], shapes[[3L]])) {
-    stop("SPUR experiment is uninformative: covariance shapes are proportional.")
-  }
 }
 
 #' @keywords internal

@@ -9,10 +9,8 @@ mod halflife;
 mod transform;
 
 pub use halflife::{run_spur_halflife, SpurHalfLifeOutput, SpurHalfLifeRequest};
-use transform::apply_lbmgls_with_geom;
-pub use transform::{
-    run_spur_transform, SpurTransformKind, SpurTransformOutput, SpurTransformRequest,
-};
+use transform::apply_lbmgls;
+pub use transform::{run_spur_transform, SpurTransformKind, SpurTransformRequest};
 
 const SUM_CHUNK_SIZE: usize = 32_768;
 const TILE_COLS: usize = 1024;
@@ -27,35 +25,17 @@ const RHO_GRID_LEN: usize = 30;
 const MAX_CBAR_BRACKET_STEPS: usize = 500;
 const MAX_HA_BRACKET_STEPS: usize = 200;
 
-#[derive(Clone, Debug)]
-pub struct SpurGeometry {
-    pub(crate) n: usize,
-    pub(crate) max_dist: f64,
-    pub(crate) norm_distmat: Vec<f64>,
+struct SpurGeometry {
+    n: usize,
+    max_dist: f64,
+    norm_distmat: Vec<f64>,
     lower_tri: Vec<f64>,
     cbar_cache: Vec<(f64, f64)>,
     mean_exp_cache: Vec<(u64, f64)>,
 }
 
 impl SpurGeometry {
-    pub fn n(&self) -> usize {
-        self.n
-    }
-
-    pub fn max_dist(&self) -> f64 {
-        self.max_dist
-    }
-
-    pub fn norm_distmat(&self) -> &[f64] {
-        &self.norm_distmat
-    }
-
-    pub fn from_coords(
-        coords: &[f64],
-        n: usize,
-        d: usize,
-        metric: Metric,
-    ) -> Result<Self, CoreError> {
+    fn from_coords(coords: &[f64], n: usize, d: usize, metric: Metric) -> Result<Self, CoreError> {
         if n < 2 || d == 0 || coords.len() != checked_len(&[n, d])? {
             return Err(CoreError::invalid_input(
                 "SPUR requires at least 2 observations and 1 coordinate column",
@@ -82,31 +62,8 @@ impl SpurGeometry {
         })
     }
 
-    pub fn from_normalized_distmat(norm_distmat: &[f64], n: usize) -> Result<Self, CoreError> {
-        if n < 2 || norm_distmat.len() != checked_len(&[n, n])? {
-            return Err(CoreError::invalid_input(
-                "invalid normalized distance matrix dimensions",
-            ));
-        }
-        if norm_distmat.iter().any(|v| !v.is_finite() || *v < 0.0) {
-            return Err(CoreError::invalid_input(
-                "normalized distance matrix must be finite and nonnegative",
-            ));
-        }
-        let norm_vec = norm_distmat.to_vec();
-        let lower_tri = lower_triangle(&norm_vec, n);
-        Ok(Self {
-            n,
-            max_dist: 1.0,
-            norm_distmat: norm_vec,
-            lower_tri,
-            cbar_cache: Vec::new(),
-            mean_exp_cache: Vec::new(),
-        })
-    }
-
     /// Cached SPUR decay calibration `get_cbar(rhobar, distmat)` matching pinned bisection.
-    pub fn get_cbar(&mut self, rhobar: f64) -> Result<f64, CoreError> {
+    fn get_cbar(&mut self, rhobar: f64) -> Result<f64, CoreError> {
         if !rhobar.is_finite() || rhobar <= 0.0 || rhobar >= 1.0 {
             return Err(CoreError::calibration(
                 "rhobar must lie strictly between 0 and 1",
@@ -131,7 +88,7 @@ impl SpurGeometry {
     }
 
     /// Solve `get_cbar` for a batch of `rhobar` values, reusing cache and running in parallel.
-    pub fn get_cbar_batch(&mut self, rhos: &[f64]) -> Result<Vec<f64>, CoreError> {
+    fn get_cbar_batch(&mut self, rhos: &[f64]) -> Result<Vec<f64>, CoreError> {
         for &r in rhos {
             if !r.is_finite() || r <= 0.0 || r >= 1.0 {
                 return Err(CoreError::calibration(
@@ -207,27 +164,20 @@ impl SpurGeometry {
 
     fn exp_kernel(&self, c: f64) -> Vec<f64> {
         let n = self.n;
-        let diag_zero = (0..n).all(|i| self.norm_distmat[i * n + i] == 0.0);
-        if diag_zero {
-            let mut l_exp = vec![0.0_f64; self.lower_tri.len()];
-            linalg::exp_scaled(&self.lower_tri, -c, &mut l_exp);
-            let mut kern = vec![0.0_f64; n * n];
-            let mut idx = 0usize;
-            for i in 0..n {
-                kern[i * n + i] = 1.0;
-                for j in 0..i {
-                    let v = l_exp[idx];
-                    idx += 1;
-                    kern[i * n + j] = v;
-                    kern[j * n + i] = v;
-                }
+        let mut l_exp = vec![0.0_f64; self.lower_tri.len()];
+        linalg::exp_scaled(&self.lower_tri, -c, &mut l_exp);
+        let mut kern = vec![0.0_f64; n * n];
+        let mut idx = 0usize;
+        for i in 0..n {
+            kern[i * n + i] = 1.0;
+            for j in 0..i {
+                let v = l_exp[idx];
+                idx += 1;
+                kern[i * n + j] = v;
+                kern[j * n + i] = v;
             }
-            kern
-        } else {
-            let mut kern = vec![0.0_f64; self.norm_distmat.len()];
-            linalg::exp_scaled(&self.norm_distmat, -c, &mut kern);
-            kern
         }
+        kern
     }
 
     fn projected_omega_from_mr(&self, c: f64, mr: &[f64], q: usize) -> Vec<f64> {
@@ -480,7 +430,6 @@ pub struct SpurPipelineRequest<'a> {
     pub nrep: usize,
     pub transform_vars: &'a [f64],
     pub n_transform_vars: usize,
-    pub demean_lbmgls: bool,
     pub nthreads: Option<usize>,
 }
 
@@ -617,8 +566,7 @@ fn symmetrize(mat: &mut [f64], n: usize) {
     }
 }
 
-fn col_demean_matrix(src: &[f64], n: usize, q: usize) -> Vec<f64> {
-    let mut out = src.to_vec();
+fn center_columns(out: &mut [f64], n: usize, q: usize) {
     let mut col_means = vec![0.0_f64; q];
     for row in out.chunks_exact(q) {
         for j in 0..q {
@@ -633,7 +581,6 @@ fn col_demean_matrix(src: &[f64], n: usize, q: usize) -> Vec<f64> {
             row[j] -= col_means[j];
         }
     }
-    out
 }
 
 fn residual_project_matrix(src: &[f64], qx: &[f64], n: usize, k_x: usize, q: usize) -> Vec<f64> {
@@ -1050,7 +997,8 @@ fn prepare_y_projections(
             ));
         }
     }
-    let mut y_dm = col_demean_matrix(y, n, n_y);
+    let mut y_dm = y.to_vec();
+    center_columns(&mut y_dm, n, n_y);
     let mut y_dm_max = vec![0.0_f64; n_y];
     for row in y_dm.chunks_exact(n_y) {
         for j in 0..n_y {
@@ -1096,6 +1044,14 @@ fn prepare_residual_y_projections(
     let mut y_res_norm = vec![0.0_f64; n_y];
     let mut col = vec![0.0_f64; n];
 
+    // An additive offset is harmless only when the nuisance design spans
+    // constants. Remove it before measuring whether the residual is negligible.
+    let unit_constant = vec![(n as f64).sqrt().recip(); n];
+    let unit_once = residual_project_matrix(&unit_constant, qx, n, k_x, 1);
+    let unit_residual = residual_project_matrix(&unit_once, qx, n, k_x, 1);
+    let spans_constant =
+        unit_residual.iter().map(|v| v * v).sum::<f64>().sqrt() <= 64.0 * f64::EPSILON;
+
     for j in 0..n_y {
         let mut col_min = f64::INFINITY;
         let mut col_max_val = f64::NEG_INFINITY;
@@ -1106,13 +1062,33 @@ fn prepare_residual_y_projections(
             col_max_val = col_max_val.max(v);
             raw_max = raw_max.max(v.abs());
         }
-        if col_max_val - col_min == 0.0 || !raw_max.is_finite() || raw_max == 0.0 {
+        if col_max_val == col_min {
             return Err(CoreError::degenerate(
                 "response Y has zero variation; SPUR inference requires non-constant Y",
             ));
         }
-        for i in 0..n {
-            col[i] = y[i * n_y + j] / raw_max;
+        if spans_constant {
+            let anchor = y[j];
+            for i in 0..n {
+                col[i] = y[i * n_y + j] - anchor;
+            }
+            let mut scale = col.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+            // Subtract in the original units to retain small differences near
+            // a large common offset. Scale first only if subtraction overflows.
+            if !scale.is_finite() {
+                let scaled_anchor = anchor / raw_max;
+                for i in 0..n {
+                    col[i] = y[i * n_y + j] / raw_max - scaled_anchor;
+                }
+                scale = col.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+            }
+            for v in &mut col {
+                *v /= scale;
+            }
+        } else {
+            for i in 0..n {
+                col[i] = y[i * n_y + j] / raw_max;
+            }
         }
         let col_norm = col.iter().map(|v| v * v).sum::<f64>().sqrt();
         let u_once = residual_project_matrix(&col, qx, n, k_x, 1);
@@ -1123,11 +1099,7 @@ fn prepare_residual_y_projections(
                 "residualized response Y has zero variation; SPUR inference requires variation orthogonal to X",
             ));
         }
-        let u_norm = u_max
-            * u.iter()
-                .map(|v| (v / u_max).powi(2))
-                .sum::<f64>()
-                .sqrt();
+        let u_norm = u_max * u.iter().map(|v| (v / u_max).powi(2)).sum::<f64>().sqrt();
         if !u_norm.is_finite() || u_norm <= 1e-12 * col_norm {
             return Err(CoreError::degenerate(
                 "residualized response Y has zero variation; SPUR inference requires variation orthogonal to X",
@@ -1388,7 +1360,6 @@ fn build_rho_grid() -> Vec<f64> {
 #[allow(clippy::too_many_arguments)]
 fn run_spur_i0_from_basis(
     geom: &mut SpurGeometry,
-    _basis_r: &[f64],
     tied: bool,
     mr: &[f64],
     om_bm: &[f64],
@@ -1510,7 +1481,6 @@ fn run_spur_i0_from_basis(
 #[allow(clippy::too_many_arguments)]
 fn run_spur_i1_from_basis(
     geom: &mut SpurGeometry,
-    _basis_r: &[f64],
     tied: bool,
     mr: &[f64],
     om_ho: &[f64],
@@ -1574,15 +1544,15 @@ fn run_spur_i1_from_basis(
 }
 
 fn prepare_lbm_basis(
-    geom: &SpurGeometry,
+    sigdm_bm: &[f64],
+    n: usize,
     q: usize,
 ) -> Result<(Vec<f64>, bool, Vec<f64>, Vec<f64>), CoreError> {
-    let n = geom.n;
-    let sigdm_bm = geom.sigma_lbm_dm();
-    let (basis_r, tied) = select_leading_basis(&sigdm_bm, n, q)?;
-    let mr = col_demean_matrix(&basis_r, n, q);
+    let (basis_r, tied) = select_leading_basis(sigdm_bm, n, q)?;
+    let mut mr = basis_r.clone();
+    center_columns(&mut mr, n, q);
     let mut sig_r = vec![0.0_f64; n * q];
-    linalg::multiply(&sigdm_bm, &basis_r, &mut sig_r, n, n, q, false);
+    linalg::multiply(sigdm_bm, &basis_r, &mut sig_r, n, n, q, false);
     let mut om_bm = vec![0.0_f64; q * q];
     linalg::multiply(&basis_r, &sig_r, &mut om_bm, q, n, q, true);
     symmetrize(&mut om_bm, q);
@@ -1632,10 +1602,10 @@ pub fn run_spur_i0(req: &SpurTestRequest<'_>) -> Result<SpurI0Output, CoreError>
     validate_emat(req.emat, req.n, req.q, req.nrep)?;
     run_with_threads(req.nthreads, || {
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
-        let (basis_r, tied, mr, om_bm) = prepare_lbm_basis(&geom, req.q)?;
+        let (basis_r, tied, mr, om_bm) = prepare_lbm_basis(&geom.sigma_lbm_dm(), req.n, req.q)?;
         let p_mat = prepare_y_projections(req.y, req.n, req.n_y, &basis_r, req.q)?;
         run_spur_i0_from_basis(
-            &mut geom, &basis_r, tied, &mr, &om_bm, &p_mat, req.n_y, req.emat, req.q, req.nrep,
+            &mut geom, tied, &mr, &om_bm, &p_mat, req.n_y, req.emat, req.q, req.nrep,
         )
     })?
 }
@@ -1644,10 +1614,10 @@ pub fn run_spur_i1(req: &SpurTestRequest<'_>) -> Result<SpurI1Output, CoreError>
     validate_emat(req.emat, req.n, req.q, req.nrep)?;
     run_with_threads(req.nthreads, || {
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
-        let (basis_r, tied, mr, om_bm) = prepare_lbm_basis(&geom, req.q)?;
+        let (basis_r, tied, mr, om_bm) = prepare_lbm_basis(&geom.sigma_lbm_dm(), req.n, req.q)?;
         let p_mat = prepare_y_projections(req.y, req.n, req.n_y, &basis_r, req.q)?;
         run_spur_i1_from_basis(
-            &mut geom, &basis_r, tied, &mr, &om_bm, &p_mat, req.n_y, req.emat, req.q, req.nrep,
+            &mut geom, tied, &mr, &om_bm, &p_mat, req.n_y, req.emat, req.q, req.nrep,
         )
     })?
 }
@@ -1671,7 +1641,6 @@ pub fn run_spur_i0_resid(req: &SpurTestRequest<'_>) -> Result<SpurI0Output, Core
         )?;
         run_spur_i0_from_basis(
             &mut geom,
-            &resid.basis_r,
             resid.tied,
             &resid.mr,
             &resid.om_bm,
@@ -1703,7 +1672,6 @@ pub fn run_spur_i1_resid(req: &SpurTestRequest<'_>) -> Result<SpurI1Output, Core
         )?;
         run_spur_i1_from_basis(
             &mut geom,
-            &resid.basis_r,
             resid.tied,
             &resid.mr,
             &resid.om_bm,
@@ -1742,14 +1710,17 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
 
     run_with_threads(req.nthreads, || {
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
-        let (basis_lbm, tied_lbm, mr_lbm, om_lbm) = prepare_lbm_basis(&geom, req.q)?;
+        let sigdm_lbm = geom.sigma_lbm_dm();
+        let (basis_lbm, tied_lbm, mr_lbm, om_lbm) = prepare_lbm_basis(&sigdm_lbm, req.n, req.q)?;
         let p_lbm = prepare_y_projections(req.y, req.n, 1, &basis_lbm, req.q)?;
         let i0 = run_spur_i0_from_basis(
-            &mut geom, &basis_lbm, tied_lbm, &mr_lbm, &om_lbm, &p_lbm, 1, req.emat, req.q, req.nrep,
+            &mut geom, tied_lbm, &mr_lbm, &om_lbm, &p_lbm, 1, req.emat, req.q, req.nrep,
         )?;
         let i1 = run_spur_i1_from_basis(
-            &mut geom, &basis_lbm, tied_lbm, &mr_lbm, &om_lbm, &p_lbm, 1, req.emat, req.q, req.nrep,
+            &mut geom, tied_lbm, &mr_lbm, &om_lbm, &p_lbm, 1, req.emat, req.q, req.nrep,
         )?;
+        let transformed_vars =
+            apply_lbmgls(sigdm_lbm, req.n, req.transform_vars, req.n_transform_vars)?;
 
         let resid = prepare_resid_basis(&mut geom, req.x_in, req.k_x, req.q)?;
         let p_res = prepare_residual_y_projections(
@@ -1763,7 +1734,6 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
         )?;
         let i0resid = run_spur_i0_from_basis(
             &mut geom,
-            &resid.basis_r,
             resid.tied,
             &resid.mr,
             &resid.om_bm,
@@ -1775,7 +1745,6 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
         )?;
         let i1resid = run_spur_i1_from_basis(
             &mut geom,
-            &resid.basis_r,
             resid.tied,
             &resid.mr,
             &resid.om_bm,
@@ -1786,19 +1755,12 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
             req.nrep,
         )?;
 
-        let tr = apply_lbmgls_with_geom(
-            &geom,
-            Some(req.transform_vars),
-            req.n_transform_vars,
-            false,
-            req.demean_lbmgls,
-        )?;
         Ok(SpurPipelineOutput {
             i0,
             i1,
             i0resid,
             i1resid,
-            transformed_vars: tr.transformed.expect("transformed vars requested"),
+            transformed_vars,
         })
     })?
 }

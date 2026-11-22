@@ -104,7 +104,7 @@
   resolved
 }
 
-.is_spur_rust_loaded <- function(sym = "wrap__rust_run_spur_i0") {
+.is_spur_rust_loaded <- function(sym) {
   is.loaded(sym, PACKAGE = "spuR")
 }
 
@@ -137,17 +137,25 @@
   }
 }
 
-.require_spur_rust_if_requested <- function(backend_resolved, sym = "wrap__rust_run_spur_i0") {
-  loaded <- .is_spur_rust_loaded(sym)
-  if (identical(backend_resolved, "rust") && !loaded) {
-    stop("`backend = \"rust\"` was requested, but the native Rust backend is not loaded in `spuR`.", call. = FALSE)
+.spur_rust_fallback_reason <- function(backend_resolved, sym) {
+  if (identical(backend_resolved, "fallback")) {
+    return("requested")
   }
-  forked <- loaded && .spur_inherited_accelerate()
-  if (identical(backend_resolved, "rust") && forked) {
-    stop("Accelerate was used before this process forked. Use a fresh process or backend = 'fallback'.",
-         call. = FALSE)
+  forced <- identical(backend_resolved, "rust")
+  if (!.is_spur_rust_loaded(sym)) {
+    if (forced) {
+      stop("`backend = \"rust\"` was requested, but the native Rust backend is not loaded in `spuR`.", call. = FALSE)
+    }
+    return("native_unavailable")
   }
-  loaded && !forked
+  if (.spur_inherited_accelerate()) {
+    if (forced) {
+      stop("Accelerate was used before this process forked. Use a fresh process or backend = 'fallback'.",
+           call. = FALSE)
+    }
+    return("forked_process")
+  }
+  NULL
 }
 
 .try_spur_test_rust <- function(coords,
@@ -262,59 +270,29 @@
                                  cluster,
                                  nthreads_resolved) {
   storage.mode(y_mat) <- "double"
-  sub_n <- nrow(y_mat)
-  y_names <- colnames(y_mat)
-  .mark_spur_accelerate_used()
 
-  if (identical(transformation, "cluster")) {
-    cl_id <- as.integer(droplevels(cluster)) - 1L
-    storage.mode(cl_id) <- "integer"
-    res <- .Call(
-      "wrap__rust_run_spur_transform",
-      "cluster",
-      as.integer(sub_n),
-      y_mat,
-      NULL,
-      FALSE,
-      NULL,
-      FALSE,
-      TRUE,
-      cl_id,
-      FALSE,
-      TRUE,
-      nthreads_resolved,
-      PACKAGE = "spuR"
-    )
-    res <- .check_spur_rust_result(res)
-    out_mat <- res$transformed
-    colnames(out_mat) <- y_names
-    return(out_mat)
-  }
-
-  coords_rust <- .swap_coords_for_rust(coord_info$coords, coord_info$latlong)
+  clustered <- identical(transformation, "cluster")
+  cl_id <- if (clustered) as.integer(droplevels(cluster)) - 1L else NULL
+  coords_rust <- if (!clustered) .swap_coords_for_rust(coord_info$coords, coord_info$latlong)
   radius_arg <- if (identical(transformation, "iso")) {
     if (isTRUE(coord_info$latlong)) radius / .SPUR_EARTH_CIRCUMFERENCE_M else as.double(radius)
-  } else {
-    NULL
   }
+
+  .mark_spur_accelerate_used()
   res <- .Call(
     "wrap__rust_run_spur_transform",
     transformation,
-    as.integer(sub_n),
+    nrow(y_mat),
     y_mat,
     coords_rust,
     isTRUE(coord_info$latlong),
     radius_arg,
-    FALSE,
-    TRUE,
-    NULL,
-    FALSE,
-    TRUE,
+    cl_id,
     nthreads_resolved,
     PACKAGE = "spuR"
   )
   res <- .check_spur_rust_result(res)
   out_mat <- res$transformed
-  colnames(out_mat) <- y_names
+  colnames(out_mat) <- colnames(y_mat)
   out_mat
 }

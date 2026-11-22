@@ -178,12 +178,22 @@ testthat::test_that("spur transforms the evaluated model on one sample and consu
   sample <- match(rownames(model.frame(original)), rownames(df))
   transformed <- out$fits$transformed$model
   testthat::expect_identical(rownames(model.frame(transformed)), rownames(model.frame(original)))
-  coords <- as.matrix(df[sample, c("lat", "lon")])
-  expected <- lbm_gls_matrix(coords, TRUE) %*% model.response(model.frame(original))
+  complete <- df[sample, , drop = FALSE]
+  complete$testing_response <- as.numeric(model.response(model.frame(original)))
+  expected <- spurtransform(~ testing_response, complete, transformation = "lbmgls",
+                            lon = "lon", lat = "lat", backend = "fallback")
   testthat::expect_equal(
     as.numeric(model.response(model.frame(transformed))),
-    as.numeric(expected - mean(expected)), tolerance = 1e-10
+    expected$h_testing_response, tolerance = 1e-10
   )
+  diagnostics <- list(i0 = spurtest_i0, i1 = spurtest_i1,
+                      i0resid = spurtest_i0resid, i1resid = spurtest_i1resid)
+  for (kind in names(diagnostics)) {
+    formula <- if (endsWith(kind, "resid")) testing_response ~ fracblack * racseg else ~ testing_response
+    individual <- diagnostics[[kind]](formula, complete, q, nrep, lon = "lon", lat = "lat",
+                                       seed = 42L, backend = "fallback")
+    testthat::expect_equal(out$tests[[kind]]$full, individual$full, tolerance = 1e-12)
+  }
   testthat::expect_true("fracblack:racseg" %in% out$fits$transformed$term_names)
   testthat::expect_identical(unname(out$stage_backends), rep("fallback", 7L))
   if (is.loaded("wrap__rust_run_spur_pipeline", PACKAGE = "spuR")) {

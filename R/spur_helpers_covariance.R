@@ -41,18 +41,3 @@ get_sigma_lbm <- function(distmat) {
 get_sigma_lbm_dm <- function(distmat) {
   demean_sigma(get_sigma_lbm(distmat))
 }
-
-#' Residual Covariance Matrix
-#'
-#' Translation of SPUR Mata `get_sigma_residual.mata`.
-#'
-#' @param distmat A distance matrix.
-#' @param c Spatial persistence parameter.
-#' @param M Residual-maker matrix.
-#' @return Residual covariance matrix.
-#' @keywords internal
-get_sigma_residual <- function(distmat, c, M) {
-  sigma <- exp(-c * distmat)
-  res <- M %*% sigma %*% t(M)
-  0.5 * (res + t(res))
-}

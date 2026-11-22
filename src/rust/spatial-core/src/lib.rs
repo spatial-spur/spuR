@@ -10,27 +10,25 @@ pub mod linalg;
 pub mod nystrom;
 pub mod preparation;
 mod quadrature;
-pub mod scpc_op;
+mod scpc_op;
 pub mod spur_op;
 mod student_t;
 pub mod threads;
 
 pub use distance::Metric;
 pub use preparation::{run_model_scpc, ScpcPreparation};
-pub use scpc_op::{
-    run_approx_scpc, run_exact_scpc, ApproxScpcRequest, ExactScpcRequest, ScpcOutput,
-};
+pub use scpc_op::ScpcOutput;
 pub use spur_op::{
     run_spur_halflife, run_spur_i0, run_spur_i0_resid, run_spur_i1, run_spur_i1_resid,
-    run_spur_pipeline, run_spur_transform, SpurGeometry, SpurHalfLifeOutput, SpurHalfLifeRequest,
-    SpurI0Output, SpurI1Output, SpurPipelineOutput, SpurPipelineRequest, SpurTestRequest,
-    SpurTransformKind, SpurTransformOutput, SpurTransformRequest,
+    run_spur_pipeline, run_spur_transform, SpurHalfLifeOutput, SpurHalfLifeRequest, SpurI0Output,
+    SpurI1Output, SpurPipelineOutput, SpurPipelineRequest, SpurTestRequest, SpurTransformKind,
+    SpurTransformRequest,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SPEC_VERSION: &str = "0.3.4";
 pub const SCPC_API_VERSION: usize = 7;
-pub const SPUR_API_VERSION: usize = 3;
+pub const SPUR_API_VERSION: usize = 4;
 
 /// Returns the active linear algebra provider compiled into `spatial-core`.
 pub const fn linalg_provider() -> &'static str {

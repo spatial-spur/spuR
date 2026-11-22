@@ -16,7 +16,7 @@ A numeric scalar \code{cbar} satisfying the desired property.
 }
 \description{
 Determines the value of \code{cbar} such that \eqn{mean(exp(-cbar \times vd))} is approximately equal to
-a given \code{rhobar}, where \code{vd} is the vectorized lower-triangular portion (including the diagonal)
+a given \code{rhobar}, where \code{vd} is the vectorized lower-triangular portion (excluding the diagonal)
 of the distance matrix \code{distmat}. This function uses iterative adjustments and bisection to find
 an appropriate value.
 }

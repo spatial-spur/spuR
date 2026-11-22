@@ -67,35 +67,17 @@ fn rust_run_spur_halflife(
 fn rust_run_spur_transform(
     kind: &str,
     n: i32,
-    y: Nullable<RMatrix<f64>>,
+    y: RMatrix<f64>,
     coords: Nullable<RMatrix<f64>>,
     latlong: bool,
     radius: Nullable<f64>,
-    strict_lt: bool,
-    exclude_zero_distances: bool,
     cluster_id: Nullable<Integers>,
-    return_matrix: bool,
-    demean_lbmgls: bool,
     nthreads: Nullable<i32>,
 ) -> extendr_api::Result<List> {
-    run_spur_transform_r(
-        kind,
-        n,
-        y,
-        coords,
-        latlong,
-        radius,
-        strict_lt,
-        exclude_zero_distances,
-        cluster_id,
-        return_matrix,
-        demean_lbmgls,
-        nthreads,
-    )
+    run_spur_transform_r(kind, n, y, coords, latlong, radius, cluster_id, nthreads)
 }
 
 #[extendr]
-#[allow(clippy::too_many_arguments)]
 fn rust_run_spur_pipeline(
     coords: RMatrix<f64>,
     latlong: bool,
@@ -103,34 +85,12 @@ fn rust_run_spur_pipeline(
     x_in: RMatrix<f64>,
     emat: RMatrix<f64>,
     transform_vars: RMatrix<f64>,
-    demean_lbmgls: bool,
     nthreads: Nullable<i32>,
 ) -> extendr_api::Result<List> {
-    run_spur_pipeline_r(
-        coords,
-        latlong,
-        y,
-        x_in,
-        emat,
-        transform_vars,
-        demean_lbmgls,
-        nthreads,
-    )
+    run_spur_pipeline_r(coords, latlong, y, x_in, emat, transform_vars, nthreads)
 }
 
 #[extendr]
 fn rust_build_info() -> List {
     spatial_r::build_info_r()
-}
-
-extendr_module! {
-    mod spur_rust;
-    fn rust_build_info;
-    fn rust_run_spur_i0;
-    fn rust_run_spur_i1;
-    fn rust_run_spur_i0_resid;
-    fn rust_run_spur_i1_resid;
-    fn rust_run_spur_halflife;
-    fn rust_run_spur_transform;
-    fn rust_run_spur_pipeline;
 }
