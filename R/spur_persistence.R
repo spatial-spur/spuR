@@ -9,7 +9,7 @@
   edges <- c(0, 2^(exponent:0))
   width <- diff(edges) / 2
   list(
-    points = as.vector(outer(1 + nodes, width) + rep(head(edges, -1L), each = 5L)),
+    points = as.vector(outer(1 + nodes, width) + rep(utils::head(edges, -1L), each = 5L)),
     weights = as.vector(outer(weights, width))
   )
 }
@@ -28,7 +28,7 @@
 .invert_half_life <- function(grid, accepted, accepts) {
   components <- matrix(numeric(), 0L, 2L)
   start <- 0
-  transitions <- which(head(accepted, -1L) != tail(accepted, -1L))
+  transitions <- which(utils::head(accepted, -1L) != utils::tail(accepted, -1L))
   for (i in transitions) {
     left <- grid[i]
     right <- grid[i + 1L]
@@ -43,7 +43,7 @@
       start <- left
     }
   }
-  if (tail(accepted, 1L)) components <- rbind(components, c(start, 1))
+  if (utils::tail(accepted, 1L)) components <- rbind(components, c(start, 1))
   colnames(components) <- c("lower", "upper")
   components / (1 - components)
 }
