@@ -55,7 +55,7 @@ spurtest_i1(am ~ 1, data = spur_example, lon = "lon", lat = "lat", seed = 42)
 # Residual-based I(0) test
 spurtest_i0resid(am ~ gini, data = spur_example, lon = "lon", lat = "lat", seed = 42)
 
-# Half-life confidence interval
+# Half-life confidence grid hull
 spurhalflife(am ~ 1, data = spur_example, lon = "lon", lat = "lat", seed = 42)
 
 # Spatial transformation — pass your analysis formula to transform all variables
@@ -71,15 +71,29 @@ Setting `nthreads = 1` keeps a single-threaded Rust computation when Rust is sel
 The fallback remains available when Rust is not installed.
 
 SPUR inference requires at least two retained directions, positive retained covariance
-rank, and a nonzero projected response. Residual tests also require
-`q <= n - rank(X)`. Uninformative covariance shapes produce an explicit error.
-Rank checks are invariant to nonzero changes in regressor units.
+rank, and a nonzero projected response. Residual tests require
+`q <= n - rank(X)` and a fitted design spanning a constant. For example,
+all indicators of a factor span a constant. The combined `spur()` pipeline
+requires a formula intercept, which R formulas include by default, so both fits have
+a common formula convention. Uninformative covariance shapes and decay
+targets at or below the fraction of co-located pairs produce explicit errors.
 
 Euclidean absolute half-lives use the original coordinate units. Geographic absolute
 half-lives use metres, and `normdist = TRUE` reports fractions of the sample diameter.
-Public native and fallback calls use the same host draws and canonical eigenvector
-signs, so a fixed R seed gives matching simulations for isolated eigenvalues.
-Repeated eigenspaces remain basis-dependent finite-simulation cases.
+The bounds summarize the accepted candidates on the finite Table 1 grid of
+Müller & Watson (2024). The grid jumps from 3 to 100 sample diameters.
+Acceptance at 100 yields `ci_u = NA` and the replication display `Inf`.
+Inspect `full$hl_grid_ho` and `full$pv_mat` for the tested candidates
+and their Monte Carlo p-values.
+
+A fixed seed reproduces the host draws. Finite simulations can still differ
+with the basis chosen by the backend, especially in tied or nearly tied
+subspaces.
+
+A spatial transformation can also change IV exclusion and first-stage
+relevance. For a manual IV fit on transformed variables, verify both
+conditions for the transformed moments. Zero same-site instrument–error
+covariances alone are insufficient after mixing observations across sites.
 
 ## Documentation
 

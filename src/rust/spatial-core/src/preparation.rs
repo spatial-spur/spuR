@@ -34,6 +34,7 @@ pub struct ScpcPreparation<'a> {
 
 #[derive(Debug)]
 pub struct PreparedScpcInputs {
+    /// Scaled influence contributions for each site, separate from coefficient estimates.
     pub wj: Vec<f64>,
     pub xj: Option<Vec<f64>>,
     pub xjs: Option<Vec<f64>>,
@@ -386,7 +387,9 @@ fn directions(
             .collect());
     };
     let mut scales = vec![0.0_f64; checked_len(&[sites, k])?];
+    let mut counts = vec![0; sites];
     for (row, &g) in xj.chunks_exact(k).zip(ids) {
+        counts[g] += 1;
         for j in 0..k {
             scales[g * k + j] = scales[g * k + j].max(row[j].abs());
         }
@@ -408,6 +411,9 @@ fn directions(
         for j in 0..k {
             if ss[g * k + j] > 0.0 {
                 row[j] /= ss[g * k + j];
+            } else if counts[g] == 1 {
+                // A singleton site has the same sign convention as an unclustered site.
+                row[j] = 1.0;
             }
         }
     }
@@ -435,10 +441,8 @@ pub fn prepare_scpc_inputs(req: ScpcPreparation<'_>) -> Result<PreparedScpcInput
     };
     let mut wj = product(scores, &bread_t, req.n_sites, req.n_scores, k, false)?;
     let n = req.n_sites as f64;
-    for row in wj.chunks_exact_mut(k) {
-        for (v, coef) in row.iter_mut().zip(req.coefficients) {
-            *v = n * *v + coef;
-        }
+    for v in &mut wj {
+        *v *= n;
     }
     if wj.iter().any(|v| !v.is_finite()) {
         return Err(CoreError::invalid_input(
@@ -720,16 +724,68 @@ mod tests {
     }
 
     #[test]
-    fn clustered_norms_handle_extreme_units_and_zero_has_positive_unclustered_sign() {
-        let x = [-3.0, 0.0, 4.0, -0.0];
-        assert_eq!(directions(&x, 1, 4, None).unwrap(), [-1.0, 1.0, 1.0, 1.0]);
+    fn clustered_norms_handle_extreme_units_and_singleton_zero_sign() {
+        let x = [-3.0, 0.0, 4.0, -0.0, 0.0, 0.0];
+        assert_eq!(
+            directions(&x, 1, 6, None).unwrap(),
+            [-1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        );
         for scale in [1e-200, 1.0, 1e200] {
             let values = x.map(|v| v * scale);
-            let normalized = directions(&values, 1, 2, Some(&[0, 0, 0, 1])).unwrap();
-            for (a, b) in normalized.iter().zip([-0.6, 0., 0.8, 0.]) {
+            let normalized = directions(&values, 1, 3, Some(&[0, 0, 0, 1, 2, 2])).unwrap();
+            for (a, b) in normalized.iter().zip([-0.6, 0., 0.8, 1., 0., 0.]) {
                 assert!((a - b).abs() < 1e-15);
             }
         }
+    }
+
+    #[test]
+    fn whole_model_se_is_offset_invariant_and_singletons_preserve_zero_directions() {
+        let coords = [0.77, 0.44, 0.86, 0.697, 0.094];
+        let design = [1., -2., 1., -1., 1., 0., 1., 1., 1., 2.];
+        let scores = [1., -2., -2., 2., 0., 0., 2., 2., -1., -2.];
+        let prep = ScpcPreparation {
+            n_sites: 5,
+            n_obs: 5,
+            n_scores: 2,
+            coefficients: &[0., 1.],
+            bread: &[0.2, 0., 0., 0.1],
+            scores: &scores,
+            design: Some(&design),
+            design_cols: 2,
+            instruments: None,
+            instrument_cols: 0,
+            direction_design: None,
+            cluster_ids: None,
+            fixed_effects: None,
+        };
+        let fit = |prep| {
+            run_model_scpc(
+                prep,
+                &coords,
+                1,
+                Metric::Euclidean,
+                0.3,
+                true,
+                Some(1),
+                None,
+            )
+            .unwrap()
+        };
+        let unclustered = fit(prep);
+        let clustered = fit(ScpcPreparation {
+            cluster_ids: Some(&[0, 1, 2, 3, 4]),
+            ..prep
+        });
+        for (a, b) in unclustered.scpcstats.iter().zip(&clustered.scpcstats) {
+            assert!((a - b).abs() < 1e-10);
+        }
+        let offset = fit(ScpcPreparation {
+            coefficients: &[1e12, 1.],
+            ..prep
+        });
+        assert_eq!(offset.scpcstats[1], unclustered.scpcstats[1]);
+        assert_eq!(offset.scpcstats[2], 1e12 / offset.scpcstats[1]);
     }
 
     #[test]
@@ -754,7 +810,7 @@ mod tests {
             fixed_effects: Some(&fe),
         };
         let out = prepare_scpc_inputs(req).unwrap();
-        assert_eq!(out.wj, [-5.5, 0.5, 6.5]);
+        assert_eq!(out.wj, [-6., 0., 6.]);
         assert_eq!(out.xj.unwrap(), [0., 12., -12., -18., 18., 0.]);
         let u = out.proj_u.unwrap();
         let v = out.proj_v.unwrap();

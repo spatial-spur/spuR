@@ -148,6 +148,17 @@ lvech <- function(S) {
   values - q_x %*% crossprod(q_x, values)
 }
 
+.spur_residual_basis <- function(X) {
+  q_x <- .orthonormal_design_basis(X)
+  n <- nrow(q_x)
+  constant <- rep(1 / sqrt(n), n)
+  residual <- .residualize_spur(.residualize_spur(constant, q_x), q_x)
+  if (.safe_vec_norm(residual) > 64 * .Machine$double.eps) {
+    stop("SPUR residual tests require a design that spans a constant.", call. = FALSE)
+  }
+  q_x
+}
+
 #' @keywords internal
 .validate_spur_residual_y <- function(Y, q_x, name = "Y") {
   if (is.vector(Y)) {
@@ -166,26 +177,20 @@ lvech <- function(S) {
   n_y <- ncol(Y)
   y_res <- matrix(0, nrow = n, ncol = n_y)
   y_res_norm <- numeric(n_y)
-  constant <- rep(1 / sqrt(n), n)
-  constant_resid <- .residualize_spur(.residualize_spur(constant, q_x), q_x)
-  has_constant <- .safe_vec_norm(constant_resid) <= 64 * .Machine$double.eps
 
   for (j in seq_len(n_y)) {
     col <- as.double(Y[, j])
     if (max(col) == min(col)) {
       stop(sprintf("Response `%s` has zero variation; SPUR inference requires non-constant `%s`.", name, name))
     }
-    if (has_constant) {
-      # Translation leaves the residual unchanged when X spans a constant.
-      # Subtract before scaling to retain small representable differences.
-      centered <- col - col[1L]
-      if (any(!is.finite(centered))) {
-        scaled <- col / max(abs(col))
-        centered <- scaled - scaled[1L]
-      }
-      col <- centered
+    # The design spans a constant. Subtract before scaling to retain small
+    # representable differences in the response.
+    centered <- col - col[1L]
+    if (any(!is.finite(centered))) {
+      scaled <- col / max(abs(col))
+      centered <- scaled - scaled[1L]
     }
-    col_scaled <- col / max(abs(col))
+    col_scaled <- centered / max(abs(centered))
     col_norm <- .safe_vec_norm(col_scaled)
     u <- .residualize_spur(.residualize_spur(col_scaled, q_x), q_x)
     u_max <- max(abs(u))

@@ -172,7 +172,8 @@
     stop("Residual test formula must include at least one term (e.g., an intercept or regressor).")
   }
 
-  list(Y = as.matrix(y), X_in = as.matrix(x_in), use_rows = use_rows)
+  q_x <- if (attr(terms_obj, "intercept") == 0L) .spur_residual_basis(x_in)
+  list(Y = as.matrix(y), X_in = x_in, q_x = q_x, use_rows = use_rows)
 }
 
 #' @keywords internal
@@ -400,6 +401,7 @@ spurtest_i1 <- function(formula,
 #' SPUR I(0) Residual Test
 #'
 #' Formula interface for the SPUR spatial I(0) residual test.
+#' The fitted design must span a constant.
 #'
 #' @param formula Two-sided model formula (`y ~ x1 + x2`).
 #' @param data Data frame containing model and coordinate variables.
@@ -486,7 +488,8 @@ spurtest_i0resid <- function(formula,
   }
 
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
-  res <- .run_spur_test(parsed$Y, distmat, emat, is_i0 = TRUE, X_in = parsed$X_in)
+  res <- .run_spur_test(parsed$Y, distmat, emat, is_i0 = TRUE,
+                        X_in = parsed$X_in, q_x = parsed$q_x)
   .format_spur_test_from_full(
     res,
     test_type = "I(0) Residual",
@@ -502,6 +505,7 @@ spurtest_i0resid <- function(formula,
 #' SPUR I(1) Residual Test
 #'
 #' Formula interface for the SPUR spatial I(1) residual test.
+#' The fitted design must span a constant.
 #'
 #' @param formula Two-sided model formula (`y ~ x1 + x2`).
 #' @param data Data frame containing model and coordinate variables.
@@ -588,7 +592,8 @@ spurtest_i1resid <- function(formula,
   }
 
   distmat <- .normalized_distmat(coords = coord_info$coords, latlong = coord_info$latlong)
-  res <- .run_spur_test(parsed$Y, distmat, emat, is_i0 = FALSE, X_in = parsed$X_in)
+  res <- .run_spur_test(parsed$Y, distmat, emat, is_i0 = FALSE,
+                        X_in = parsed$X_in, q_x = parsed$q_x)
   .format_spur_test_from_full(
     res,
     test_type = "I(1) Residual",
@@ -601,9 +606,10 @@ spurtest_i1resid <- function(formula,
   )
 }
 
-#' SPUR Half-Life Confidence Interval
+#' SPUR Half-Life Confidence Grid
 #'
-#' Formula interface for SPUR half-life confidence intervals.
+#' Reports the range of accepted half-lives on the finite grid used to
+#' replicate Table 1 of Mueller and Watson (2024).
 #'
 #' @param formula Formula identifying a single variable (`y ~ 1` or `~ y`).
 #' @param data Data frame containing test and coordinate variables.
@@ -620,6 +626,11 @@ spurtest_i1resid <- function(formula,
 #' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_halflife"` with `ci_l`, `ci_u`, `max_dist`,
 #'   and `full`.
+#' @details The bounds are the smallest and largest accepted grid points.
+#'   The grid starts at 0.001 sample diameters and jumps from 3 to 100.
+#'   If the point at 100 is accepted, `ci_u` is `NA` and prints as `Inf`
+#'   by replication convention. The numerical grid and p-values are
+#'   available in `full$hl_grid_ho` and `full$pv_mat`.
 #' @examples
 #' \donttest{
 #' data(spur_example)
@@ -739,7 +750,7 @@ spurhalflife <- function(formula,
   }
 
   if (isTRUE(verbose)) {
-    cat(sprintf("Spatial half life %s%% confidence interval (in %s)\n", level, units))
+    cat(sprintf("Spatial half-life %s%% confidence grid hull (Table 1, in %s)\n", level, units))
     cat("---------------------------------------\n")
     .print_halflife_bounds(ci_l, ci_u)
     cat("---------------------------------------\n")

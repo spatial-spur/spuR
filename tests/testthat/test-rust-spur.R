@@ -299,7 +299,7 @@ testthat::test_that("tied eigenspace triggers auto fallback and backend validati
   )
 })
 
-testthat::test_that("intercept-free residual tests, constant-span guard, and fork reason align", {
+testthat::test_that("residual tests require the constant direction and the pipeline requires an intercept", {
   set.seed(303)
   n <- 42L
   df <- data.frame(
@@ -311,7 +311,7 @@ testthat::test_that("intercept-free residual tests, constant-span guard, and for
   df$eps <- sin(seq_len(n) * 0.3) + 0.1 * seq_len(n)
   df$y <- df$eps
   df_shifted <- df
-  df_shifted$y <- df$eps + 1e6 * df$x1
+  df_shifted$y <- df$eps + 1e6 * as.numeric(df$g)
 
   backends <- "fallback"
   if (is.loaded("wrap__rust_run_spur_i0_resid", PACKAGE = "spuR")) {
@@ -319,25 +319,27 @@ testthat::test_that("intercept-free residual tests, constant-span guard, and for
   }
   for (backend in backends) {
     for (fn in list(spurtest_i0resid, spurtest_i1resid)) {
-      r1 <- fn(y ~ 0 + x1, data = df, q = 6L, nrep = 120L, seed = 17L,
+      testthat::expect_error(
+        fn(y ~ 0 + x1, data = df, q = 6L, nrep = 120L, seed = 17L,
+           coords_euclidean = c("sx", "sy"), backend = backend),
+        "spans a constant"
+      )
+      r1 <- fn(y ~ 0 + g, data = df, q = 8L, nrep = 120L, seed = 17L,
                coords_euclidean = c("sx", "sy"), backend = backend)
-      r2 <- fn(y ~ 0 + x1, data = df_shifted, q = 6L, nrep = 120L, seed = 17L,
+      r2 <- fn(y ~ 0 + g, data = df_shifted, q = 8L, nrep = 120L, seed = 17L,
                coords_euclidean = c("sx", "sy"), backend = backend)
       testthat::expect_equal(r1$teststat, r2$teststat, tolerance = 1e-8)
       testthat::expect_equal(r1$pvalue, r2$pvalue, tolerance = 1e-12)
     }
-    pipe <- spur(y ~ 0 + x1, data = df, q = 8L, nrep = 400L, seed = 42L,
-                 coords_euclidean = c("sx", "sy"), avc = 0.05, uncond = TRUE,
-                 backend = backend)
-    direct_i0 <- spurtest_i0resid(y ~ 0 + x1, data = df, q = 8L, nrep = 400L, seed = 42L,
-                                coords_euclidean = c("sx", "sy"), backend = backend)
-    testthat::expect_equal(pipe$tests$i0resid$teststat, direct_i0$teststat, tolerance = 1e-10)
-    testthat::expect_equal(pipe$tests$i0resid$pvalue, direct_i0$pvalue, tolerance = 1e-12)
-    testthat::expect_identical(names(pipe$fits$transformed$term_names), "h_x1")
+    testthat::expect_error(
+      spur(y ~ 0 + x1, data = df, q = 8L, nrep = 400L, coords_euclidean = c("sx", "sy"),
+           backend = backend),
+      "explicit intercept"
+    )
     testthat::expect_error(
       spur(y ~ 0 + g, data = df, q = 8L, nrep = 400L, coords_euclidean = c("sx", "sy"),
            backend = backend),
-      "spans a constant"
+      "explicit intercept"
     )
   }
 

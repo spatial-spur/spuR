@@ -152,9 +152,9 @@ fn cluster_transform_allows_one_observation() {
 
 #[test]
 fn spur_basis_orientation_uses_the_first_nearly_maximal_entry() {
-    for (offset, first_is_positive) in [(8.0, true), (1024.0, false)] {
+    for (offset, first_is_positive) in [(5e-13, true), (2e-12, false)] {
         let a = -1.0;
-        let b = 1.0 + offset * f64::EPSILON;
+        let b = 1.0 + offset;
         let covariance = [a * a, a * b, a * b, b * b];
         let (basis, tied) = select_leading_basis(&covariance, 2, 1).unwrap();
         assert!(!tied);
@@ -216,6 +216,42 @@ fn make_deterministic_emat(q: usize, nrep: usize) -> Vec<f64> {
         }
     }
     out
+}
+
+#[test]
+fn spur_decay_brackets_large_roots_and_checks_the_colocation_floor() {
+    let coords: Vec<f64> = (0..10).map(|i| i as f64 * 1e-8).chain([1.0]).collect();
+    let mut geom = SpurGeometry::from_coords(&coords, coords.len(), 1, Metric::Euclidean).unwrap();
+    let targets = [0.03, 0.001, 0.0001];
+    let roots = geom.get_cbar_batch(&targets).unwrap();
+    for (&target, root) in targets.iter().zip(roots) {
+        assert!(root > 10_240.0);
+        assert!((deterministic_mean_exp(&geom.lower_tri, root) - target).abs() < 1e-12);
+        assert_eq!(geom.get_cbar(target), Ok(root));
+    }
+    let mut colocated =
+        SpurGeometry::from_coords(&[0.0, 0.0, 1.0], 3, 1, Metric::Euclidean).unwrap();
+    let err = colocated.get_cbar(1.0 / 3.0).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::CalibrationFailed);
+    assert!(err.message().contains("co-located-pair fraction"));
+    assert!(colocated.get_cbar_batch(&[0.5, 0.1]).is_err());
+}
+
+#[test]
+fn residual_brownian_proxy_preserves_orientation_at_paired_maxima() {
+    let mut coords: Vec<f64> = (0..60).map(|i| i as f64 * (1.0 / 59.0)).collect();
+    coords[59] = 1.0;
+    let design: Vec<f64> = coords.iter().flat_map(|&s| [1.0, s - 0.5]).collect();
+    let q = 15;
+    let qx = prepare_resid_design(&design, coords.len(), 2, q).unwrap();
+    let mut geom = SpurGeometry::from_coords(&coords, coords.len(), 1, Metric::Euclidean).unwrap();
+    let basis = prepare_resid_basis(&mut geom, qx, 2, q).unwrap();
+
+    // The second direction has opposite signs at its mirrored maxima.
+    // The sign convention selects the earlier site when their magnitudes agree.
+    let earlier = basis.basis_r[19 * q + 1];
+    let later = basis.basis_r[40 * q + 1];
+    assert!(earlier > 0.18 && (earlier + later).abs() < 1e-14);
 }
 
 #[test]
@@ -310,7 +346,7 @@ fn spur_cbar_and_diagnostics_are_deterministic_and_thread_invariant() {
     assert!((pipe_1.i1.cvalue[2] - 5.480_387_716_657_392).abs() < 1e-10);
     assert!((pipe_1.i0resid.ha_param - 600.375).abs() < 1e-12);
     assert!((pipe_1.i0resid.lr[0] - 8.492_145_848_011_605).abs() < 1e-9);
-    assert!((pipe_1.i0resid.pvalue[0] - 0.121).abs() < 1e-12);
+    assert!((pipe_1.i0resid.pvalue[0] - 0.12).abs() < 1e-12);
     assert!((pipe_1.i1resid.ha_param - 875.033_754_868_347_6).abs() < 1e-10);
     assert!((pipe_1.i1resid.lr[0] - 223.478_786_080_475_8).abs() < 1e-8);
     assert!((pipe_1.i1resid.pvalue[0] - 0.24).abs() < 1e-12);
@@ -763,7 +799,7 @@ fn spur_validates_residual_and_halflife_dimensions_and_scales_invariantly() {
     // Residual degeneracy is invariant to an additive offset when the design
     // spans constants, even with the constant represented by the column sum.
     let x: Vec<f64> = (0..3).flat_map(|i| [i as f64, (1 - i) as f64]).collect();
-    let qx = orthonormal_design_basis(&x, 3, 2).unwrap();
+    let qx = prepare_resid_design(&x, 3, 2, 1).unwrap();
     let residual_projection = |y| prepare_residual_y_projections(y, 3, 1, &basis, &qx, 2, 1);
     let unshifted = residual_projection(&[-1.0, 1.0, 0.0]).unwrap();
     assert_eq!(
@@ -1009,50 +1045,73 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
 }
 
 #[test]
-fn residual_tests_without_intercept_are_invariant_to_x_beta_shifts() {
+fn residual_tests_require_constant_span_and_are_invariant_to_x_beta_shifts() {
     let n = 40usize;
     let q = 6usize;
     let nrep = 120usize;
     let coords: Vec<f64> = (0..n)
         .flat_map(|i| [((i * 17) % 41) as f64 / 41.0, ((i * 29) % 43) as f64 / 43.0])
         .collect();
-    let x_in: Vec<f64> = (0..n).map(|i| 1.5 + (i as f64 * 0.23).sin()).collect();
+    let x: Vec<f64> = (0..n).map(|i| 1.5 + (i as f64 * 0.23).sin()).collect();
+    let x_in: Vec<f64> = x.iter().flat_map(|&xi| [xi, 1.0 - xi]).collect();
     let eps: Vec<f64> = (0..n)
         .map(|i| (i as f64 * 0.37).cos() + 0.1 * (i as f64))
         .collect();
-    let shifted_y: Vec<f64> = eps.iter().zip(&x_in).map(|(&e, &x)| e + 1e6 * x).collect();
+    let shifted_y: Vec<f64> = eps.iter().zip(&x).map(|(&e, &x)| e + 1e6 * x).collect();
     let emat: Vec<f64> = (0..q * nrep)
         .map(|k| (((k * 31 + 7) % 97) as f64 - 48.0) / 25.0)
         .collect();
 
-    let base_i0 = run_spur_i0_resid(&SpurTestRequest {
+    let req = SpurTestRequest {
         coords: &coords,
         n,
         d: 2,
         metric: Metric::Euclidean,
         y: &eps,
         n_y: 1,
-        x_in: Some(&x_in),
+        x_in: Some(&x),
         k_x: 1,
         emat: &emat,
         q,
         nrep,
         nthreads: Some(1),
-    })
-    .unwrap();
+    };
+    for err in [
+        run_spur_i0_resid(&req).unwrap_err(),
+        run_spur_i1_resid(&req).unwrap_err(),
+        run_spur_pipeline(&SpurPipelineRequest {
+            coords: &coords,
+            n,
+            d: 2,
+            metric: Metric::Euclidean,
+            y: &eps,
+            x_in: &x,
+            k_x: 1,
+            emat: &emat,
+            q,
+            nrep,
+            transform_vars: &x,
+            n_transform_vars: 1,
+            nthreads: Some(1),
+        })
+        .unwrap_err(),
+    ] {
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            err.message(),
+            "SPUR residual tests require a design that spans a constant"
+        );
+    }
+
+    let req = SpurTestRequest {
+        x_in: Some(&x_in),
+        k_x: 2,
+        ..req
+    };
+    let base_i0 = run_spur_i0_resid(&req).unwrap();
     let shift_i0 = run_spur_i0_resid(&SpurTestRequest {
-        coords: &coords,
-        n,
-        d: 2,
-        metric: Metric::Euclidean,
         y: &shifted_y,
-        n_y: 1,
-        x_in: Some(&x_in),
-        k_x: 1,
-        emat: &emat,
-        q,
-        nrep,
-        nthreads: Some(1),
+        ..req
     })
     .unwrap();
     assert!(
@@ -1063,34 +1122,10 @@ fn residual_tests_without_intercept_are_invariant_to_x_beta_shifts() {
     );
     assert!((base_i0.pvalue[0] - shift_i0.pvalue[0]).abs() < 1e-12);
 
-    let base_i1 = run_spur_i1_resid(&SpurTestRequest {
-        coords: &coords,
-        n,
-        d: 2,
-        metric: Metric::Euclidean,
-        y: &eps,
-        n_y: 1,
-        x_in: Some(&x_in),
-        k_x: 1,
-        emat: &emat,
-        q,
-        nrep,
-        nthreads: Some(1),
-    })
-    .unwrap();
+    let base_i1 = run_spur_i1_resid(&req).unwrap();
     let shift_i1 = run_spur_i1_resid(&SpurTestRequest {
-        coords: &coords,
-        n,
-        d: 2,
-        metric: Metric::Euclidean,
         y: &shifted_y,
-        n_y: 1,
-        x_in: Some(&x_in),
-        k_x: 1,
-        emat: &emat,
-        q,
-        nrep,
-        nthreads: Some(1),
+        ..req
     })
     .unwrap();
     assert!(
@@ -1102,20 +1137,6 @@ fn residual_tests_without_intercept_are_invariant_to_x_beta_shifts() {
     assert!((base_i1.pvalue[0] - shift_i1.pvalue[0]).abs() < 1e-12);
 
     // Response strictly inside span(X) must be rejected cleanly.
-    let err = run_spur_i0_resid(&SpurTestRequest {
-        coords: &coords,
-        n,
-        d: 2,
-        metric: Metric::Euclidean,
-        y: &x_in,
-        n_y: 1,
-        x_in: Some(&x_in),
-        k_x: 1,
-        emat: &emat,
-        q,
-        nrep,
-        nthreads: Some(1),
-    })
-    .unwrap_err();
+    let err = run_spur_i0_resid(&SpurTestRequest { y: &x, ..req }).unwrap_err();
     assert!(err.message().contains("zero variation"));
 }

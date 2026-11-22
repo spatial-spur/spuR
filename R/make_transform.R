@@ -46,13 +46,11 @@ nn_matrix <- function(s, latlong = FALSE) {
   } else {
     distmat <- get_distmat_euclidean(s)
   }
-  diameter <- max(distmat)
-  if (diameter == 0) stop("Nearest-neighbor transform requires at least two distinct locations.")
-  distmat <- distmat / diameter
+  if (max(distmat) == 0) stop("Nearest-neighbor transform requires at least two distinct locations.")
 
-  distmat_nozeros <- distmat + (distmat == 0) * 1e10
-  rowmins <- apply(distmat_nozeros, 1L, min)
-  rowmins_mat <- distmat_nozeros == matrix(rowmins, nrow = nrow(distmat_nozeros), ncol = ncol(distmat_nozeros))
+  distmat[distmat == 0] <- Inf
+  rowmins <- apply(distmat, 1L, min)
+  rowmins_mat <- distmat == rowmins
   rowmins_mat <- rowmins_mat / rowSums(rowmins_mat)
 
   diag(nrow(s)) - rowmins_mat

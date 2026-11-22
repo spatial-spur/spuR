@@ -7,6 +7,33 @@ review_spur_data <- function(n = 40L) {
   data.frame(y = rnorm(n), x = rnorm(n), sx = runif(n), sy = runif(n))
 }
 
+test_that("SPUR calibration brackets large rates and rejects unattainable averages", {
+  locations <- c((0:9) * 1e-8, 1)
+  distances <- abs(outer(locations, locations, "-"))
+  solver <- .make_spur_decay_solver(distances)
+  for (target in c(0.03, 0.001, 0.0001)) {
+    rate <- solver(target)
+    expect_gt(rate, 10240)
+    expect_equal(mean(exp(-rate * lvech(distances))), target, tolerance = 1e-11)
+    expect_identical(solver(target), rate)
+  }
+  with_duplicates <- abs(outer(c(0, 0, 1), c(0, 0, 1), "-"))
+  for (target in c(0.3, 1 / 3)) {
+    expect_error(get_cbar(target, with_duplicates), "co-located-pair fraction")
+  }
+})
+
+test_that("NN compares raw distances before averaging ties", {
+  d <- data.frame(
+    s = c(0, 0.66219144446564393, -0.66219144446564404, 86012.158427686139, 43006.07921384307),
+    y = seq(0, 40, by = 10)
+  )
+  for (backend in review_backends()) {
+    res <- spurtransform(~y, d, coords_euclidean = "s", transformation = "nn", backend = backend)
+    expect_equal(res$h_y[1L], -10)
+  }
+})
+
 test_that("geographic ISO includes a pair at the radius", {
   d <- data.frame(
     lat = c(-1.0036422005124446, 37.11177842377785),
@@ -72,6 +99,7 @@ test_that("half-life uses Euclidean coordinate units and geographic metres", {
     expect_equal(b$ci_l, 7 * a$ci_l, tolerance = 1e-12)
     geo <- calc(d, FALSE, TRUE)
     expect_equal(geo$max_dist, 29 * pi / 180 * 6371000.009, tolerance = 1e-10)
+    expect_output(print(z), "confidence grid hull \\(Table 1\\)")
   }
 })
 

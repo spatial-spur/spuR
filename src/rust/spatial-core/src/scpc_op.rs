@@ -37,7 +37,7 @@ pub struct ExactScpcRequest<'a> {
     pub cvs: bool,
     /// Estimated regression coefficients (`k_use`).
     pub coef: &'a [f64],
-    /// Coefficient influence matrix (`n x k_use`), column `j` is `n * (B^{-1}[j,.] @ S') + coef[j]`.
+    /// Coefficient influence contributions, scaled by the site count (`n x k_use`).
     pub wj: &'a [f64],
     /// Cluster membership indices in `0..n` for `m_obs` observations when clustered,
     /// or `None` when spatial sites equal observations (`m_obs == n`).
@@ -601,7 +601,7 @@ fn build_scale_grid(c0: f64, cmax: f64) -> Vec<f64> {
     } else {
         2
     };
-    let mut scales = Vec::with_capacity(nc);
+    let mut scales = Vec::with_capacity(nc + 1);
     let mut c = c0;
     for _ in 0..nc {
         if !c.is_finite() {
@@ -612,6 +612,9 @@ fn build_scale_grid(c0: f64, cmax: f64) -> Vec<f64> {
     }
     if scales.is_empty() {
         scales.push(c0);
+    }
+    if cmax.is_finite() && cmax > *scales.last().expect("scale grid includes c0") {
+        scales.push(cmax);
     }
     scales
 }
@@ -657,11 +660,26 @@ fn compute_uncond_stats(
     wj: &[f64],
     n: usize,
     q: usize,
-    k_use: usize,
+    coef: &[f64],
 ) -> Result<(Vec<f64>, Vec<f64>), CoreError> {
+    let k_use = coef.len();
     let width = q + 1;
     let mut projected = vec![0.0; checked_len(&[width, k_use])?];
-    let (wj, scales) = normalized_columns(wj, k_use);
+    let (mut wj, scales) = normalized_columns(wj, k_use);
+    let mut means = vec![0.0; k_use];
+    for row in wj.chunks_exact(k_use) {
+        for (mean, &value) in means.iter_mut().zip(row) {
+            *mean += value;
+        }
+    }
+    for mean in &mut means {
+        *mean /= n as f64;
+    }
+    for row in wj.chunks_exact_mut(k_use) {
+        for (value, mean) in row.iter_mut().zip(&means) {
+            *value -= mean;
+        }
+    }
     linalg::multiply(wfin, &wj, &mut projected, width, n, k_use, true);
     let q_root = (q as f64).sqrt();
     let se_denom = q_root * (n as f64).sqrt();
@@ -671,17 +689,14 @@ fn compute_uncond_stats(
     for j in 0..k_use {
         let wj_norm = scaled_norm((0..n).map(|i| wj[i * k_use + j]));
         let norm = scaled_norm((1..width).map(|row| projected[row * k_use + j]));
-        if !norm.is_finite()
-            || !wj_norm.is_finite()
-            || wj_norm == 0.0
-            || norm <= SCALE_REL_TOL * wj_norm
-        {
+        let se = (norm / se_denom) * scales[j];
+        if !se.is_finite() || se == 0.0 || norm <= SCALE_REL_TOL * wj_norm {
             return Err(CoreError::degenerate(
                 "SCPC variance projection is degenerate",
             ));
         }
-        tau_vec.push((projected[j] / norm) * q_root);
-        se_vec.push((norm / se_denom) * scales[j]);
+        tau_vec.push(coef[j] / se);
+        se_vec.push(se);
     }
     Ok((se_vec, tau_vec))
 }
@@ -847,7 +862,7 @@ pub fn run_exact_scpc(req: &ExactScpcRequest<'_>) -> Result<ScpcOutput, CoreErro
         let full_width = qmax + 1;
         let width = q + 1;
         let wfin = trim_basis_columns(&basis.weights, n, full_width, width)?;
-        let (se_vec, tau_vec) = compute_uncond_stats(&wfin, req.wj, n, q, k_use)?;
+        let (se_vec, tau_vec) = compute_uncond_stats(&wfin, req.wj, n, q, req.coef)?;
 
         // Precompute conditional Oms before dropping the n x n distance matrix.
         let omsx_list = if req.uncond {
@@ -977,7 +992,7 @@ pub fn run_approx_scpc(req: &ApproxScpcRequest<'_>) -> Result<ScpcOutput, CoreEr
         let full_width = qmax + 1;
         let width = q + 1;
         let wfin = trim_basis_columns(&lb.weights, n, full_width, width)?;
-        let (se_vec, tau_vec) = compute_uncond_stats(&wfin, req.wj, n, q, k_use)?;
+        let (se_vec, tau_vec) = compute_uncond_stats(&wfin, req.wj, n, q, req.coef)?;
 
         let omsx_list = if req.uncond {
             None

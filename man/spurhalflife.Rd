@@ -2,7 +2,7 @@
 % Please edit documentation in R/spur_formula_api.R
 \name{spurhalflife}
 \alias{spurhalflife}
-\title{SPUR Half-Life Confidence Interval}
+\title{SPUR Half-Life Confidence Grid}
 \usage{
 spurhalflife(
   formula,
@@ -52,7 +52,15 @@ A list of class \code{"spur_halflife"} with \code{ci_l}, \code{ci_u}, \code{max_
 and \code{full}.
 }
 \description{
-Formula interface for SPUR half-life confidence intervals.
+Reports the range of accepted half-lives on the finite grid used to
+replicate Table 1 of Mueller and Watson (2024).
+}
+\details{
+The bounds are the smallest and largest accepted grid points.
+The grid starts at 0.001 sample diameters and jumps from 3 to 100.
+If the point at 100 is accepted, \code{ci_u} is \code{NA} and prints as \code{Inf}
+by replication convention. The numerical grid and p-values are
+available in \code{full$hl_grid_ho} and \code{full$pv_mat}.
 }
 \examples{
 \donttest{

@@ -47,6 +47,7 @@ A list of class \code{"spur_test"} with \code{pvalue}, \code{teststat}, \code{ha
 }
 \description{
 Formula interface for the SPUR spatial I(1) residual test.
+The fitted design must span a constant.
 }
 \examples{
 \donttest{

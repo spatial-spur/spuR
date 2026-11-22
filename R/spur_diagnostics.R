@@ -1,6 +1,6 @@
-.run_spur_test <- function(Y, distmat, emat, is_i0, X_in = NULL) {
+.run_spur_test <- function(Y, distmat, emat, is_i0, X_in = NULL, q_x = NULL) {
   dims <- .validate_core_spur_inputs(distmat, emat)
-  design <- .prepare_spur_diagnostics(Y, distmat, dims$q, X_in = X_in)
+  design <- .prepare_spur_diagnostics(Y, distmat, dims$q, X_in = X_in, q_x = q_x)
   if (is_i0) .spur_i0(design, distmat, emat) else .spur_i1(design, distmat, emat)
 }
 
@@ -21,7 +21,7 @@
     if (NROW(X_in) != n) {
       stop("`X_in` row count must match `distmat`.")
     }
-    if (is.null(q_x)) q_x <- .orthonormal_design_basis(X_in)
+    if (is.null(q_x)) q_x <- .spur_residual_basis(X_in)
     y_info <- .validate_spur_residual_y(Y, q_x)
     resid_dof <- n - ncol(q_x)
     if (q > resid_dof) {
@@ -31,7 +31,9 @@
       ))
     }
     # Apply M = I - Q_x Q_x' on both sides of the kernel without building M.
-    sigma <- exp(-decay(0.999) * distmat)
+    # The constant kernel disappears under M. Removing it first avoids loss
+    # of precision in the small covariance that determines the eigenspace.
+    sigma <- expm1(-decay(0.999) * distmat)
     left <- .residualize_spur(sigma, q_x)
     bm <- t(.residualize_spur(t(left), q_x))
     bm <- 0.5 * (bm + t(bm))

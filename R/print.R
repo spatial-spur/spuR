@@ -14,7 +14,7 @@ print.spur_test <- function(x, ...) {
 print.spur_halflife <- function(x, ...) {
   level <- attr(x, "level")
   if (is.null(level)) level <- 95
-  cat(sprintf("Spatial Half-Life %s%% Confidence Interval\n", level))
+  cat(sprintf("Spatial half-life %s%% confidence grid hull (Table 1)\n", level))
   cat("---------------------------------------\n")
   .print_halflife_bounds(x$ci_l, x$ci_u)
   invisible(x)
@@ -22,9 +22,13 @@ print.spur_halflife <- function(x, ...) {
 
 .print_halflife_bounds <- function(lower, upper) {
   if (is.na(lower)) {
-    cat("Confidence set is empty.\n")
+    cat("No tested half-life was accepted.\n")
   } else {
     cat(sprintf("Lower bound : %.6g\n", lower))
-    cat(sprintf("Upper bound : %s\n", if (is.na(upper)) "Inf" else sprintf("%.6g", upper)))
+    cat(sprintf("Upper bound : %s\n", if (is.na(upper)) {
+      "Inf (100 sample diameters accepted on the grid)"
+    } else {
+      sprintf("%.6g", upper)
+    }))
   }
 }

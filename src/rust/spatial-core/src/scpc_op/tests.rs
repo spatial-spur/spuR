@@ -196,13 +196,19 @@ fn conditional_basis_weights_apply_regressor_before_projection() {
 fn score_projection_restores_units_after_extreme_rescaling() {
     let wfin = [0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, -0.5];
     let wj = [1.0, 1.0, 1.0, -1.0];
-    let (se, t) = compute_uncond_stats(&wfin, &wj, 4, 1, 1).unwrap();
+    let (se, t) = compute_uncond_stats(&wfin, &wj, 4, 1, &[0.5]).unwrap();
     for scale in [0.7 * f64::MAX, 1e-300] {
         let scaled = wj.map(|v| v * scale);
-        let (s, u) = compute_uncond_stats(&wfin, &scaled, 4, 1, 1).unwrap();
+        let (s, u) = compute_uncond_stats(&wfin, &scaled, 4, 1, &[0.5 * scale]).unwrap();
         assert_eq!(s[0] / scale, se[0]);
         assert_eq!(u, t);
     }
+}
+
+#[test]
+fn scpc_scale_grid_includes_the_finite_endpoint_when_needed() {
+    assert_eq!(build_scale_grid(1.0, 1.3), [1.0, 1.2, 1.3]);
+    assert_eq!(build_scale_grid(1.0, 0.8), [1.0, 1.2]);
 }
 
 #[test]
@@ -264,10 +270,10 @@ fn identity_covariance_probability_matches_student_t_and_near_zero_tail() {
     }
 
     // Near-zero test statistic reproducer from rust_core_handoff.md:
-    // coords=[[0.0],[1.0]], coef=[1e-6], wj=[[1+1e-6],[-1+1e-6]], avc=0.03, uncond=true
+    // coords=[[0.0],[1.0]], coef=[1e-6], wj=[[1],[-1]], avc=0.03, uncond=true
     let coords = [0.0, 1.0];
     let coef = [1e-6];
-    let wj = [1.0 + 1e-6, -1.0 + 1e-6];
+    let wj = [1.0, -1.0];
     let out = run_exact_scpc(&ExactScpcRequest {
         coords: &coords,
         n: 2,

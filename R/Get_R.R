@@ -68,7 +68,7 @@ get_r <- function(sig, qmax) {
     col <- vectors[, j]
     magnitudes <- abs(col)
     peak <- max(magnitudes)
-    max_idx <- which(magnitudes >= peak - 64 * .Machine$double.eps * peak)[1L]
+    max_idx <- which(peak - magnitudes <= 1e-12 * peak)[1L]
     if (length(max_idx) == 1L && col[max_idx] < 0) {
       vectors[, j] <- -col
     }

@@ -21,7 +21,7 @@ spur(
 )
 }
 \arguments{
-\item{formula}{Two-sided regression formula.}
+\item{formula}{Two-sided regression formula with an explicit intercept.}
 
 \item{data}{Data frame containing model and coordinate variables.}
 
@@ -61,4 +61,5 @@ and compute SCPC inference for both branches.
 Both regressions and the diagnostics use the levels model's estimation
 sample. The spatial transformation applies to the evaluated response and
 design columns. For example, a log response is logged before transformation.
+The intercept in the transformed fit is a normalization of the centered columns.
 }

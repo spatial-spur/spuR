@@ -15,6 +15,10 @@ get_cbar <- function(rhobar, distmat) {
 
 .make_spur_decay_solver <- function(distmat) {
   distances <- lvech(distmat)
+  if (!length(distances) || any(!is.finite(distances) | distances < 0)) {
+    stop("SPUR decay calibration requires finite nonnegative pairwise distances.")
+  }
+  correlation_floor <- mean(distances == 0)
   averages <- new.env(parent = emptyenv())
   roots <- new.env(parent = emptyenv())
   average <- function(c) {
@@ -28,6 +32,10 @@ get_cbar <- function(rhobar, distmat) {
   }
 
   function(rho) {
+    if (!is.numeric(rho) || length(rho) != 1L || !is.finite(rho) ||
+        rho <= correlation_floor || rho >= 1) {
+      stop("SPUR target correlation must lie above the co-located-pair fraction and below one.")
+    }
     key <- sprintf("%a", rho)
     out <- roots[[key]]
     if (is.null(out)) {
@@ -39,57 +47,39 @@ get_cbar <- function(rhobar, distmat) {
 }
 
 .solve_spur_decay <- function(rhobar, average) {
-  
-  # Initialize c0 and c1
   c0 <- 10
   c1 <- 10
-  
-  # Adjust c0 so that mean(exp(-c0 * vd)) > rhobar
-  i1 <- FALSE
-  jj <- 0
-  while (!i1) {
-    v <- average(c0)
-    i1 <- (v > rhobar)
-    if (!i1) {
-      c1 <- c0
-      c0 <- c0 / 2
-      jj <- jj + 1
-    }
-    if (jj > 500) {
-      stop("rhobar too large")
+
+  while (average(c0) <= rhobar) {
+    c1 <- c0
+    c0 <- c0 / 2
+    if (c0 == 0) {
+      stop("SPUR decay calibration could not represent a lower bracket.")
     }
   }
-  
-  # Adjust c1 so that mean(exp(-c1 * vd)) < rhobar
-  i1 <- FALSE
-  jj <- 0
-  while (!i1) {
-    v <- average(c1)
-    i1 <- (v < rhobar)
-    if (!i1) {
-      c0 <- c1
-      c1 <- 2 * c1
-      jj <- jj + 1
-    }
-    if (c1 > 10000) {  # safeguard to break if c1 becomes unreasonably large
-      i1 <- TRUE
-    }
-    if (jj > 500) {
-      stop("rhobar too small")
+
+  while (average(c1) > rhobar) {
+    c0 <- c1
+    c1 <- min(2 * c1, .Machine$double.xmax)
+    if (c1 == c0) {
+      stop("SPUR decay calibration could not represent an upper bracket.")
     }
   }
-  
-  # Bisection method to determine cbar
-  while ((c1 - c0) > 0.001) {
-    cm <- sqrt(c0 * c1)
-    v <- average(cm)
-    if (v < rhobar) {
+
+  # Keep the replication tolerance for an ordinary bracket. An extended
+  # bracket uses relative width and a midpoint that cannot overflow.
+  extended <- c1 > 10240
+  tolerance <- if (extended) 1e-12 * c1 else 0.001
+  midpoint <- function() if (extended) c0 + 0.5 * (c1 - c0) else sqrt(c0 * c1)
+  while (c1 - c0 > tolerance) {
+    cm <- midpoint()
+    if (cm <= c0 || cm >= c1) break
+    if (average(cm) < rhobar) {
       c1 <- cm
     } else {
       c0 <- cm
     }
   }
-  
-  cbar <- sqrt(c0 * c1)
-  return(cbar)
+
+  midpoint()
 }

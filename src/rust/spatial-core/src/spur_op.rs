@@ -1,5 +1,6 @@
 //! Whole-operation SPUR diagnostics, half-life confidence intervals, and spatial transforms.
 
+use crate::calibration::{correlation_floor, solve_c0_from_avc};
 use crate::distance::{distance_matrix, lower_triangle, Metric};
 use crate::threads::{is_serial, run_with_threads};
 use crate::{basis, checked_len, linalg, CoreError};
@@ -30,6 +31,7 @@ struct SpurGeometry {
     max_dist: f64,
     norm_distmat: Vec<f64>,
     lower_tri: Vec<f64>,
+    correlation_floor: f64,
     cbar_cache: Vec<(f64, f64)>,
     mean_exp_cache: Vec<(u64, f64)>,
 }
@@ -52,23 +54,30 @@ impl SpurGeometry {
             *v /= max_dist;
         }
         let lower_tri = lower_triangle(&norm_distmat, n);
+        let correlation_floor = correlation_floor(&lower_tri)?;
         Ok(Self {
             n,
             max_dist,
             norm_distmat,
             lower_tri,
+            correlation_floor,
             cbar_cache: Vec::new(),
             mean_exp_cache: Vec::new(),
         })
     }
 
-    /// Cached SPUR decay calibration `get_cbar(rhobar, distmat)` matching pinned bisection.
-    fn get_cbar(&mut self, rhobar: f64) -> Result<f64, CoreError> {
-        if !rhobar.is_finite() || rhobar <= 0.0 || rhobar >= 1.0 {
+    fn validate_rhobar(&self, rhobar: f64) -> Result<(), CoreError> {
+        if !rhobar.is_finite() || rhobar <= self.correlation_floor || rhobar >= 1.0 {
             return Err(CoreError::calibration(
-                "rhobar must lie strictly between 0 and 1",
+                "target correlation must exceed the co-located-pair fraction and be below one",
             ));
         }
+        Ok(())
+    }
+
+    /// Cached SPUR decay calibration, preserving replication-scale rounding for a valid bracket.
+    fn get_cbar(&mut self, rhobar: f64) -> Result<f64, CoreError> {
+        self.validate_rhobar(rhobar)?;
         if let Some(&(_, cached)) = self
             .cbar_cache
             .iter()
@@ -90,11 +99,7 @@ impl SpurGeometry {
     /// Solve `get_cbar` for a batch of `rhobar` values, reusing cache and running in parallel.
     fn get_cbar_batch(&mut self, rhos: &[f64]) -> Result<Vec<f64>, CoreError> {
         for &r in rhos {
-            if !r.is_finite() || r <= 0.0 || r >= 1.0 {
-                return Err(CoreError::calibration(
-                    "rhobar must lie strictly between 0 and 1",
-                ));
-            }
+            self.validate_rhobar(r)?;
         }
         let mut missing: Vec<f64> = Vec::new();
         for &r in rhos {
@@ -343,7 +348,17 @@ impl SpurGeometry {
 
     fn residual_sigma_bm(&self, c_bm: f64, qx: &[f64], k_x: usize) -> Vec<f64> {
         let n = self.n;
-        let mut sig = self.exp_kernel(c_bm);
+        // Residualization removes the constant matrix. Start with the
+        // exponential deviations so that the near-unit-root signal is never
+        // computed by subtracting order-one projections.
+        let mut sig = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..i {
+                let value = (-c_bm * self.norm_distmat[i * n + j]).exp_m1();
+                sig[i * n + j] = value;
+                sig[j * n + i] = value;
+            }
+        }
         // Since M = I - Q_x Q_x' and sig is symmetric:
         // M * sig * M = sig - Q_x * (Q_x' * sig) - (sig * Q_x) * Q_x' + Q_x * (Q_x' * sig * Q_x) * Q_x'.
         let mut qt_sig = vec![0.0_f64; k_x * n];
@@ -508,8 +523,15 @@ fn solve_cbar_cached(
     it = 0;
     loop {
         let v = eval_c(c1);
-        if v < rhobar || c1 > 10_000.0 {
+        if v < rhobar {
             break;
+        }
+        if c1 >= 10_240.0 {
+            return if v == rhobar {
+                Ok(c1)
+            } else {
+                solve_c0_from_avc(vd, rhobar)
+            };
         }
         c0 = c1;
         c1 *= 2.0;
@@ -926,7 +948,7 @@ fn select_leading_basis(sigdm: &[f64], n: usize, q: usize) -> Result<(Vec<f64>, 
         // Small solver roundoff can swap equal-magnitude entries. Use the
         // earliest entry within a relative tolerance of the maximum.
         let max_abs = src.iter().map(|v| v.abs()).fold(0.0, f64::max);
-        let tolerance = 64.0 * f64::EPSILON * max_abs;
+        let tolerance = 1e-12 * max_abs;
         let max_idx = src
             .iter()
             .position(|v| max_abs - v.abs() <= tolerance)
@@ -1044,14 +1066,6 @@ fn prepare_residual_y_projections(
     let mut y_res_norm = vec![0.0_f64; n_y];
     let mut col = vec![0.0_f64; n];
 
-    // An additive offset is harmless only when the nuisance design spans
-    // constants. Remove it before measuring whether the residual is negligible.
-    let unit_constant = vec![(n as f64).sqrt().recip(); n];
-    let unit_once = residual_project_matrix(&unit_constant, qx, n, k_x, 1);
-    let unit_residual = residual_project_matrix(&unit_once, qx, n, k_x, 1);
-    let spans_constant =
-        unit_residual.iter().map(|v| v * v).sum::<f64>().sqrt() <= 64.0 * f64::EPSILON;
-
     for j in 0..n_y {
         let mut col_min = f64::INFINITY;
         let mut col_max_val = f64::NEG_INFINITY;
@@ -1067,28 +1081,22 @@ fn prepare_residual_y_projections(
                 "response Y has zero variation; SPUR inference requires non-constant Y",
             ));
         }
-        if spans_constant {
-            let anchor = y[j];
+        // The validated nuisance design spans constants. Subtract in the
+        // original units to preserve small differences near a large offset.
+        let anchor = y[j];
+        for i in 0..n {
+            col[i] = y[i * n_y + j] - anchor;
+        }
+        let mut scale = col.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        if !scale.is_finite() {
+            let scaled_anchor = anchor / raw_max;
             for i in 0..n {
-                col[i] = y[i * n_y + j] - anchor;
+                col[i] = y[i * n_y + j] / raw_max - scaled_anchor;
             }
-            let mut scale = col.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-            // Subtract in the original units to retain small differences near
-            // a large common offset. Scale first only if subtraction overflows.
-            if !scale.is_finite() {
-                let scaled_anchor = anchor / raw_max;
-                for i in 0..n {
-                    col[i] = y[i * n_y + j] / raw_max - scaled_anchor;
-                }
-                scale = col.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-            }
-            for v in &mut col {
-                *v /= scale;
-            }
-        } else {
-            for i in 0..n {
-                col[i] = y[i * n_y + j] / raw_max;
-            }
+            scale = col.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        }
+        for v in &mut col {
+            *v /= scale;
         }
         let col_norm = col.iter().map(|v| v * v).sum::<f64>().sqrt();
         let u_once = residual_project_matrix(&col, qx, n, k_x, 1);
@@ -1567,19 +1575,36 @@ struct ResidBasis {
     qx: Vec<f64>,
 }
 
-fn prepare_resid_basis(
-    geom: &mut SpurGeometry,
+fn prepare_resid_design(
     x_in: &[f64],
+    n: usize,
     k_x: usize,
     q: usize,
-) -> Result<ResidBasis, CoreError> {
-    let n = geom.n;
+) -> Result<Vec<f64>, CoreError> {
     let qx = orthonormal_design_basis(x_in, n, k_x)?;
     if q > n - k_x {
         return Err(CoreError::invalid_input(
             "q cannot exceed residual degrees of freedom (n - rank(X))",
         ));
     }
+    let unit_constant = vec![(n as f64).sqrt().recip(); n];
+    let unit_once = residual_project_matrix(&unit_constant, &qx, n, k_x, 1);
+    let unit_residual = residual_project_matrix(&unit_once, &qx, n, k_x, 1);
+    if unit_residual.iter().map(|v| v * v).sum::<f64>().sqrt() > 64.0 * f64::EPSILON {
+        return Err(CoreError::invalid_input(
+            "SPUR residual tests require a design that spans a constant",
+        ));
+    }
+    Ok(qx)
+}
+
+fn prepare_resid_basis(
+    geom: &mut SpurGeometry,
+    qx: Vec<f64>,
+    k_x: usize,
+    q: usize,
+) -> Result<ResidBasis, CoreError> {
+    let n = geom.n;
     let c_bm = geom.get_cbar(RHO_BM)?;
     let sigdm_bm = geom.residual_sigma_bm(c_bm, &qx, k_x);
     let (basis_r, tied) = select_leading_basis(&sigdm_bm, n, q)?;
@@ -1628,8 +1653,9 @@ pub fn run_spur_i0_resid(req: &SpurTestRequest<'_>) -> Result<SpurI0Output, Core
         .x_in
         .ok_or_else(|| CoreError::invalid_input("residual test requires X_in design matrix"))?;
     run_with_threads(req.nthreads, || {
+        let qx = prepare_resid_design(x_in, req.n, req.k_x, req.q)?;
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
-        let resid = prepare_resid_basis(&mut geom, x_in, req.k_x, req.q)?;
+        let resid = prepare_resid_basis(&mut geom, qx, req.k_x, req.q)?;
         let p_mat = prepare_residual_y_projections(
             req.y,
             req.n,
@@ -1659,8 +1685,9 @@ pub fn run_spur_i1_resid(req: &SpurTestRequest<'_>) -> Result<SpurI1Output, Core
         .x_in
         .ok_or_else(|| CoreError::invalid_input("residual test requires X_in design matrix"))?;
     run_with_threads(req.nthreads, || {
+        let qx = prepare_resid_design(x_in, req.n, req.k_x, req.q)?;
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
-        let resid = prepare_resid_basis(&mut geom, x_in, req.k_x, req.q)?;
+        let resid = prepare_resid_basis(&mut geom, qx, req.k_x, req.q)?;
         let p_mat = prepare_residual_y_projections(
             req.y,
             req.n,
@@ -1709,6 +1736,7 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
     }
 
     run_with_threads(req.nthreads, || {
+        let qx = prepare_resid_design(req.x_in, req.n, req.k_x, req.q)?;
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
         let sigdm_lbm = geom.sigma_lbm_dm();
         let (basis_lbm, tied_lbm, mr_lbm, om_lbm) = prepare_lbm_basis(&sigdm_lbm, req.n, req.q)?;
@@ -1722,7 +1750,7 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
         let transformed_vars =
             apply_lbmgls(sigdm_lbm, req.n, req.transform_vars, req.n_transform_vars)?;
 
-        let resid = prepare_resid_basis(&mut geom, req.x_in, req.k_x, req.q)?;
+        let resid = prepare_resid_basis(&mut geom, qx, req.k_x, req.q)?;
         let p_res = prepare_residual_y_projections(
             req.y,
             req.n,

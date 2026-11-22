@@ -192,7 +192,8 @@
       character(1)
     ),
     rule,
-    rule
+    rule,
+    "The intercept in the transformed fit is a normalization of the centered columns."
   )
 
   paste(lines, collapse = "\n")
@@ -203,7 +204,7 @@
 #' Run the SPUR diagnostics, fit the levels and transformed regressions,
 #' and compute SCPC inference for both branches.
 #'
-#' @param formula Two-sided regression formula.
+#' @param formula Two-sided regression formula with an explicit intercept.
 #' @param data Data frame containing model and coordinate variables.
 #' @param q Number of low-frequency weighted averages (at least 2).
 #' @param nrep Number of Monte Carlo draws.
@@ -221,6 +222,7 @@
 #' @details Both regressions and the diagnostics use the levels model's estimation
 #'   sample. The spatial transformation applies to the evaluated response and
 #'   design columns. For example, a log response is logged before transformation.
+#'   The intercept in the transformed fit is a normalization of the centered columns.
 #' @return A list of class \code{"spur_result"} with \code{tests}, \code{fits},
 #'   \code{stage_backends}, and \code{fallback_reasons}.
 #' @useDynLib spuR, .registration = TRUE
@@ -261,23 +263,10 @@ spur <- function(formula,
   }
   if (!is.null(stats::model.offset(mf))) stop("Offsets are not supported by spur().")
   design <- stats::model.matrix(levels_model)
-  has_intercept <- "(Intercept)" %in% colnames(design)
-  x_in <- design
-  q_x <- NULL
-  if (!has_intercept) {
-    if (ncol(x_in) == 0L) {
-      stop("Intercept-free regression formula for spur() must include at least one regressor.", call. = FALSE)
-    }
-    q_x <- .orthonormal_design_basis(x_in)
-    const_vec <- rep(1, nrow(x_in))
-    const_resid <- .residualize_spur(const_vec, q_x)
-    if (sqrt(sum(const_resid^2)) <= 1e-10 * sqrt(nrow(x_in))) {
-      stop(
-        "The intercept-free design spans a constant, so the transformed regression would be rank-deficient. Use an explicit intercept.",
-        call. = FALSE
-      )
-    }
+  if (attr(stats::terms(levels_model), "intercept") == 0L) {
+    stop("spur() requires an explicit intercept in the regression formula.", call. = FALSE)
   }
+  x_in <- design
   resid_dof <- nrow(x_in) - ncol(x_in)
   if (q > resid_dof) {
     stop(sprintf(
@@ -336,7 +325,7 @@ spur <- function(formula,
     transformed <- .apply_lbm_transform(variables, eig)
     rm(bm, eig)
 
-    residuals <- .prepare_spur_diagnostics(y, d, dims$q, X_in = x_in, decay = decay, q_x = q_x)
+    residuals <- .prepare_spur_diagnostics(y, d, dims$q, X_in = x_in, decay = decay)
     diagnostics$i0resid <- .spur_i0(residuals, d, emat)
     diagnostics$i1resid <- .spur_i1(residuals, d, emat)
   }
@@ -365,7 +354,7 @@ spur <- function(formula,
   transformed_data <- sample_data
   transformed_data[transformed_names] <- as.data.frame(transformed)
   rhs <- if (ncol(regressors)) transformed_names[-1L] else "1"
-  transformed_formula <- stats::reformulate(rhs, transformed_names[1L], intercept = has_intercept)
+  transformed_formula <- stats::reformulate(rhs, transformed_names[1L])
   transformed_model <- stats::lm(transformed_formula, data = transformed_data, na.action = stats::na.fail)
   infer <- function(model, fitted_data) {
     scpcR::scpc(model, data = fitted_data, lon = lon, lat = lat,
@@ -378,13 +367,9 @@ spur <- function(formula,
     stats::setNames(rep(operation_backend, 5L), c(kinds, "transform")),
     levels_scpc = levels_scpc$backend, transformed_scpc = transformed_scpc$backend
   )
-  term_names <- if (has_intercept) {
-    stats::setNames(
-      c("(Intercept)", colnames(regressors)), c("(Intercept)", transformed_names[-1L])
-    )
-  } else {
-    stats::setNames(colnames(regressors), transformed_names[-1L])
-  }
+  term_names <- stats::setNames(
+    c("(Intercept)", colnames(regressors)), c("(Intercept)", transformed_names[-1L])
+  )
   structure(list(
     tests = tests,
     fits = list(
