@@ -60,6 +60,10 @@ jobs:
           path: spatial-rust
           persist-credentials: false
       - uses: r-lib/actions/setup-r@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-vendor-filterer
+        shell: bash
+        run: cargo install --locked cargo-vendor-filterer --version 0.5.18
       - name: Build the standalone source archives
         shell: bash
         run: |

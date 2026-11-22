@@ -219,21 +219,29 @@ pub(crate) fn multiply(
     }
 }
 
-/// The q=1 strict rejection event is (X-cY)(X+cY)>0. The Gaussian
-/// quadrant probability below also covers singular covariance, including ties.
-/// Scaling standard deviations before squaring keeps unlike units representable.
-fn bivariate_rejection(a: f64, b: f64, d: f64, cv: f64) -> Result<f64, CoreError> {
+fn check_bivariate_psd(a: f64, b: f64, d: f64) -> Result<(), CoreError> {
     let tol = 64.0 * f64::EPSILON;
     let error = || CoreError::invalid_input("SCPC covariance is not positive semidefinite");
     let magnitude = a.abs().max(d.abs()).max(b.abs());
     if magnitude == 0.0 {
-        return Ok(0.0);
+        return Ok(());
     }
     let (v0, v1) = (a / magnitude + tol, d / magnitude + tol);
     if v0 < 0.0 || v1 < 0.0 || b.abs() / magnitude > v0.sqrt() * v1.sqrt() {
         return Err(error());
     }
+    Ok(())
+}
+
+/// The q=1 strict rejection event is (X-cY)(X+cY)>0. The Gaussian
+/// quadrant probability below also covers singular covariance, including ties.
+/// Scaling standard deviations before squaring keeps unlike units representable.
+fn bivariate_rejection(a: f64, b: f64, d: f64, cv: f64) -> Result<f64, CoreError> {
+    check_bivariate_psd(a, b, d)?;
     let (a, d) = (a.max(0.0), d.max(0.0));
+    if a == 0.0 && d == 0.0 {
+        return Ok(0.0);
+    }
     if a == 0.0 || d == 0.0 {
         return Ok(if a > 0.0 { 1.0 } else { 0.0 });
     }
@@ -299,13 +307,21 @@ fn one_factor_probability(omega: &[f64], n: usize, width: usize, cv: f64) -> Opt
         return None;
     }
     let mut denom_max_e = i32::MIN;
+    let mut has_pos_denom = false;
     for i in 1..n {
         let diag_i = omega[i * width + i];
         if diag_i < 0.0 || !diag_i.is_finite() {
             return None;
         }
         let ei = exp_half(diag_i);
-        denom_max_e = denom_max_e.max(ei);
+        if diag_i > 0.0 {
+            denom_max_e = if has_pos_denom {
+                denom_max_e.max(ei)
+            } else {
+                ei
+            };
+            has_pos_denom = true;
+        }
         let si = 2.0_f64.powi(-ei);
         let left = (omega[i * width] * s0) * si;
         for j in 1..=i {
@@ -325,6 +341,9 @@ fn one_factor_probability(omega: &[f64], n: usize, width: usize, cv: f64) -> Opt
                 return None;
             }
         }
+    }
+    if !has_pos_denom {
+        return None;
     }
     let sd = 2.0_f64.powi(-denom_max_e);
     let denominator: f64 = (1..n).map(|i| (omega[i * width + i] * sd) * sd).sum();
@@ -501,7 +520,7 @@ fn solve_eta_interval(
             } else {
                 0.0
             };
-            let mut deriv = if s > 0.0 {
+            let mut deriv = if a > 0.0 && s > 0.0 {
                 let d = a_hat + t;
                 s / (d * d)
             } else {
@@ -793,11 +812,13 @@ impl EigenWorkspace {
 
         let q = n - 1;
         if n == 2 {
+            let sym01 = omega[1].midpoint(omega[width]);
+            let neg_diag = omega[width + 1].max(0.0);
             if cv < 0.0 {
+                check_bivariate_psd(pos_diag, sym01, neg_diag)?;
                 return Ok(Some(1.0));
             }
-            let sym01 = omega[1].midpoint(omega[width]);
-            return bivariate_rejection(pos_diag, sym01, omega[width + 1].max(0.0), cv).map(Some);
+            return bivariate_rejection(pos_diag, sym01, neg_diag, cv).map(Some);
         }
 
         // Fast exact-atom checks when cv >= 0 and all entries are strictly valid.
@@ -1294,5 +1315,23 @@ mod tests {
         for (a, b) in ratios.iter().zip(&ref_r) {
             assert!((a - b).abs() < 1e-11, "got={ratios:?} vs ref={ref_r:?}");
         }
+    }
+
+    #[test]
+    fn n2_negative_cv_rejects_non_psd_and_subnormal_one_factor_ignores_zero_diags() {
+        let mut ws2 = EigenWorkspace::new(2);
+        let mut ratios = Vec::new();
+        let mut logs = Vec::new();
+        assert!(ws2
+            .rejection_eigen_ratios(&[1.0, 2.0, 2.0, 1.0], 2, -1.0, &mut ratios, &mut logs)
+            .is_err());
+
+        // Rank-1 subnormal matrix with a zero denominator diagonal alongside a subnormal one.
+        let sub = 1e-312_f64;
+        let p = one_factor_probability(&[sub, 0.0, sub, 0.0, 0.0, 0.0, sub, 0.0, sub], 3, 3, 0.5);
+        assert_eq!(p, Some(1.0));
+        let p_zero =
+            one_factor_probability(&[sub, 0.0, sub, 0.0, 0.0, 0.0, sub, 0.0, sub], 3, 3, 2.0);
+        assert_eq!(p_zero, Some(0.0));
     }
 }

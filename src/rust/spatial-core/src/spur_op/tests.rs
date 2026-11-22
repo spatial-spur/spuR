@@ -999,3 +999,113 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
     assert!((tr[3] - 8.5).abs() < 1e-12);
     assert!(out_cl.matrix.is_some());
 }
+
+#[test]
+fn residual_tests_without_intercept_are_invariant_to_x_beta_shifts() {
+    let n = 40usize;
+    let q = 6usize;
+    let nrep = 120usize;
+    let coords: Vec<f64> = (0..n)
+        .flat_map(|i| [((i * 17) % 41) as f64 / 41.0, ((i * 29) % 43) as f64 / 43.0])
+        .collect();
+    let x_in: Vec<f64> = (0..n).map(|i| 1.5 + (i as f64 * 0.23).sin()).collect();
+    let eps: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).cos() + 0.1 * (i as f64)).collect();
+    let shifted_y: Vec<f64> = eps.iter().zip(&x_in).map(|(&e, &x)| e + 1e6 * x).collect();
+    let emat: Vec<f64> = (0..q * nrep)
+        .map(|k| (((k * 31 + 7) % 97) as f64 - 48.0) / 25.0)
+        .collect();
+
+    let base_i0 = run_spur_i0_resid(&SpurTestRequest {
+        coords: &coords,
+        n,
+        d: 2,
+        metric: Metric::Euclidean,
+        y: &eps,
+        n_y: 1,
+        x_in: Some(&x_in),
+        k_x: 1,
+        emat: &emat,
+        q,
+        nrep,
+        nthreads: Some(1),
+    })
+    .unwrap();
+    let shift_i0 = run_spur_i0_resid(&SpurTestRequest {
+        coords: &coords,
+        n,
+        d: 2,
+        metric: Metric::Euclidean,
+        y: &shifted_y,
+        n_y: 1,
+        x_in: Some(&x_in),
+        k_x: 1,
+        emat: &emat,
+        q,
+        nrep,
+        nthreads: Some(1),
+    })
+    .unwrap();
+    assert!(
+        (base_i0.lr[0] - shift_i0.lr[0]).abs() <= 1e-8 * base_i0.lr[0].abs().max(1.0),
+        "base={}, shift={}",
+        base_i0.lr[0],
+        shift_i0.lr[0]
+    );
+    assert!((base_i0.pvalue[0] - shift_i0.pvalue[0]).abs() < 1e-12);
+
+    let base_i1 = run_spur_i1_resid(&SpurTestRequest {
+        coords: &coords,
+        n,
+        d: 2,
+        metric: Metric::Euclidean,
+        y: &eps,
+        n_y: 1,
+        x_in: Some(&x_in),
+        k_x: 1,
+        emat: &emat,
+        q,
+        nrep,
+        nthreads: Some(1),
+    })
+    .unwrap();
+    let shift_i1 = run_spur_i1_resid(&SpurTestRequest {
+        coords: &coords,
+        n,
+        d: 2,
+        metric: Metric::Euclidean,
+        y: &shifted_y,
+        n_y: 1,
+        x_in: Some(&x_in),
+        k_x: 1,
+        emat: &emat,
+        q,
+        nrep,
+        nthreads: Some(1),
+    })
+    .unwrap();
+    assert!(
+        (base_i1.lr[0] - shift_i1.lr[0]).abs() <= 1e-8 * base_i1.lr[0].abs().max(1.0),
+        "base={}, shift={}",
+        base_i1.lr[0],
+        shift_i1.lr[0]
+    );
+    assert!((base_i1.pvalue[0] - shift_i1.pvalue[0]).abs() < 1e-12);
+
+    // Response strictly inside span(X) must be rejected cleanly.
+    let err = run_spur_i0_resid(&SpurTestRequest {
+        coords: &coords,
+        n,
+        d: 2,
+        metric: Metric::Euclidean,
+        y: &x_in,
+        n_y: 1,
+        x_in: Some(&x_in),
+        k_x: 1,
+        emat: &emat,
+        q,
+        nrep,
+        nthreads: Some(1),
+    })
+    .unwrap_err();
+    assert!(err.message().contains("zero variation"));
+}

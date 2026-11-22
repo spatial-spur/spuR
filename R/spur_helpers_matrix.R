@@ -144,6 +144,47 @@ lvech <- function(S) {
 }
 
 #' @keywords internal
+.validate_spur_residual_y <- function(Y, q_x, name = "Y") {
+  if (is.vector(Y)) {
+    Y <- matrix(Y, ncol = 1L)
+  } else {
+    Y <- as.matrix(Y)
+  }
+  if (!is.numeric(Y) || nrow(Y) < 2L || ncol(Y) < 1L) {
+    stop(sprintf("Invalid response `%s` dimensions.", name))
+  }
+  if (any(!is.finite(Y))) {
+    stop(sprintf("Response `%s` must contain only finite values.", name))
+  }
+
+  n <- nrow(Y)
+  n_y <- ncol(Y)
+  y_res <- matrix(0, nrow = n, ncol = n_y)
+  y_res_norm <- numeric(n_y)
+
+  for (j in seq_len(n_y)) {
+    col <- as.double(Y[, j])
+    raw_max <- max(abs(col))
+    if (max(col) - min(col) == 0 || !is.finite(raw_max) || raw_max == 0) {
+      stop(sprintf("Response `%s` has zero variation; SPUR inference requires non-constant `%s`.", name, name))
+    }
+    col_scaled <- col / raw_max
+    col_norm <- .safe_vec_norm(col_scaled)
+    u <- col_scaled - as.numeric(q_x %*% crossprod(q_x, col_scaled))
+    u <- u - as.numeric(q_x %*% crossprod(q_x, u))
+    u_max <- max(abs(u))
+    u_norm <- .safe_vec_norm(u)
+    if (!is.finite(u_max) || u_max == 0 || !is.finite(u_norm) || u_norm <= 1e-12 * col_norm) {
+      stop(sprintf("Residualized response `%s` has zero variation; SPUR inference requires variation orthogonal to `X_in`.", name))
+    }
+    y_res[, j] <- u / u_max
+    y_res_norm[j] <- u_norm / u_max
+  }
+
+  list(Y_dm = y_res, y_dm_norm = y_res_norm)
+}
+
+#' @keywords internal
 .project_spur_y <- function(y_info, R) {
   p_mat <- crossprod(R, y_info$Y_dm)
   for (j in seq_len(ncol(p_mat))) {

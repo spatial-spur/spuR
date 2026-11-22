@@ -8,6 +8,7 @@ STATLIB = $(LIBDIR)/libspur_rust.a
 
 SPATIAL_RUST ?= 1
 CARGO ?= cargo
+CARGO_BUILD_JOBS ?= 2
 VENDOR_ARCHIVE = $(wildcard rust/vendor.tar.xz)
 VENDOR_DIR = $(wildcard rust/vendor)
 VENDOR_CONFIG = $(wildcard rust/vendor-config.toml)
@@ -41,6 +42,7 @@ else
 endif
 
 all: $(SHLIB)
+	$(if $(VENDOR_ARCHIVE),rm -rf "$(TARGET_DIR)" rust/vendor,)
 
 init.o: .spatial_rust_mode
 
@@ -56,4 +58,4 @@ $(STATLIB):
 	"$(CARGO)" --version && rustc --version
 	$(if $(VENDOR_ARCHIVE),tar -xf "$(VENDOR_ARCHIVE)" -C rust,:)
 	$(if $(VENDOR_CONFIG),mkdir -p "$(TARGET_DIR)" && cp "$(VENDOR_CONFIG)" "$(TARGET_DIR)/vendor-config.toml",:)
-	cd rust && $(CARGO_VENDOR_ENV) CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build -j 2 --release --target $(WIN_TARGET) $(CARGO_VENDOR_FLAGS) --locked
+	cd rust && $(CARGO_VENDOR_ENV) CARGO_TARGET_DIR="$(CURDIR)/$(TARGET_DIR)" "$(CARGO)" build -j "$(CARGO_BUILD_JOBS)" --release --target $(WIN_TARGET) $(CARGO_VENDOR_FLAGS) --locked

@@ -263,6 +263,20 @@ spur <- function(formula,
   design <- stats::model.matrix(levels_model)
   has_intercept <- "(Intercept)" %in% colnames(design)
   x_in <- design
+  if (!has_intercept) {
+    if (ncol(x_in) == 0L) {
+      stop("Intercept-free regression formula for spur() must include at least one regressor.", call. = FALSE)
+    }
+    q_x <- .orthonormal_design_basis(x_in)
+    const_vec <- rep(1, nrow(x_in))
+    const_resid <- const_vec - as.numeric(q_x %*% crossprod(q_x, const_vec))
+    if (sqrt(sum(const_resid^2)) <= 1e-10 * sqrt(nrow(x_in))) {
+      stop(
+        "The intercept-free design spans a constant, so the transformed regression would be rank-deficient. Use an explicit intercept.",
+        call. = FALSE
+      )
+    }
+  }
   resid_dof <- nrow(x_in) - ncol(x_in)
   if (q > resid_dof) {
     stop(sprintf(
@@ -289,9 +303,18 @@ spur <- function(formula,
 
   kinds <- c("i0", "i1", "i0resid", "i1resid")
   tied <- stats::setNames(rep(FALSE, length(kinds)), kinds)
-  reason <- if (identical(backend_resolved, "fallback")) "requested" else "native_unavailable"
+  forked_accelerate <- .is_spur_rust_loaded("wrap__rust_run_spur_pipeline") &&
+    .spur_inherited_accelerate()
+  reason <- if (identical(backend_resolved, "fallback")) {
+    "requested"
+  } else if (forked_accelerate) {
+    "forked_process"
+  } else {
+    "native_unavailable"
+  }
   diagnostics <- NULL
   if (rust_available) {
+    .mark_spur_accelerate_used()
     pipe <- .Call(
       "wrap__rust_run_spur_pipeline",
       .swap_coords_for_rust(coord_info$coords, coord_info$latlong),
@@ -357,9 +380,13 @@ spur <- function(formula,
     stats::setNames(rep(operation_backend, 5L), c(kinds, "transform")),
     levels_scpc = levels_scpc$backend, transformed_scpc = transformed_scpc$backend
   )
-  term_names <- stats::setNames(
-    c("(Intercept)", colnames(regressors)), c("(Intercept)", transformed_names[-1L])
-  )
+  term_names <- if (has_intercept) {
+    stats::setNames(
+      c("(Intercept)", colnames(regressors)), c("(Intercept)", transformed_names[-1L])
+    )
+  } else {
+    stats::setNames(colnames(regressors), transformed_names[-1L])
+  }
   structure(list(
     tests = tests,
     fits = list(

@@ -298,3 +298,89 @@ testthat::test_that("tied eigenspace triggers auto fallback and backend validati
     }
   )
 })
+
+testthat::test_that("intercept-free residual tests, constant-span guard, and fork reason align", {
+  set.seed(303)
+  n <- 42L
+  df <- data.frame(
+    x1 = 1.5 + stats::rnorm(n),
+    g = factor(rep(c("a", "b", "c"), each = 14L)),
+    sx = seq(0, 1, length.out = n),
+    sy = sin(seq_len(n) * 0.4)
+  )
+  df$eps <- sin(seq_len(n) * 0.3) + 0.1 * seq_len(n)
+  df$y <- df$eps
+  df_shifted <- df
+  df_shifted$y <- df$eps + 1e6 * df$x1
+
+  backends <- "fallback"
+  if (is.loaded("wrap__rust_run_spur_i0_resid", PACKAGE = "spuR")) {
+    backends <- c(backends, "rust")
+  }
+  for (backend in backends) {
+    for (fn in list(spurtest_i0resid, spurtest_i1resid)) {
+      r1 <- fn(y ~ 0 + x1, data = df, q = 6L, nrep = 120L, seed = 17L,
+               coords_euclidean = c("sx", "sy"), backend = backend)
+      r2 <- fn(y ~ 0 + x1, data = df_shifted, q = 6L, nrep = 120L, seed = 17L,
+               coords_euclidean = c("sx", "sy"), backend = backend)
+      testthat::expect_equal(r1$teststat, r2$teststat, tolerance = 1e-8)
+      testthat::expect_equal(r1$pvalue, r2$pvalue, tolerance = 1e-12)
+    }
+    pipe <- spur(y ~ 0 + x1, data = df, q = 8L, nrep = 400L, seed = 42L,
+                 coords_euclidean = c("sx", "sy"), avc = 0.05, uncond = TRUE,
+                 backend = backend)
+    direct_i0 <- spurtest_i0resid(y ~ 0 + x1, data = df, q = 8L, nrep = 400L, seed = 42L,
+                                coords_euclidean = c("sx", "sy"), backend = backend)
+    testthat::expect_equal(pipe$tests$i0resid$teststat, direct_i0$teststat, tolerance = 1e-10)
+    testthat::expect_equal(pipe$tests$i0resid$pvalue, direct_i0$pvalue, tolerance = 1e-12)
+    testthat::expect_identical(names(pipe$fits$transformed$term_names), "h_x1")
+    testthat::expect_error(
+      spur(y ~ 0 + g, data = df, q = 8L, nrep = 400L, coords_euclidean = c("sx", "sy"),
+           backend = backend),
+      "spans a constant"
+    )
+  }
+
+  testthat::with_mocked_bindings(
+    .is_spur_rust_loaded = function(sym = "wrap__rust_run_spur_pipeline") TRUE,
+    .spur_inherited_accelerate = function() TRUE,
+    .package = "spuR",
+    {
+      fork_res <- spur(y ~ x1, data = df, q = 8L, nrep = 400L, seed = 42L,
+                       coords_euclidean = c("sx", "sy"), backend = "auto")
+      testthat::expect_identical(fork_res$backend, "fallback")
+      testthat::expect_identical(fork_res$fallback_reasons$diagnostics_and_transform, "forked_process")
+    }
+  )
+
+  if (!identical(.Platform$OS.type, "windows") &&
+      requireNamespace("parallel", quietly = TRUE) &&
+      requireNamespace("scpcR", quietly = TRUE) &&
+      is.loaded("wrap__rust_run_spur_i0", PACKAGE = "spuR") &&
+      is.loaded("wrap__rust_run_model_scpc", PACKAGE = "scpcR") &&
+      identical(.Call("wrap__rust_build_info", PACKAGE = "spuR")$linalg_provider, "accelerate")) {
+    # Warm scpcR Accelerate state in parent before forking; child spuR must detect peer state.
+    fit_parent <- stats::lm(y ~ x1, data = df)
+    scpcR::scpc(fit_parent, df, coords_euclidean = c("sx", "sy"), avc = 0.05,
+                uncond = TRUE, cvs = FALSE, backend = "rust", nthreads = 1L)
+    job <- parallel::mcparallel({
+      list(
+        forced = tryCatch(
+          spurtest_i0(y ~ 1, data = df, q = 6L, nrep = 80L, seed = 11L,
+                      coords_euclidean = c("sx", "sy"), backend = "rust"),
+          error = function(e) conditionMessage(e)
+        ),
+        auto = spur(y ~ x1, data = df, q = 8L, nrep = 400L, seed = 42L,
+                    coords_euclidean = c("sx", "sy"), avc = 0.05,
+                    uncond = TRUE, cvs = FALSE, backend = "auto")
+      )
+    })
+    collected <- parallel::mccollect(job, wait = TRUE, timeout = 30)
+    testthat::expect_false(is.null(collected))
+    child <- collected[[1L]]
+    testthat::expect_match(child$forced, "Accelerate was used before this process forked")
+    testthat::expect_identical(child$auto$backend, "fallback")
+    testthat::expect_identical(child$auto$fallback_reasons$diagnostics_and_transform, "forked_process")
+    testthat::expect_identical(child$auto$fallback_reasons$levels_scpc, "forked_process")
+  }
+})

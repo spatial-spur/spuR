@@ -168,8 +168,8 @@
 
   terms_obj <- stats::terms(formula, data = data)
   x_in <- stats::model.matrix(stats::delete.response(terms_obj), data = mf_use)
-  if (!"(Intercept)" %in% colnames(x_in)) {
-    x_in <- cbind("(Intercept)" = 1, x_in)
+  if (ncol(x_in) == 0L) {
+    stop("Residual test formula must include at least one term (e.g., an intercept or regressor).")
   }
 
   list(Y = as.matrix(y), X_in = as.matrix(x_in), use_rows = use_rows)
@@ -680,6 +680,7 @@ spurhalflife <- function(formula,
   if (!identical(backend_resolved, "fallback") && rust_loaded) {
     e_m <- as.matrix(emat)
     storage.mode(e_m) <- "double"
+    .mark_spur_accelerate_used()
     rust_res <- .Call(
       "wrap__rust_run_spur_halflife",
       .swap_coords_for_rust(coord_info$coords, coord_info$latlong),

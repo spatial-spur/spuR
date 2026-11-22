@@ -124,13 +124,25 @@
   coords_mat
 }
 
+.spur_inherited_accelerate <- function() {
+  own <- is.loaded("wrap__rust_build_info", PACKAGE = "spuR") &&
+    isTRUE(.Call("wrap__rust_build_info", PACKAGE = "spuR")$inherited_accelerate_state)
+  own || isTRUE(scpcR::.scpc_accelerate_state())
+}
+
+.mark_spur_accelerate_used <- function() {
+  if (is.loaded("wrap__rust_build_info", PACKAGE = "spuR") &&
+      identical(.Call("wrap__rust_build_info", PACKAGE = "spuR")$linalg_provider, "accelerate")) {
+    scpcR::.scpc_accelerate_state(mark = TRUE)
+  }
+}
+
 .require_spur_rust_if_requested <- function(backend_resolved, sym = "wrap__rust_run_spur_i0") {
   loaded <- .is_spur_rust_loaded(sym)
   if (identical(backend_resolved, "rust") && !loaded) {
     stop("`backend = \"rust\"` was requested, but the native Rust backend is not loaded in `spuR`.", call. = FALSE)
   }
-  forked <- loaded && .is_spur_forked_child() &&
-    isTRUE(.Call("wrap__rust_build_info", PACKAGE = "spuR")$inherited_accelerate_state)
+  forked <- loaded && .spur_inherited_accelerate()
   if (identical(backend_resolved, "rust") && forked) {
     stop("Accelerate was used before this process forked. Use a fresh process or backend = 'fallback'.",
          call. = FALSE)
@@ -153,6 +165,7 @@
   storage.mode(e_m) <- "double"
   latlong <- isTRUE(latlong)
 
+  .mark_spur_accelerate_used()
   res <- if (is.null(x_in)) {
     if (isTRUE(is_i0)) {
       .Call("wrap__rust_run_spur_i0", coords_rust, latlong, y_m, e_m,
@@ -251,6 +264,7 @@
   storage.mode(y_mat) <- "double"
   sub_n <- nrow(y_mat)
   y_names <- colnames(y_mat)
+  .mark_spur_accelerate_used()
 
   if (identical(transformation, "cluster")) {
     cl_id <- as.integer(droplevels(cluster)) - 1L

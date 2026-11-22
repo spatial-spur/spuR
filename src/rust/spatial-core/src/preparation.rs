@@ -575,9 +575,7 @@ pub fn run_model_scpc(
     let n = prep.n_sites;
     let k = prep.coefficients.len();
     let uncond = prep.design.is_none();
-    if nthreads == Some(0) {
-        return Err(CoreError::invalid_input("thread count must be at least 1"));
-    }
+    crate::threads::validate_nthreads(nthreads)?;
     if d == 0 || coords.len() != checked_len(&[n, d])? {
         return Err(CoreError::invalid_input(
             "invalid SCPC coordinate dimensions",
@@ -801,6 +799,32 @@ mod tests {
                 .unwrap_err()
                 .message()
                 .contains("rank deficient"));
+        }
+    }
+
+    #[test]
+    fn run_model_scpc_validates_nthreads_up_front() {
+        let scores = [0.0_f64; 4];
+        let coords = [0.0_f64, 1.0];
+        let prep = ScpcPreparation {
+            n_sites: 2,
+            n_obs: 2,
+            n_scores: 1,
+            coefficients: &[0.0],
+            bread: &[1.0],
+            scores: &scores,
+            design: None,
+            design_cols: 0,
+            instruments: None,
+            instrument_cols: 0,
+            direction_design: None,
+            cluster_ids: None,
+            fixed_effects: None,
+        };
+        for bad in [Some(0), Some(crate::threads::MAX_THREADS + 1)] {
+            let err = run_model_scpc(prep, &coords, 1, Metric::Euclidean, 0.05, false, bad, None)
+                .unwrap_err();
+            assert!(err.message().contains("between 1 and 1024"), "got: {err:?}");
         }
     }
 }

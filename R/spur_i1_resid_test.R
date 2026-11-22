@@ -12,8 +12,8 @@ spur_i1_resid_test <- function(Y, X_in, distmat, emat) {
   dims <- .validate_core_spur_inputs(distmat, emat, min_q = 2L)
   q <- dims$q
   n <- dims$n
-  y_info <- .validate_spur_y(Y, name = "Y")
-  if (nrow(y_info$Y_dm) != n) {
+  y_mat <- if (is.vector(Y)) matrix(Y, ncol = 1L) else as.matrix(Y)
+  if (nrow(y_mat) != n) {
     stop("`Y` row count must match `distmat`.")
   }
   if (nrow(as.matrix(X_in)) != n) {
@@ -21,6 +21,7 @@ spur_i1_resid_test <- function(Y, X_in, distmat, emat) {
   }
 
   q_x <- .orthonormal_design_basis(X_in)
+  y_info <- .validate_spur_residual_y(y_mat, q_x, name = "Y")
   resid_dof <- n - ncol(q_x)
   if (q > resid_dof) {
     stop(sprintf(
