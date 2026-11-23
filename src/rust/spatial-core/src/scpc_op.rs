@@ -850,6 +850,12 @@ pub fn run_exact_scpc(req: &ExactScpcRequest<'_>) -> Result<ScpcOutput, CoreErro
         let (c0, cmax) = {
             let dist_vec = lower_triangle(&distmat, n);
             let floor = correlation_floor(&dist_vec)?;
+            if req.avc <= floor {
+                let sites = crate::distance::distinct_location_count(&distmat, n);
+                return Err(CoreError::calibration("unattainable SCPC decay").with_message(format!(
+                    "Target correlation avc={} must exceed the co-located-pair fraction {floor:.6} ({sites} distinct locations).", req.avc
+                )));
+            }
             let min_avc_eff = floor + (1.0 - floor) * MIN_AVC;
             let c0 = solve_c0_from_avc(&dist_vec, req.avc)?;
             let cmax = solve_c0_from_avc(&dist_vec, min_avc_eff)?;

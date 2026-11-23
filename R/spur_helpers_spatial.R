@@ -110,6 +110,7 @@ get_distmat_lat_lon <- function(s) {
   }
   max_dist <- max(distmat)
   if (!is.finite(max_dist) || max_dist <= 0) {
+    if (isTRUE(max_dist == 0)) stop("Distance matrix must contain positive finite distances (1 distinct location, co-located-pair fraction 1).")
     stop("Distance matrix must contain positive finite distances.")
   }
   list(normalized = distmat / max_dist, max_dist = max_dist)

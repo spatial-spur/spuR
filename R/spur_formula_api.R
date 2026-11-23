@@ -96,13 +96,13 @@
   if (!is.data.frame(data)) {
     stop("`data` must be a data frame.")
   }
-  if (length(q) != 1L || !is.finite(q) || q < 1 || q != as.integer(q)) {
+  if (!is.numeric(q) || length(q) != 1L || !is.finite(q) || q < 1 || q != trunc(q)) {
     stop("`q` must be a positive integer.")
   }
   if (q < 2L) {
-    stop("`q` must be at least 2 for informative SPUR inference.")
+    stop(sprintf("`q` must be at least 2 for informative SPUR inference (requested q=%g).", q))
   }
-  if (length(nrep) != 1L || !is.finite(nrep) || nrep < 1 || nrep != as.integer(nrep)) {
+  if (!is.numeric(nrep) || length(nrep) != 1L || !is.finite(nrep) || nrep < 1 || nrep != trunc(nrep)) {
     stop("`nrep` must be a positive integer.")
   }
   invisible(NULL)
@@ -219,7 +219,9 @@
 #' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
 #' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
-#'   `cv`, and `full`.
+#'   `cv`, and `full`. The `tied` flag indicates a retained tied block and
+#'   `all_directions` indicates exhausted positive rank. If tuning misses 50%,
+#'   `best_tuning_power` gives the largest estimated power on the independent draws.
 #' @examples
 #' \donttest{
 #' data(spur_example)
@@ -254,13 +256,12 @@ spurtest_i0 <- function(formula,
 
   y <- as.matrix(parsed$values[parsed$use_rows])
   if (q >= nrow(y)) {
-    stop("`q` must be less than the number of observations.")
+    stop(sprintf("`q` must be less than the number of observations (q=%g, n=%d).", q, nrow(y)))
   }
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = 2L * q, nrep = nrep)
 
   reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i0")
-  tied_from_rust <- FALSE
   if (is.null(reason)) {
     rust_attempt <- .try_spur_test_rust(
       coords = coord_info$coords,
@@ -271,7 +272,6 @@ spurtest_i0 <- function(formula,
       nthreads_resolved = nthreads_resolved,
       backend_resolved = backend_resolved
     )
-    tied_from_rust <- isTRUE(rust_attempt$tied)
     if (!is.null(rust_attempt$res)) {
       return(.format_spur_test_from_full(
         rust_attempt$res,
@@ -281,7 +281,7 @@ spurtest_i0 <- function(formula,
         cv = rust_attempt$cv,
         verbose = verbose,
         backend = "rust",
-        tied = tied_from_rust
+        q = q, nrep = nrep
       ))
     }
   }
@@ -296,7 +296,7 @@ spurtest_i0 <- function(formula,
     cv = res$cvalue,
     verbose = verbose,
     backend = "fallback",
-    tied = tied_from_rust
+    q = q, nrep = nrep
   )
 }
 
@@ -316,7 +316,9 @@ spurtest_i0 <- function(formula,
 #' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
 #' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
-#'   `cv`, and `full`.
+#'   `cv`, and `full`. The `tied` flag indicates a retained tied block and
+#'   `all_directions` indicates exhausted positive rank. If tuning misses 50%,
+#'   `best_tuning_power` gives the largest estimated power on the independent draws.
 #' @examples
 #' \donttest{
 #' data(spur_example)
@@ -351,13 +353,12 @@ spurtest_i1 <- function(formula,
 
   y <- as.matrix(parsed$values[parsed$use_rows])
   if (q >= nrow(y)) {
-    stop("`q` must be less than the number of observations.")
+    stop(sprintf("`q` must be less than the number of observations (q=%g, n=%d).", q, nrow(y)))
   }
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = 2L * q, nrep = nrep)
 
   reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i1")
-  tied_from_rust <- FALSE
   if (is.null(reason)) {
     rust_attempt <- .try_spur_test_rust(
       coords = coord_info$coords,
@@ -368,7 +369,6 @@ spurtest_i1 <- function(formula,
       nthreads_resolved = nthreads_resolved,
       backend_resolved = backend_resolved
     )
-    tied_from_rust <- isTRUE(rust_attempt$tied)
     if (!is.null(rust_attempt$res)) {
       return(.format_spur_test_from_full(
         rust_attempt$res,
@@ -378,7 +378,7 @@ spurtest_i1 <- function(formula,
         cv = rust_attempt$cv,
         verbose = verbose,
         backend = "rust",
-        tied = tied_from_rust
+        q = q, nrep = nrep
       ))
     }
   }
@@ -393,7 +393,7 @@ spurtest_i1 <- function(formula,
     cv = res$cv_vec,
     verbose = verbose,
     backend = "fallback",
-    tied = tied_from_rust
+    q = q, nrep = nrep
   )
 }
 
@@ -414,7 +414,9 @@ spurtest_i1 <- function(formula,
 #' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
 #' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
-#'   `cv`, and `full`.
+#'   `cv`, and `full`. The `tied` flag indicates a retained tied block and
+#'   `all_directions` indicates exhausted positive rank. If tuning misses 50%,
+#'   `best_tuning_power` gives the largest estimated power on the independent draws.
 #' @examples
 #' \donttest{
 #' data(spur_example)
@@ -459,7 +461,6 @@ spurtest_i0resid <- function(formula,
   emat <- .draw_emat(q = 2L * q, nrep = nrep)
 
   reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i0_resid")
-  tied_from_rust <- FALSE
   if (is.null(reason)) {
     rust_attempt <- .try_spur_test_rust(
       coords = coord_info$coords,
@@ -471,7 +472,6 @@ spurtest_i0resid <- function(formula,
       nthreads_resolved = nthreads_resolved,
       backend_resolved = backend_resolved
     )
-    tied_from_rust <- isTRUE(rust_attempt$tied)
     if (!is.null(rust_attempt$res)) {
       return(.format_spur_test_from_full(
         rust_attempt$res,
@@ -481,7 +481,7 @@ spurtest_i0resid <- function(formula,
         cv = rust_attempt$cv,
         verbose = verbose,
         backend = "rust",
-        tied = tied_from_rust
+        q = q, nrep = nrep
       ))
     }
   }
@@ -497,7 +497,7 @@ spurtest_i0resid <- function(formula,
     cv = res$cvalue,
     verbose = verbose,
     backend = "fallback",
-    tied = tied_from_rust
+    q = q, nrep = nrep
   )
 }
 
@@ -518,7 +518,9 @@ spurtest_i0resid <- function(formula,
 #' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
 #' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_test"` with `pvalue`, `teststat`, `ha_param`,
-#'   `cv`, and `full`.
+#'   `cv`, and `full`. The `tied` flag indicates a retained tied block and
+#'   `all_directions` indicates exhausted positive rank. If tuning misses 50%,
+#'   `best_tuning_power` gives the largest estimated power on the independent draws.
 #' @examples
 #' \donttest{
 #' data(spur_example)
@@ -563,7 +565,6 @@ spurtest_i1resid <- function(formula,
   emat <- .draw_emat(q = 2L * q, nrep = nrep)
 
   reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_i1_resid")
-  tied_from_rust <- FALSE
   if (is.null(reason)) {
     rust_attempt <- .try_spur_test_rust(
       coords = coord_info$coords,
@@ -575,7 +576,6 @@ spurtest_i1resid <- function(formula,
       nthreads_resolved = nthreads_resolved,
       backend_resolved = backend_resolved
     )
-    tied_from_rust <- isTRUE(rust_attempt$tied)
     if (!is.null(rust_attempt$res)) {
       return(.format_spur_test_from_full(
         rust_attempt$res,
@@ -585,7 +585,7 @@ spurtest_i1resid <- function(formula,
         cv = rust_attempt$cv,
         verbose = verbose,
         backend = "rust",
-        tied = tied_from_rust
+        q = q, nrep = nrep
       ))
     }
   }
@@ -601,7 +601,7 @@ spurtest_i1resid <- function(formula,
     cv = res$cv_vec,
     verbose = verbose,
     backend = "fallback",
-    tied = tied_from_rust
+    q = q, nrep = nrep
   )
 }
 
@@ -611,7 +611,7 @@ spurtest_i1resid <- function(formula,
 #'
 #' @param formula Formula identifying a single variable (`y ~ 1` or `~ y`).
 #' @param data Data frame containing test and coordinate variables.
-#' @param q Number of low-frequency weighted averages (at least 2).
+#' @param q Number of low-frequency weighted averages, from 2 through 100 for half-life quadrature.
 #' @param nrep Number of Monte Carlo draws.
 #' @param level Confidence level in percent.
 #' @param normdist Logical; return CI as fractions of maximum distance.
@@ -623,7 +623,7 @@ spurtest_i1resid <- function(formula,
 #' @param backend Backend selector: `"auto"` (default), `"rust"`, or `"fallback"`.
 #' @param nthreads Optional positive integer thread count for parallel Rust execution.
 #' @return A list of class `"spur_halflife"` with `ci_l`, `ci_u`, `max_dist`,
-#'   `components`, and `full`.
+#'   `components`, `full`, and the basis flags `tied` and `all_directions`.
 #' @details The calculation evaluates both limits and adds short-half-life
 #'   probes based on the smallest positive inter-site distance. It refines
 #'   detected changes in acceptance. Inspect `components` for detected components
@@ -657,6 +657,7 @@ spurhalflife <- function(formula,
   if (q < 2L) {
     stop("`q` must be at least 2 for half-life inference.")
   }
+  if (q > 100L) stop(sprintf("q=%d exceeds the validated half-life quadrature limit of 100.", q))
   if (length(level) != 1L || !is.finite(level)) {
     stop("`level` must be a finite scalar.")
   }
@@ -676,13 +677,12 @@ spurhalflife <- function(formula,
 
   z <- as.matrix(parsed$values[parsed$use_rows])
   if (q >= nrow(z)) {
-    stop("`q` must be less than the number of observations.")
+    stop(sprintf("`q` must be less than the number of observations (q=%g, n=%d).", q, nrow(z)))
   }
   if (!is.null(seed)) set.seed(seed)
   emat <- .draw_emat(q = q, nrep = nrep)
 
   reason <- .spur_rust_fallback_reason(backend_resolved, "wrap__rust_run_spur_halflife")
-  tied_from_rust <- FALSE
   used_rust <- FALSE
   ci <- NULL
   max_dist <- NA_real_
@@ -702,7 +702,6 @@ spurhalflife <- function(formula,
       PACKAGE = "spuR"
     )
     rust_res <- .check_spur_rust_result(rust_res)
-    tied_from_rust <- isTRUE(rust_res$tied)
     used_rust <- TRUE
     ci <- list(
       hl_ci_lower = as.numeric(rust_res$hl_ci_lower),
@@ -711,7 +710,7 @@ spurhalflife <- function(formula,
       hl_grid_ho = as.numeric(rust_res$hl_grid_ho),
       components = rust_res$components,
       backend = "rust",
-      tied = tied_from_rust
+      tied = isTRUE(rust_res$tied), all_directions = isTRUE(rust_res$all_directions)
     )
     max_dist <- as.numeric(rust_res$max_dist)
     if (isTRUE(coord_info$latlong)) {
@@ -723,11 +722,11 @@ spurhalflife <- function(formula,
     distances <- .spur_distance_setup(coord_info$coords, coord_info$latlong)
     ci <- spur_persistence(Z = z, distmat = distances$normalized, emat = emat, level = level / 100)
     ci$backend <- "fallback"
-    ci$tied <- tied_from_rust
     max_dist <- distances$max_dist
     if (isTRUE(coord_info$latlong)) max_dist <- max_dist * .SPUR_EARTH_CIRCUMFERENCE_M
   }
 
+  .warn_spur_inference(q, nrep, level = level, all_directions = ci$all_directions)
   ci_l <- ci$hl_ci_lower
   ci_u <- ci$hl_ci_upper
   components <- ci$components
@@ -761,7 +760,7 @@ spurhalflife <- function(formula,
       components = components,
       full = ci,
       backend = if (used_rust) "rust" else "fallback",
-      tied = tied_from_rust
+      tied = ci$tied, all_directions = ci$all_directions
     ),
     class = "spur_halflife",
     level = level
@@ -793,8 +792,8 @@ spurhalflife <- function(formula,
 #' @return A data frame with transformed variables appended.
 #' @details Nearest-neighbor differencing averages the observations tied at the
 #'   smallest positive distance. It requires at least two distinct locations.
-#'   Isotropic differencing averages neighbors at positive distances up to and
-#'   including the radius. Observations with no such neighbors transform to zero.
+#'   Isotropic differencing averages other observations strictly within the radius,
+#'   including observations at the same site. An isolated observation transforms to zero.
 #'   LBM-GLS centers each transformed column.
 #' @examples
 #' data(spur_example)

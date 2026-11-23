@@ -77,7 +77,8 @@ test_that("geographic ISO includes a pair at the radius", {
       spurtransform(~y, d, lat = "lat", lon = "lon", transformation = "iso",
                     radius = r, backend = backend, nthreads = 1L)$h_y
     }
-    expect_equal(transform(radius), c(-3, 3))
+    expect_equal(transform(radius), c(0, 0))
+    expect_equal(transform(radius * (1 + 1e-12)), c(-3, 3))
     expect_equal(transform(radius * (1 - 1e-12)), c(0, 0))
   }
 })
@@ -210,9 +211,9 @@ test_that("failed fallback power bracketing terminates explicitly", {
       0
     },
     .package = "spuR",
-    expect_equal(get_ha_param_i0(diag(2), diag(2), diag(2), matrix(1, 2, 3)), 30)
+    expect_equal(get_ha_param_i0(diag(2), diag(2), diag(2), matrix(1, 2, 3)), 1)
   )
-  expect_equal(calls, 201L)
+  expect_equal(calls, 2L)
 })
 testthat::test_that("half-life inversion refines disconnected components", {
   grid <- seq(0, 1, by = 0.25)
@@ -221,4 +222,26 @@ testthat::test_that("half-life inversion refines disconnected components", {
   testthat::expect_equal(unname(actual), rbind(c(0, 1/9), c(2/3, 1.5), c(9, Inf)),
                          tolerance = 2e-6)
   testthat::expect_equal(.spur_rank_cutoffs(1:99), c(99, 95, 90))
+})
+
+test_that("half-life rank bounds, complete ties and co-located transformations are reported", {
+  for (backend in review_backends()) {
+    set.seed(207)
+    d <- data.frame(s = runif(25), y = rnorm(25))
+    hl <- function(B) spurhalflife(~y, d, coords_euclidean="s", q=5, nrep=B, seed=1L, backend=backend)
+    expect_warning(out <- hl(18), "necessarily covers")
+    expect_equal(unname(out$components), matrix(c(0, Inf), 1, 2))
+    expect_warning(hl(19), "few spatial contrasts")
+    expect_error(spurhalflife(~y, d, coords_euclidean="s", q=101, backend=backend), "quadrature limit")
+    t <- 2*pi*(0:19)/20
+    polygon <- data.frame(s=cos(t), z=sin(t), y=cos(t)+0.4*sin(2*t))
+    run <- function(q) spurtest_i0(~y, polygon, coords_euclidean=c("s","z"), q=q, nrep=199, seed=31, backend=backend)
+    expect_true(run(14)$tied)
+    expect_error(run(15), "splits a tied eigenspace")
+    d <- data.frame(s=c(0,0,1), y=c(2,4,10))
+    for (radius in c(0.5,1)) expect_equal(spurtransform(~y, d, coords_euclidean="s", transformation="iso", radius=radius, backend=backend)$h_y, c(-2,2,0))
+    d <- data.frame(s=c(0,1e-6,.3,.6,1), y=c(1,-1,0,0,0), x=c(1,-1,2,0,-1))
+    whiten <- function(d) spurtransform(~y+x, d, coords_euclidean="s", backend=backend)[c("h_y","h_x")]
+    expect_equal(whiten(d), whiten(transform(d, y=y+1e9, x=x+1e9)), tolerance=1e-12)
+  }
 })

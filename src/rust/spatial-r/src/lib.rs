@@ -321,33 +321,47 @@ fn build_r_spur_i0_list(out: SpurI0Output, n_y: usize) -> extendr_api::Result<Li
             "pvalue",
             "cvalue",
             "ha_parm",
+            "best_tuning_power",
             "cvalue_mat",
             "pvalue_mat",
             "rho_grid",
             "tied",
+            "all_directions",
         ],
         [
             Robj::from(out.lr),
             Robj::from(out.pvalue),
             Robj::from(out.cvalue),
             Robj::from(out.ha_param),
+            Robj::from(out.best_tuning_power.unwrap_or(f64::NAN)),
             Robj::from(cvalue_mat),
             Robj::from(pvalue_mat),
             Robj::from(out.rho_grid),
             Robj::from(out.tied),
+            Robj::from(out.all_directions),
         ],
     )
 }
 
 fn build_r_spur_i1_list(out: SpurI1Output) -> extendr_api::Result<List> {
     List::from_names_and_values(
-        ["LR", "pvalue", "cv_vec", "ha_parm", "tied"],
+        [
+            "LR",
+            "pvalue",
+            "cv_vec",
+            "ha_parm",
+            "best_tuning_power",
+            "tied",
+            "all_directions",
+        ],
         [
             Robj::from(out.lr),
             Robj::from(out.pvalue),
             Robj::from(out.cvalue),
             Robj::from(out.ha_param),
+            Robj::from(out.best_tuning_power.unwrap_or(f64::NAN)),
             Robj::from(out.tied),
+            Robj::from(out.all_directions),
         ],
     )
 }
@@ -365,6 +379,7 @@ fn build_r_spur_hl_list(out: SpurHalfLifeOutput) -> extendr_api::Result<List> {
             "hl_grid_ho",
             "components",
             "tied",
+            "all_directions",
         ],
         [
             Robj::from(out.ci_lower),
@@ -374,6 +389,7 @@ fn build_r_spur_hl_list(out: SpurHalfLifeOutput) -> extendr_api::Result<List> {
             Robj::from(out.hl_grid_ho),
             Robj::from(components),
             Robj::from(out.tied),
+            Robj::from(out.all_directions),
         ],
     )
 }

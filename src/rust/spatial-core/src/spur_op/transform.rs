@@ -116,7 +116,7 @@ fn neighbor_transform(
                     continue;
                 }
                 let d = distance(i, j)?;
-                if d > 0.0 && d <= radius {
+                if d < radius {
                     neighbors.push(j);
                 }
             }
@@ -220,7 +220,9 @@ pub(super) fn apply_lbmgls(
 
     // Apply V diag(lambda^-1/2) V' to Y without materializing the transform.
     let mut vt_y = vec![0.0_f64; rank * n_y];
-    linalg::multiply(&pairs.vectors, y, &mut vt_y, rank, n, n_y, false);
+    let mut centered = y.to_vec();
+    crate::preparation::within(&mut centered, n_y, &vec![0; n], false)?;
+    linalg::multiply(&pairs.vectors, &centered, &mut vt_y, rank, n, n_y, false);
     let mut v_scaled = vec![0.0_f64; n * rank];
     for (j, &value) in pairs.values[..rank].iter().enumerate() {
         let inv_sqrt = value.sqrt().recip();

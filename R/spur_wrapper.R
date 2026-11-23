@@ -294,7 +294,6 @@ spur <- function(formula,
   emat <- .draw_emat(q = 2L * q, nrep = nrep)
 
   kinds <- c("i0", "i1", "i0resid", "i1resid")
-  tied <- stats::setNames(rep(FALSE, length(kinds)), kinds)
   diagnostics <- NULL
   if (is.null(reason)) {
     .mark_spur_accelerate_used()
@@ -305,7 +304,6 @@ spur <- function(formula,
       nthreads_resolved, PACKAGE = "spuR"
     )
     pipe <- .check_spur_rust_result(pipe)
-    tied[] <- vapply(pipe[kinds], function(test) isTRUE(test$tied), logical(1L))
     diagnostics <- pipe[kinds]
     transformed <- pipe$transformed_vars
   }
@@ -329,6 +327,7 @@ spur <- function(formula,
     diagnostics$i1resid <- .spur_i1(residuals, d, emat)
   }
 
+  .warn_spur_inference(q, nrep, diagnostics)
   operation_backend <- if (is.null(reason)) "rust" else "fallback"
   types <- c("I(0)", "I(1)", "I(0) Residual", "I(1) Residual")
   titles <- c(
@@ -342,7 +341,7 @@ spur <- function(formula,
       res, test_type = types[i], title = titles[i],
       stat_label = if (is_i0) "LFST" else "LFUR",
       cv = if (is_i0) res$cvalue else res$cv_vec,
-      verbose = FALSE, backend = operation_backend, tied = tied[[i]]
+      verbose = FALSE, backend = operation_backend
     )
   }), kinds)
 
@@ -381,7 +380,7 @@ spur <- function(formula,
       diagnostics_and_transform = reason, levels_scpc = levels_scpc$fallback_reason,
       transformed_scpc = transformed_scpc$fallback_reason
     ),
-    tied = any(tied) || isTRUE(levels_scpc$tied) || isTRUE(transformed_scpc$tied)
+    tied = any(vapply(tests, function(t) isTRUE(t$tied), logical(1L))) || isTRUE(levels_scpc$tied) || isTRUE(transformed_scpc$tied)
   ), class = "spur_result")
 }
 

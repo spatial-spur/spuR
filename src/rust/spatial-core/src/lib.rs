@@ -26,9 +26,9 @@ pub use spur_op::{
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const SPEC_VERSION: &str = "0.3.8";
+pub const SPEC_VERSION: &str = "0.3.9";
 pub const SCPC_API_VERSION: usize = 7;
-pub const SPUR_API_VERSION: usize = 5;
+pub const SPUR_API_VERSION: usize = 6;
 
 /// Returns the active linear algebra provider compiled into `spatial-core`.
 pub const fn linalg_provider() -> &'static str {
@@ -58,15 +58,18 @@ pub enum ErrorKind {
 }
 
 /// A numerical input or calculation error, translated by each host adapter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoreError {
     pub kind: ErrorKind,
-    pub message: &'static str,
+    pub message: std::borrow::Cow<'static, str>,
 }
 
 impl CoreError {
     pub const fn new(kind: ErrorKind, message: &'static str) -> Self {
-        Self { kind, message }
+        Self {
+            kind,
+            message: std::borrow::Cow::Borrowed(message),
+        }
     }
 
     pub const fn invalid_input(message: &'static str) -> Self {
@@ -101,8 +104,13 @@ impl CoreError {
         self.kind
     }
 
-    pub const fn message(&self) -> &'static str {
-        self.message
+    pub(crate) fn with_message(mut self, message: String) -> Self {
+        self.message = message.into();
+        self
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 

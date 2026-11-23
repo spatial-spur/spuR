@@ -46,7 +46,7 @@ impl SpurGeometry {
         let max_dist = norm_distmat.iter().copied().fold(0.0_f64, f64::max);
         if !max_dist.is_finite() || max_dist <= 0.0 {
             return Err(CoreError::invalid_input(
-                "all coordinates are identical; normalization requires distinct locations",
+                "all coordinates are identical (1 distinct location, co-located-pair fraction 1); normalization requires distinct locations",
             ));
         }
         for v in &mut norm_distmat {
@@ -63,6 +63,18 @@ impl SpurGeometry {
             cbar_cache: Vec::new(),
             mean_exp_cache: Vec::new(),
         })
+    }
+
+    fn site_summary(&self) -> String {
+        let sites = if self.correlation_floor == 0.0 {
+            self.n
+        } else {
+            crate::distance::distinct_location_count(&self.norm_distmat, self.n)
+        };
+        format!(
+            "{sites} distinct locations, co-located-pair fraction {:.6}.",
+            self.correlation_floor
+        )
     }
 
     fn min_positive_distance(&self) -> f64 {
@@ -428,6 +440,8 @@ pub struct SpurI0Output {
     pub pvalue: Vec<f64>,
     pub cvalue: Vec<f64>,
     pub ha_param: f64,
+    pub best_tuning_power: Option<f64>,
+    pub all_directions: bool,
     pub pvalue_mat: Vec<f64>,
     pub cvalue_mat: Vec<f64>,
     pub rho_grid: Vec<f64>,
@@ -440,6 +454,8 @@ pub struct SpurI1Output {
     pub pvalue: Vec<f64>,
     pub cvalue: Vec<f64>,
     pub ha_param: f64,
+    pub best_tuning_power: Option<f64>,
+    pub all_directions: bool,
     pub tied: bool,
 }
 
@@ -744,6 +760,10 @@ fn factor_omega(om: &[f64], q: usize) -> Result<CovarianceFactor, CoreError> {
 
 // Covariance scale is a nuisance: only trace-normalized shapes are informative.
 fn covariance_shapes_differ(a: &[f64], b: &[f64], q: usize) -> Result<bool, CoreError> {
+    covariance_shape_gap(a, b, q, 1e-12)
+}
+
+fn covariance_shape_gap(a: &[f64], b: &[f64], q: usize, tol: f64) -> Result<bool, CoreError> {
     let ta: f64 = (0..q).map(|i| a[i * q + i]).sum();
     let tb: f64 = (0..q).map(|i| b[i * q + i]).sum();
     if !ta.is_finite() || ta <= 0.0 || !tb.is_finite() || tb <= 0.0 {
@@ -753,7 +773,7 @@ fn covariance_shapes_differ(a: &[f64], b: &[f64], q: usize) -> Result<bool, Core
     }
     Ok(a.iter()
         .zip(b)
-        .any(|(&x, &y)| (x / ta - y / tb).abs() > 1e-12))
+        .any(|(&x, &y)| (x / ta - y / tb).abs() > tol))
 }
 
 fn quantile_type7_inplace(vals: &mut [f64], prob: f64) -> f64 {
@@ -894,7 +914,18 @@ impl<'a> PowQfBase<'a> {
     }
 }
 
-fn select_leading_basis(sigdm: &[f64], n: usize, q: usize) -> Result<(Vec<f64>, bool), CoreError> {
+#[derive(Clone, Copy)]
+struct BasisInfo {
+    tied: bool,
+    all_directions: bool,
+}
+
+fn select_leading_basis(
+    sigdm: &[f64],
+    geom: &SpurGeometry,
+    q: usize,
+) -> Result<(Vec<f64>, BasisInfo), CoreError> {
+    let n = geom.n;
     // The kernel has entries on the scale of a unit sample diameter before
     // projection. Allow for construction roundoff even when its spectrum shrinks.
     let gap_floor = 8.0 * f64::EPSILON * n as f64;
@@ -902,14 +933,23 @@ fn select_leading_basis(sigdm: &[f64], n: usize, q: usize) -> Result<(Vec<f64>, 
     let lead = eigen.values.first().copied().unwrap_or(0.0);
     let tail = eigen.values.get(q - 1).copied().unwrap_or(0.0);
     if !lead.is_finite() || lead <= 0.0 || !tail.is_finite() || tail <= 1e-12 * lead {
-        return Err(CoreError::invalid_input(
-            "SPUR covariance basis has insufficient positive rank for requested q",
-        ));
+        let rank = eigen
+            .values
+            .iter()
+            .take_while(|&&value| value > 1e-12 * lead)
+            .count();
+        return Err(CoreError::invalid_input("insufficient positive rank").with_message(format!(
+            "SPUR covariance basis has insufficient positive rank for requested q={q}. Positive rank is {rank}. {}",
+            geom.site_summary()
+        )));
     }
     if eigen.cutoff_tied {
-        return Err(CoreError::tied(
-            "requested q splits a tied eigenspace; choose q at an eigenvalue gap",
-        ));
+        return Err(
+            CoreError::tied("requested q splits a tied eigenspace").with_message(format!(
+                "Requested q splits a tied eigenspace (q={q}). Choose q at an eigenvalue gap. {}",
+                geom.site_summary()
+            )),
+        );
     }
     let mut r_mat = vec![0.0_f64; n * q];
     for j in 0..q {
@@ -927,7 +967,13 @@ fn select_leading_basis(sigdm: &[f64], n: usize, q: usize) -> Result<(Vec<f64>, 
             r_mat[i * q + j] = src[i] * sign;
         }
     }
-    Ok((r_mat, eigen.tied))
+    Ok((
+        r_mat,
+        BasisInfo {
+            tied: eigen.tied,
+            all_directions: eigen.next_value.is_none_or(|v| v <= 1e-12 * lead),
+        },
+    ))
 }
 
 fn project_scaled_y_cols(
@@ -1092,9 +1138,9 @@ fn validate_emat(
     blocks: usize,
 ) -> Result<(), CoreError> {
     if q < 2 || q >= n {
-        return Err(CoreError::invalid_input(
-            "SPUR inference requires 2 <= q < n; q = 1 has no covariance-shape information",
-        ));
+        return Err(CoreError::invalid_input("invalid SPUR dimension").with_message(format!(
+            "SPUR inference requires 2 <= q < n (requested q={q}, n={n}); q = 1 has no covariance-shape information"
+        )));
     }
     if nrep == 0 || emat.len() != checked_len(&[blocks, q, nrep])? {
         return Err(CoreError::invalid_input(
@@ -1114,7 +1160,7 @@ fn calibrate_ha_i0(
     emat: &[f64],
     q: usize,
     nrep: usize,
-) -> Result<f64, CoreError> {
+) -> Result<(f64, Option<f64>), CoreError> {
     let base = PowQfBase::new(om_ho, emat, q, nrep)?;
     let mix = |g: f64| -> Vec<f64> { om_i0.iter().zip(om_bm).map(|(&a, &b)| a + g * b).collect() };
 
@@ -1133,22 +1179,29 @@ fn calibrate_ha_i0(
             ));
         }
     }
+    if pow == 0.5 {
+        return Ok((g, None));
+    }
     let mut g1 = g;
 
+    let mut best = (g, pow);
     pow = 0.0;
-    gtry = 30.0;
-    let mut best = (g, -1.0_f64);
+    gtry = if it > 1 { 2.0 * g1 } else { 30.0 };
     it = 0;
     while pow < 0.5 {
         g = gtry;
-        pow = base.eval(&mix(g))?;
+        let mixture = mix(g);
+        pow = base.eval(&mixture)?;
         gtry = g * 2.0;
         if pow > best.1 {
             best = (g, pow);
         }
         it += 1;
-        if it >= MAX_HA_BRACKET_STEPS && pow < 0.5 {
-            return Ok(best.0);
+        if pow < 0.5
+            && (it >= MAX_HA_BRACKET_STEPS
+                || !covariance_shape_gap(&mixture, om_bm, q, 8.0 * f64::EPSILON)?)
+        {
+            return Ok((best.0, Some(best.1)));
         }
     }
     let mut g2 = g;
@@ -1167,7 +1220,7 @@ fn calibrate_ha_i0(
             break;
         }
     }
-    Ok(g)
+    Ok((g, None))
 }
 
 fn calibrate_ha_i1(
@@ -1179,7 +1232,7 @@ fn calibrate_ha_i1(
     nrep: usize,
     c_lo: f64,
     c_hi: f64,
-) -> Result<f64, CoreError> {
+) -> Result<(f64, Option<f64>), CoreError> {
     let base = PowQfBase::new(om_ho, emat, q, nrep)?;
     let mut pow = 1.0_f64;
     let mut ctry = c_hi;
@@ -1197,12 +1250,15 @@ fn calibrate_ha_i1(
             ));
         }
     }
+    if pow == 0.5 {
+        return Ok((c, None));
+    }
     let mut c1 = c;
 
+    let mut best = (c, pow);
     pow = 0.0;
-    ctry = c_lo;
+    ctry = if it > 1 { 2.0 * c1 } else { c_lo };
     let min_distance = geom.min_positive_distance();
-    let mut best = (c, -1.0_f64);
     it = 0;
     while pow < 0.5 {
         c = ctry;
@@ -1214,7 +1270,7 @@ fn calibrate_ha_i1(
         }
         it += 1;
         if pow < 0.5 && (it >= MAX_HA_BRACKET_STEPS || (-c * min_distance).exp() == 0.0) {
-            return Ok(best.0);
+            return Ok((best.0, Some(best.1)));
         }
     }
     let mut c2 = c;
@@ -1234,7 +1290,7 @@ fn calibrate_ha_i1(
             break;
         }
     }
-    Ok(c)
+    Ok((c, None))
 }
 
 fn eval_sim_lr_ratio(
@@ -1334,7 +1390,7 @@ fn build_rho_grid(floor: f64) -> Vec<f64> {
 #[allow(clippy::too_many_arguments)]
 fn run_spur_i0_from_basis(
     geom: &mut SpurGeometry,
-    tied: bool,
+    info: BasisInfo,
     mr: &[f64],
     om_bm: &[f64],
     p_mat: &[f64],
@@ -1346,9 +1402,12 @@ fn run_spur_i0_from_basis(
     let (emat, tuning) = emat.split_at(q * nrep);
     let floor = geom.correlation_floor;
     if floor > RHO_GRID_MAX {
-        return Err(CoreError::calibration(
-            "I(0) null requires a co-located-pair fraction at or below 0.03",
-        ));
+        return Err(
+            CoreError::calibration("I(0) null is infeasible").with_message(format!(
+                "I(0) null requires a co-located-pair fraction at or below 0.03. {}",
+                geom.site_summary()
+            )),
+        );
     }
     let c_rho = if RHO_I0_ALT > floor {
         geom.get_cbar(RHO_I0_ALT)?
@@ -1362,7 +1421,7 @@ fn run_spur_i0_from_basis(
         ));
     }
 
-    let ha_param = calibrate_ha_i0(&om_rho, &om_rho, om_bm, tuning, q, nrep)?;
+    let (ha_param, best_tuning_power) = calibrate_ha_i0(&om_rho, &om_rho, om_bm, tuning, q, nrep)?;
     let om_ha: Vec<f64> = om_rho
         .iter()
         .zip(om_bm)
@@ -1434,14 +1493,16 @@ fn run_spur_i0_from_basis(
         pvalue_mat,
         cvalue_mat,
         rho_grid,
-        tied,
+        tied: info.tied,
+        all_directions: info.all_directions,
+        best_tuning_power,
     })
 }
 
 #[allow(clippy::too_many_arguments)]
 fn run_spur_i1_from_basis(
     geom: &mut SpurGeometry,
-    tied: bool,
+    info: BasisInfo,
     mr: &[f64],
     om_ho: &[f64],
     p_mat: &[f64],
@@ -1466,7 +1527,8 @@ fn run_spur_i1_from_basis(
             "SPUR experiment is uninformative: covariance shapes are proportional",
         ));
     }
-    let ha_param = calibrate_ha_i1(geom, om_ho, mr, tuning, q, nrep, c_lo, c_hi)?;
+    let (ha_param, best_tuning_power) =
+        calibrate_ha_i1(geom, om_ho, mr, tuning, q, nrep, c_lo, c_hi)?;
     let om_ha = geom.projected_omega_from_mr(ha_param, mr, q);
 
     let ho_f = factor_omega(om_ho, q)?;
@@ -1492,16 +1554,19 @@ fn run_spur_i1_from_basis(
         pvalue,
         cvalue,
         ha_param,
-        tied,
+        tied: info.tied,
+        all_directions: info.all_directions,
+        best_tuning_power,
     })
 }
 
 fn prepare_lbm_basis(
     sigdm_bm: &[f64],
-    n: usize,
+    geom: &SpurGeometry,
     q: usize,
-) -> Result<(Vec<f64>, bool, Vec<f64>, Vec<f64>), CoreError> {
-    let (basis_r, tied) = select_leading_basis(sigdm_bm, n, q)?;
+) -> Result<(Vec<f64>, BasisInfo, Vec<f64>, Vec<f64>), CoreError> {
+    let n = geom.n;
+    let (basis_r, tied) = select_leading_basis(sigdm_bm, geom, q)?;
     let mut mr = basis_r.clone();
     center_columns(&mut mr, n, q);
     let mut sig_r = vec![0.0_f64; n * q];
@@ -1514,7 +1579,7 @@ fn prepare_lbm_basis(
 
 struct ResidBasis {
     basis_r: Vec<f64>,
-    tied: bool,
+    info: BasisInfo,
     mr: Vec<f64>,
     om_bm: Vec<f64>,
     design: ResidDesign,
@@ -1533,22 +1598,48 @@ fn prepare_resid_design(
 ) -> Result<ResidDesign, CoreError> {
     let qx = orthonormal_design_basis(x_in, n, k_x)?;
     if q > n - k_x {
-        return Err(CoreError::invalid_input(
-            "q cannot exceed residual degrees of freedom (n - rank(X))",
-        ));
+        return Err(
+            CoreError::invalid_input("q exceeds residual dimension").with_message(format!(
+                "q={q} cannot exceed residual degrees of freedom (n - rank(X) = {})",
+                n - k_x
+            )),
+        );
     }
     let unit_constant = vec![(n as f64).sqrt().recip(); n];
     let unit_once = residual_project_matrix(&unit_constant, &qx, n, k_x, 1);
     let mut constant_residual = residual_project_matrix(&unit_once, &qx, n, k_x, 1);
-    // The squared norm bounds the fraction of the all-ones kernel left by projection.
     let norm_sq = constant_residual.iter().map(|v| v * v).sum::<f64>();
-    if norm_sq > f64::EPSILON {
-        return Err(CoreError::invalid_input(
-            "SPUR residual tests require a design that spans a constant",
-        ));
+    // A cancelling linear combination can amplify roundoff even after column scaling.
+    if norm_sq > (8.0 * f64::EPSILON).powi(2) {
+        let mut scaled = x_in.to_vec();
+        for j in 0..k_x {
+            let scale = x_in
+                .chunks_exact(k_x)
+                .map(|row| row[j].abs())
+                .fold(0.0, f64::max);
+            for row in scaled.chunks_exact_mut(k_x) {
+                row[j] /= scale;
+            }
+        }
+        let svd = crate::preparation::thin_svd(&scaled, n, k_x, false)?;
+        let coeff_norm = (0..k_x)
+            .map(|j| {
+                let score: f64 = svd
+                    .u
+                    .chunks_exact(k_x)
+                    .map(|row| row[j] * unit_constant[0])
+                    .sum();
+                (score / svd.s[j]).powi(2)
+            })
+            .sum::<f64>()
+            .sqrt();
+        let bound = 64.0 * f64::EPSILON * (1.0 + svd.s[0] * coeff_norm);
+        if norm_sq.sqrt() > bound {
+            return Err(CoreError::invalid_input(
+                "SPUR residual tests require a design that spans a constant",
+            ));
+        }
     }
-    // Treat projection roundoff as zero. Keep the correction for designs that
-    // only approximately span the constant.
     if norm_sq <= (8.0 * f64::EPSILON).powi(2) {
         constant_residual.clear();
     } else {
@@ -1570,7 +1661,7 @@ fn prepare_resid_basis(
     let n = geom.n;
     let k_x = design.qx.len() / n;
     let sigdm_bm = geom.residual_sigma_bm(&design.qx, k_x);
-    let (basis_r, tied) = select_leading_basis(&sigdm_bm, n, q)?;
+    let (basis_r, tied) = select_leading_basis(&sigdm_bm, geom, q)?;
     let mr = residual_project_matrix(&basis_r, &design.qx, n, k_x, q);
     let mut sig_r = vec![0.0_f64; n * q];
     linalg::multiply(&sigdm_bm, &basis_r, &mut sig_r, n, n, q, false);
@@ -1579,7 +1670,7 @@ fn prepare_resid_basis(
     symmetrize(&mut om_bm, q);
     Ok(ResidBasis {
         basis_r,
-        tied,
+        info: tied,
         mr,
         om_bm,
         design,
@@ -1590,7 +1681,7 @@ pub fn run_spur_i0(req: &SpurTestRequest<'_>) -> Result<SpurI0Output, CoreError>
     validate_emat(req.emat, req.n, req.q, req.nrep, 2)?;
     run_with_threads(req.nthreads, || {
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
-        let (basis_r, tied, mr, om_bm) = prepare_lbm_basis(&geom.sigma_lbm_dm(), req.n, req.q)?;
+        let (basis_r, tied, mr, om_bm) = prepare_lbm_basis(&geom.sigma_lbm_dm(), &geom, req.q)?;
         let p_mat = prepare_y_projections(req.y, req.n, req.n_y, &basis_r, req.q)?;
         run_spur_i0_from_basis(
             &mut geom, tied, &mr, &om_bm, &p_mat, req.n_y, req.emat, req.q, req.nrep,
@@ -1602,7 +1693,7 @@ pub fn run_spur_i1(req: &SpurTestRequest<'_>) -> Result<SpurI1Output, CoreError>
     validate_emat(req.emat, req.n, req.q, req.nrep, 2)?;
     run_with_threads(req.nthreads, || {
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
-        let (basis_r, tied, mr, om_bm) = prepare_lbm_basis(&geom.sigma_lbm_dm(), req.n, req.q)?;
+        let (basis_r, tied, mr, om_bm) = prepare_lbm_basis(&geom.sigma_lbm_dm(), &geom, req.q)?;
         let p_mat = prepare_y_projections(req.y, req.n, req.n_y, &basis_r, req.q)?;
         run_spur_i1_from_basis(
             &mut geom, tied, &mr, &om_bm, &p_mat, req.n_y, req.emat, req.q, req.nrep,
@@ -1629,7 +1720,7 @@ pub fn run_spur_i0_resid(req: &SpurTestRequest<'_>) -> Result<SpurI0Output, Core
         )?;
         run_spur_i0_from_basis(
             &mut geom,
-            resid.tied,
+            resid.info,
             &resid.mr,
             &resid.om_bm,
             &p_mat,
@@ -1660,7 +1751,7 @@ pub fn run_spur_i1_resid(req: &SpurTestRequest<'_>) -> Result<SpurI1Output, Core
         )?;
         run_spur_i1_from_basis(
             &mut geom,
-            resid.tied,
+            resid.info,
             &resid.mr,
             &resid.om_bm,
             &p_mat,
@@ -1692,7 +1783,7 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
         let design = prepare_resid_design(req.x_in, req.n, req.k_x, req.q)?;
         let mut geom = SpurGeometry::from_coords(req.coords, req.n, req.d, req.metric)?;
         let sigdm_lbm = geom.sigma_lbm_dm();
-        let (basis_lbm, tied_lbm, mr_lbm, om_lbm) = prepare_lbm_basis(&sigdm_lbm, req.n, req.q)?;
+        let (basis_lbm, tied_lbm, mr_lbm, om_lbm) = prepare_lbm_basis(&sigdm_lbm, &geom, req.q)?;
         let p_lbm = prepare_y_projections(req.y, req.n, 1, &basis_lbm, req.q)?;
         let i0 = run_spur_i0_from_basis(
             &mut geom, tied_lbm, &mr_lbm, &om_lbm, &p_lbm, 1, req.emat, req.q, req.nrep,
@@ -1708,7 +1799,7 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
             prepare_residual_y_projections(req.y, req.n, 1, &resid.basis_r, &resid.design, req.q)?;
         let i0resid = run_spur_i0_from_basis(
             &mut geom,
-            resid.tied,
+            resid.info,
             &resid.mr,
             &resid.om_bm,
             &p_res,
@@ -1719,7 +1810,7 @@ pub fn run_spur_pipeline(req: &SpurPipelineRequest<'_>) -> Result<SpurPipelineOu
         )?;
         let i1resid = run_spur_i1_from_basis(
             &mut geom,
-            resid.tied,
+            resid.info,
             &resid.mr,
             &resid.om_bm,
             &p_res,

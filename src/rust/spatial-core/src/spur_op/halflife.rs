@@ -35,6 +35,7 @@ pub struct SpurHalfLifeOutput {
     pub pv_mat: Vec<f64>,
     pub hl_grid_ho: Vec<f64>,
     pub tied: bool,
+    pub all_directions: bool,
 }
 
 #[inline(always)]
@@ -351,6 +352,11 @@ pub(super) fn invert_half_life(
 }
 
 pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOutput, CoreError> {
+    if req.q > 100 {
+        return Err(CoreError::invalid_input(
+            "q exceeds the validated half-life quadrature limit of 100",
+        ));
+    }
     validate_emat(req.emat, req.n, req.q, req.nrep, 1)?;
     if !req.level.is_finite() || req.level <= 0.0 || req.level >= 1.0 {
         return Err(CoreError::invalid_input(
@@ -381,7 +387,7 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
         let nrep = req.nrep;
 
         let sigdm_bm = geom.sigma_lbm_dm();
-        let (basis_r, tied) = select_leading_basis(&sigdm_bm, n, q)?;
+        let (basis_r, info) = select_leading_basis(&sigdm_bm, &geom, q)?;
         let mut mr = basis_r.clone();
         center_columns(&mut mr, n, q);
         let p_vec = prepare_y_projections(req.y, n, 1, &basis_r, q)?;
@@ -692,7 +698,8 @@ pub fn run_spur_halflife(req: &SpurHalfLifeRequest<'_>) -> Result<SpurHalfLifeOu
                 .map(|count| (count + 1) as f64 / (nrep + 1) as f64)
                 .collect(),
             hl_grid_ho: grid.into_iter().map(from_compact_half_life).collect(),
-            tied,
+            tied: info.tied,
+            all_directions: info.all_directions,
         })
     })?
 }

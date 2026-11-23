@@ -75,10 +75,11 @@ rank, and a nonzero projected response. Residual tests require
 `q <= n - rank(X)` and a fitted design spanning a constant. For example,
 all indicators of a factor span a constant. The combined `spur()` pipeline
 requires a formula intercept, which R formulas include by default, so both fits have
-a common formula convention. Uninformative covariance shapes and decay
-targets at or below the fraction of co-located pairs produce explicit errors.
-The I(0) calibration grid starts at `0.0001`, so the I(0) tests and `spur()`
-require the co-located share of observation pairs to lie below that value.
+a common formula convention. The packages report when the projected covariance
+shapes are proportional. A finite decay requires a target above the fraction of
+co-located pairs. The limiting decay at that fraction is included explicitly in I(0).
+The I(0) tests and `spur()` support a co-located-pair fraction through 0.03.
+The I(1) and half-life procedures can also use higher fractions when the covariance shapes are informative.
 
 Euclidean absolute half-lives use the original coordinate units. Geographic absolute
 half-lives use metres, and `normdist = TRUE` reports fractions of the sample diameter.
@@ -96,6 +97,8 @@ A spatial transformation can also change IV exclusion and first-stage
 relevance. For a manual IV fit on transformed variables, verify both
 conditions for the transformed moments. Zero same-site instrument–error
 covariances alone are insufficient after mixing observations across sites.
+
+SPUR diagnostics report the best simulated tuning power when the 50% target is out of reach. They identify nominal levels that the requested simulation count cannot attain. A fit using every positive direction or at least 40 components gives a high-frequency sensitivity advisory. Half-life inference flags limited information at 2–5 components and currently supports up to 100 components with its five-node quadrature.
 
 ## Documentation
 

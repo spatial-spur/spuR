@@ -73,7 +73,8 @@ iso_matrix <- function(s, radius, latlong = FALSE) {
     get_distmat_euclidean(s)
   }
 
-  dist_below_b <- distmat > 0 & distmat <= radius
+  dist_below_b <- distmat < radius
+  diag(dist_below_b) <- FALSE
   dist_below_b <- dist_below_b / rowSums(dist_below_b)
 
   iso_mat <- diag(nrow(distmat)) - dist_below_b
@@ -103,6 +104,7 @@ cluster_matrix <- function(cluster) {
   }
   vectors <- eig$vectors[, keep, drop = FALSE]
   inverse_sqrt <- 1 / sqrt(eig$values[keep])
-  transformed <- vectors %*% (crossprod(vectors, variables) * inverse_sqrt)
+  centered <- .demean_spur_clusters(variables, rep.int(1L, nrow(variables)))
+  transformed <- vectors %*% (crossprod(vectors, centered) * inverse_sqrt)
   sweep(transformed, 2L, colMeans(transformed), "-")
 }

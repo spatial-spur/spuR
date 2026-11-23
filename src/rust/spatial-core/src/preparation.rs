@@ -236,14 +236,19 @@ fn equilibrate(a: &mut [f64], cols: usize) -> Vec<f64> {
 }
 
 /// Thin SVD A = U diag(s) V'. U and V' are row-major, with V' omitted when unused.
-struct ThinSvd {
-    u: Vec<f64>,
-    s: Vec<f64>,
+pub(crate) struct ThinSvd {
+    pub(crate) u: Vec<f64>,
+    pub(crate) s: Vec<f64>,
     vt: Vec<f64>,
 }
 
 #[cfg(all(target_vendor = "apple", not(feature = "portable")))]
-fn thin_svd(a: &[f64], rows: usize, cols: usize, want_right: bool) -> Result<ThinSvd, CoreError> {
+pub(crate) fn thin_svd(
+    a: &[f64],
+    rows: usize,
+    cols: usize,
+    want_right: bool,
+) -> Result<ThinSvd, CoreError> {
     #[link(name = "Accelerate", kind = "framework")]
     extern "C" {
         fn dgesvd_(
@@ -317,7 +322,12 @@ fn thin_svd(a: &[f64], rows: usize, cols: usize, want_right: bool) -> Result<Thi
 }
 
 #[cfg(any(not(target_vendor = "apple"), feature = "portable"))]
-fn thin_svd(a: &[f64], rows: usize, cols: usize, want_right: bool) -> Result<ThinSvd, CoreError> {
+pub(crate) fn thin_svd(
+    a: &[f64],
+    rows: usize,
+    cols: usize,
+    want_right: bool,
+) -> Result<ThinSvd, CoreError> {
     use faer::linalg::svd::{svd, svd_scratch, ComputeSvdVectors};
     let rank = rows.min(cols);
     let mut u = vec![0.0; rows * rank];

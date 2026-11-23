@@ -257,6 +257,11 @@ fn landmarks(n: usize, size: usize, samples: usize, seed: u32) -> (Vec<Vec<usize
 /// Lower and upper SCPC decay scales with co-location floor adjustment.
 pub fn decay_limits(distances: &[f64], avc: f64, min_avc: f64) -> Result<[f64; 2], CoreError> {
     let floor = calibration::correlation_floor(distances)?;
+    if avc <= floor {
+        return Err(CoreError::calibration("unattainable sampled SCPC decay").with_message(format!(
+            "Target correlation avc={avc} must exceed the pooled landmark co-located-pair fraction {floor:.6}."
+        )));
+    }
     let c0 = calibration::solve_c0_from_avc(distances, avc)?;
     let cmax = calibration::solve_c0_from_avc(distances, floor + (1.0 - floor) * min_avc)?;
     Ok([c0, cmax])

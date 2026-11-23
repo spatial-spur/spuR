@@ -177,6 +177,14 @@ pub fn distance_matrix(
     Ok(matrix)
 }
 
+pub(crate) fn distinct_location_count(distances: &[f64], n: usize) -> usize {
+    distances
+        .chunks_exact(n)
+        .enumerate()
+        .filter(|(i, row)| !row[..*i].contains(&0.0))
+        .count()
+}
+
 /// Extract strict lower triangle from a symmetric `n x n` matrix.
 pub(crate) fn lower_triangle(distances: &[f64], n: usize) -> Vec<f64> {
     let pairs = n.saturating_mul(n.saturating_sub(1)) / 2;

@@ -115,6 +115,7 @@ pub struct SymmetricEigen {
     pub vectors: Vec<f64>,
     pub tied: bool,
     pub cutoff_tied: bool,
+    pub next_value: Option<f64>,
 }
 
 pub(crate) fn symmetric_eigenpairs(
@@ -147,8 +148,9 @@ fn leading_eigenpairs(
 ) -> Result<SymmetricEigen, CoreError> {
     let steps = (2 * q + 16).max(64);
     if n >= 256 && steps < n / 2 {
-        if let Some(pairs) = partial_eigenvectors(&covariance, n, q, steps, gap_floor)? {
+        if let Some(mut pairs) = partial_eigenvectors(&covariance, n, q, steps, gap_floor)? {
             return Ok(SymmetricEigen {
+                next_value: pairs.values.pop(),
                 values: pairs.values,
                 vectors: pairs.vectors,
                 tied: false,
@@ -160,6 +162,7 @@ fn leading_eigenpairs(
     let tied = has_tied_values(&pairs.values, gap_floor);
     let cutoff_tied = q < n
         && pairs.values[q - 1] - pairs.values[q] <= eigen_gap_tolerance(pairs.values[0], gap_floor);
+    let next_value = pairs.values.get(q).copied();
     pairs.values.truncate(q);
     pairs.vectors.truncate(q * n);
     Ok(SymmetricEigen {
@@ -167,6 +170,7 @@ fn leading_eigenpairs(
         vectors: pairs.vectors,
         tied,
         cutoff_tied,
+        next_value,
     })
 }
 
@@ -671,7 +675,7 @@ fn partial_eigenvectors(
             return Ok(
                 (certified && !has_tied_values(&ritz.values[..=q], gap_floor)).then(|| {
                     Eigenpairs {
-                        values: ritz.values[..q].to_vec(),
+                        values: ritz.values[..=q].to_vec(),
                         vectors: (0..q).flat_map(transpose).collect(),
                     }
                 }),

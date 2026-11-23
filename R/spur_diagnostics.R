@@ -15,14 +15,15 @@
   if (is.null(X_in)) {
     y_info <- .validate_spur_y(Y)
     if (is.null(bm)) bm <- get_sigma_lbm_dm(distmat)
-    basis <- .extract_spur_basis(bm, q, eig)
+    selection <- .extract_spur_basis(bm, q, distmat, eig)
+    basis <- selection$R
     projected <- sweep(basis, 2L, colMeans(basis), "-")
   } else {
     if (NROW(X_in) != n) {
       stop("`X_in` row count must match `distmat`.")
     }
     q_x <- .orthonormal_design_basis(X_in)
-    y_info <- .validate_spur_residual_y(Y, q_x, .spur_constant_residual(q_x))
+    y_info <- .validate_spur_residual_y(Y, q_x, .spur_constant_residual(q_x, X_in))
     resid_dof <- n - ncol(q_x)
     if (q > resid_dof) {
       stop(sprintf(
@@ -34,7 +35,8 @@
     left <- .residualize_spur(-0.5 * distmat, q_x)
     bm <- t(.residualize_spur(t(left), q_x))
     bm <- 0.5 * (bm + t(bm))
-    basis <- .extract_spur_basis(bm, q)
+    selection <- .extract_spur_basis(bm, q, distmat)
+    basis <- selection$R
     projected <- .residualize_spur(basis, q_x)
   }
 
@@ -45,6 +47,7 @@
     response = .project_spur_y(y_info, basis),
     bm = 0.5 * (om_bm + t(om_bm)),
     basis = projected,
+    tied = selection$tied, all_directions = selection$all_directions,
     decay = decay
   )
 }
@@ -80,15 +83,15 @@
   emat <- emat[seq_len(q), , drop = FALSE]
   floor_corr <- mean(lvech(distmat) == 0)
   if (floor_corr > 0.03) {
-    stop("I(0) null requires a co-located-pair fraction at or below 0.03.")
+    stop("I(0) null requires a co-located-pair fraction at or below 0.03. ", .spur_site_summary(distmat))
   }
   reference_rate <- if (floor_corr < 0.001) design$decay(0.001) else Inf
   om_ho <- .spur_projected_covariance(distmat, design$basis, reference_rate)
   if (!.spur_shapes_differ(om_ho, design$bm)) {
     stop("SPUR experiment is uninformative: covariance shapes are proportional.")
   }
-  ha_parm <- get_ha_param_i0(om_ho, om_ho, design$bm, tuning)
-  om_ha <- om_ho + ha_parm * design$bm
+  ha <- .fit_spur_i0(om_ho, om_ho, design$bm, tuning)
+  om_ha <- om_ho + ha$rate * design$bm
   ch_omi_ho <- .spur_precision_factor(t(chol(om_ho)))
   ch_omi_ha <- .spur_precision_factor(t(chol(om_ha)))
   lr <- .spur_lr(design$response, ch_omi_ho, ch_omi_ha, observed = TRUE)
@@ -110,7 +113,8 @@
     LR = lr,
     pvalue = apply(pvalues, 2L, max),
     cvalue = apply(cvalues, 2L, max),
-    ha_parm = ha_parm,
+    ha_parm = ha$rate,
+    best_tuning_power = ha$power, tied = design$tied, all_directions = design$all_directions,
     cvalue_mat = cvalues,
     pvalue_mat = pvalues,
     rho_grid = rho_grid
@@ -141,28 +145,35 @@
     LR = lr,
     pvalue = vapply(lr, function(obs) (1 + sum(lr_ho >= obs)) / (length(lr_ho) + 1), 0.0),
     cv_vec = .spur_rank_cutoffs(lr_ho),
-    ha_parm = ha$rate
+    ha_parm = ha$rate,
+    best_tuning_power = ha$power, tied = design$tied, all_directions = design$all_directions
   )
 }
 
 .fit_spur_i1 <- function(om_ho, emat, covariance, rates, shapes, min_distance) {
   power <- .make_pow_qf_evaluator(om0 = om_ho, e = emat)
 
+  upper <- rates[1L]
+  omega <- shapes[[1L]]
   lower <- rates[3L]
-  pow <- power(shapes[[3L]])
+  low_cov <- shapes[[3L]]
+  pow <- power(low_cov)
   steps <- 1L
   while (pow > 0.5) {
     if (steps >= 200L) stop("SPUR I(1) step-1 bracketing did not converge.")
+    upper <- lower
+    omega <- low_cov
     lower <- lower / 2
-    pow <- power(covariance(lower))
+    low_cov <- covariance(lower)
+    pow <- power(low_cov)
     steps <- steps + 1L
   }
 
-  upper <- rates[1L]
-  omega <- shapes[[1L]]
+  if (pow == 0.5) return(list(rate = lower, covariance = low_cov, power = NA_real_))
+  best <- list(rate = lower, covariance = low_cov, power = pow)
   pow <- power(omega)
   steps <- 1L
-  best <- list(rate = upper, covariance = omega, power = pow)
+  if (pow > best$power) best <- list(rate = upper, covariance = omega, power = pow)
   while (pow < 0.5) {
     if (steps >= 200L || exp(-upper * min_distance) == 0) return(best)
     upper <- 2 * upper
@@ -185,7 +196,7 @@
     }
   }
 
-  list(rate = rate, covariance = omega)
+  list(rate = rate, covariance = omega, power = NA_real_)
 }
 
 .spur_rank_cutoffs <- function(draws) {

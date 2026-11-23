@@ -51,10 +51,18 @@ fn dense_neighbor_reference(req: &SpurTransformRequest<'_>) -> Vec<f64> {
             SpurTransformKind::Iso { radius } => radius,
             _ => unreachable!(),
         };
-        let count = src.iter().filter(|&&d| 0.0 < d && d <= radius).count();
+        let selected = |j: usize, d: f64| match req.kind {
+            SpurTransformKind::Nn => d > 0.0 && d == radius,
+            _ => i != j && d < radius,
+        };
+        let count = src
+            .iter()
+            .enumerate()
+            .filter(|&(j, &d)| selected(j, d))
+            .count();
         if count > 0 {
-            for (cell, &d) in dst.iter_mut().zip(src) {
-                if 0.0 < d && d <= radius {
+            for (j, (cell, &d)) in dst.iter_mut().zip(src).enumerate() {
+                if selected(j, d) {
                     *cell = -1.0 / count as f64;
                 }
             }
@@ -93,7 +101,7 @@ fn streamed_neighbor_transforms_match_dense_reference() {
     };
     for (kind, expected) in [
         (nn, [-4.0, -2.0, 4.0 / 3.0, 2.0, 2.0]),
-        (iso, [-4.0, -2.0, 4.0 / 3.0, 2.0, 0.0]),
+        (iso, [-2.0, 2.0, 0.0, 0.0, 0.0]),
     ] {
         let values = compare(SpurTransformRequest { kind, ..base });
         for (actual, expected) in values.into_iter().zip(expected) {
@@ -157,8 +165,9 @@ fn spur_basis_orientation_uses_the_first_nearly_maximal_entry() {
         let a = -1.0;
         let b = 1.0 + offset;
         let covariance = [a * a, a * b, a * b, b * b];
-        let (basis, tied) = select_leading_basis(&covariance, 2, 1).unwrap();
-        assert!(!tied);
+        let geom = SpurGeometry::from_coords(&[0.0, 1.0], 2, 1, Metric::Euclidean).unwrap();
+        let (basis, info) = select_leading_basis(&covariance, &geom, 1).unwrap();
+        assert!(!info.tied);
         assert_eq!(basis[0].is_sign_positive(), first_is_positive);
         assert_eq!(basis[1].is_sign_negative(), first_is_positive);
     }
@@ -274,7 +283,7 @@ fn resolved_eigenvalue_gap_survives_projection_to_a_small_scale() {
     let geom = SpurGeometry::from_coords(&coords, 12, 1, Metric::Euclidean).unwrap();
     let design = prepare_resid_design(&design, 12, 2, 2).unwrap();
     let basis = prepare_resid_basis(&geom, design, 2).unwrap();
-    assert!(!basis.tied);
+    assert!(!basis.info.tied);
 }
 
 #[test]
@@ -516,7 +525,11 @@ fn spur_halflife_and_lbmgls_invariance_and_colocation() {
         ..req
     })
     .unwrap();
-    assert_eq!(iso, vec![0.0; 10]);
+    let delta = y_mat[0] - y_mat[2];
+    assert_eq!(
+        iso,
+        vec![delta, 0.0, -delta, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    );
 }
 
 #[test]
@@ -828,7 +841,8 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
     // 1. projected_omega_grid parity for n < 256 and n > 256 (serial & parallel)
     let (_, _, coords_200) = load_bench_200_spur();
     let geom_200 = SpurGeometry::from_coords(&coords_200, 200, 2, Metric::Euclidean).unwrap();
-    let (basis_200, _, mr_200, _) = prepare_lbm_basis(&geom_200.sigma_lbm_dm(), 200, 8).unwrap();
+    let (basis_200, _, mr_200, _) =
+        prepare_lbm_basis(&geom_200.sigma_lbm_dm(), &geom_200, 8).unwrap();
     let c_vals = [0.25, 1.5, 8.0, 42.0, 120.0];
     let grid_serial = run_with_threads(Some(1), || {
         geom_200.projected_omega_grid(&c_vals, &mr_200, 8)
@@ -859,7 +873,7 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
         })
         .collect();
     let geom_big = SpurGeometry::from_coords(&coords_big, n_big, 2, Metric::Euclidean).unwrap();
-    let (_, _, mr_big, _) = prepare_lbm_basis(&geom_big.sigma_lbm_dm(), n_big, 6).unwrap();
+    let (_, _, mr_big, _) = prepare_lbm_basis(&geom_big.sigma_lbm_dm(), &geom_big, 6).unwrap();
     let big_serial = run_with_threads(Some(1), || {
         geom_big.projected_omega_grid(&c_vals, &mr_big, 6)
     })
@@ -908,7 +922,7 @@ fn optimized_omega_grid_quantiles_halflife_and_tiny_coords_match_reference() {
         // Reference log-sum-exp evaluation without the packed fast path.
         let g = SpurGeometry::from_coords(coords_hl, n_hl, 2, Metric::Euclidean).unwrap();
         let sigdm_bm = g.sigma_lbm_dm();
-        let (basis_r, _) = select_leading_basis(&sigdm_bm, n_hl, q_hl).unwrap();
+        let (basis_r, _) = select_leading_basis(&sigdm_bm, &g, q_hl).unwrap();
         let mut mr = basis_r.clone();
         center_columns(&mut mr, n_hl, q_hl);
         let p_vec = prepare_y_projections(&y_hl, n_hl, 1, &basis_r, q_hl).unwrap();

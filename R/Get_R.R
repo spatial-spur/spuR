@@ -61,8 +61,11 @@ get_r <- function(sig, qmax) {
   order <- order(eig$values, decreasing = TRUE)
   sorted <- eig$values[order]
   gap_tol <- max(1.6e-11 * sorted[1L], 8 * .Machine$double.eps * nrow(eig$vectors))
+  if (sorted[q] <= 1e-12 * sorted[1L] || sorted[1L] <= 0) {
+    stop(sprintf("SPUR covariance basis has insufficient positive rank for requested q=%d. Positive rank is %d.", q, sum(sorted > 1e-12 * sorted[1L])))
+  }
   if (length(sorted) > q && sorted[q] - sorted[q + 1L] <= gap_tol) {
-    stop("Requested q splits a tied eigenspace. Choose q at an eigenvalue gap.")
+    stop(sprintf("Requested q splits a tied eigenspace (q=%d). Choose q at an eigenvalue gap.", q))
   }
   idx <- order[seq_len(q)]
   values <- eig$values[idx]
@@ -82,6 +85,8 @@ get_r <- function(sig, qmax) {
 
   list(
     R = vectors,
-    DS = values
+    DS = values,
+    tied = any(-diff(values) <= gap_tol),
+    all_directions = q == length(sorted) || sorted[q + 1L] <= 1e-12 * sorted[1L]
   )
 }

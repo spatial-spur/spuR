@@ -115,9 +115,9 @@
     return(FALSE)
   }
   info <- .spur_build_info()
-  isTRUE(info$spur_api_version == 5L &&
+  isTRUE(info$spur_api_version == 6L &&
     length(info$spec_version) == 1L &&
-    utils::compareVersion(info$spec_version, "0.3.8") >= 0L)
+    utils::compareVersion(info$spec_version, "0.3.9") >= 0L)
 }
 
 .check_spur_rust_result <- function(res) {
@@ -153,7 +153,7 @@
   forced <- identical(backend_resolved, "rust")
   if (!.is_spur_rust_loaded(sym)) {
     if (forced) {
-      stop("`backend = \"rust\"` was requested, but a compatible native Rust backend is not loaded in `spuR`. Rebuild with SPUR API 5 and methods spec 0.3.8 or newer.", call. = FALSE)
+      stop("`backend = \"rust\"` was requested, but a compatible native Rust backend is not loaded in `spuR`. Rebuild with SPUR API 6 and methods spec 0.3.9 or newer.", call. = FALSE)
     }
     return("native_unavailable")
   }
@@ -204,31 +204,8 @@
   }
   res <- .check_spur_rust_result(res)
 
-  tied <- isTRUE(res$tied)
-  if (isTRUE(is_i0)) {
-    full <- list(
-      LR = as.numeric(res$LR),
-      pvalue = as.numeric(res$pvalue),
-      cvalue = as.numeric(res$cvalue),
-      ha_parm = as.numeric(res$ha_parm),
-      cvalue_mat = res$cvalue_mat,
-      pvalue_mat = res$pvalue_mat,
-      rho_grid = as.numeric(res$rho_grid),
-      backend = "rust",
-      tied = tied
-    )
-    list(res = full, tied = tied, cv = as.numeric(res$cvalue))
-  } else {
-    full <- list(
-      LR = as.numeric(res$LR),
-      pvalue = as.numeric(res$pvalue),
-      cv_vec = as.numeric(res$cv_vec),
-      ha_parm = as.numeric(res$ha_parm),
-      backend = "rust",
-      tied = tied
-    )
-    list(res = full, tied = tied, cv = as.numeric(res$cv_vec))
-  }
+  list(res = res, cv = if (is_i0) res$cvalue else res$cv_vec)
+
 }
 
 .format_spur_test_from_full <- function(res,
@@ -238,9 +215,9 @@
                                         cv,
                                         verbose,
                                         backend,
-                                        tied) {
+                                        q = NULL, nrep = NULL) {
   res$backend <- backend
-  res$tied <- tied
+  if (!is.null(q)) .warn_spur_inference(q, nrep, stats::setNames(list(res), test_type))
   teststat <- res$LR[1]
   pvalue <- res$pvalue[1]
   ha_param <- res$ha_parm
@@ -261,7 +238,9 @@
       cv = cv,
       full = res,
       backend = backend,
-      tied = tied
+      tied = isTRUE(res$tied),
+      all_directions = isTRUE(res$all_directions),
+      best_tuning_power = res$best_tuning_power
     ),
     class = "spur_test",
     test_type = test_type
@@ -300,4 +279,27 @@
   out_mat <- res$transformed
   colnames(out_mat) <- colnames(y_mat)
   out_mat
+}
+
+.warn_spur_inference <- function(q, nrep, tests = list(), level = NULL, all_directions = FALSE) {
+  notes <- character()
+  all_directions <- all_directions || any(vapply(tests, function(t) isTRUE(t$all_directions), logical(1L)))
+  if (q >= 40L || all_directions) {
+    scope <- if (all_directions) " uses all positive directions and" else ""
+    notes <- sprintf("q=%d%s retains higher spatial frequencies. Results can be sensitive to local noise.", q, scope)
+  }
+  if (is.null(level)) {
+    levels <- c(1, 5, 10)
+    missed <- levels[nrep + 1 < 100 / levels]
+    if (length(missed)) notes <- c(notes, sprintf("With nrep=%d, the minimum p-value is %.4g. Rejection is unattainable at %s.",
+      nrep, 1 / (nrep + 1), paste0(missed, "%", collapse = ", ")))
+    for (name in names(tests)) {
+      power <- tests[[name]]$best_tuning_power
+      if (length(power) && is.finite(power)) notes <- c(notes, sprintf("%s did not reach the 50%% tuning target. The best estimated power was %.1f%%.", name, 100 * power))
+    }
+  } else {
+    if (q <= 5) notes <- c(notes, sprintf("q=%d provides few spatial contrasts for estimating the half-life.", q))
+    if (nrep / (nrep + 1) < level / 100) notes <- c(notes, sprintf("With nrep=%d, the minimum p-value is %.4g. The %g%% confidence set necessarily covers [0, infinity].", nrep, 1 / (nrep + 1), level))
+  }
+  if (length(notes)) warning(paste(notes, collapse = " "), call. = FALSE)
 }

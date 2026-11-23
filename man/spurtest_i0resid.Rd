@@ -43,7 +43,9 @@ spurtest_i0resid(
 }
 \value{
 A list of class \code{"spur_test"} with \code{pvalue}, \code{teststat}, \code{ha_param},
-\code{cv}, and \code{full}.
+\code{cv}, and \code{full}. The \code{tied} flag indicates a retained tied block and
+\code{all_directions} indicates exhausted positive rank. If tuning misses 50%,
+\code{best_tuning_power} gives the largest estimated power on the independent draws.
 }
 \description{
 Formula interface for the SPUR spatial I(0) residual test.

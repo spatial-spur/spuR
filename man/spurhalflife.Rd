@@ -25,7 +25,7 @@ spurhalflife(
 
 \item{data}{Data frame containing test and coordinate variables.}
 
-\item{q}{Number of low-frequency weighted averages (at least 2).}
+\item{q}{Number of low-frequency weighted averages, from 2 through 100 for half-life quadrature.}
 
 \item{nrep}{Number of Monte Carlo draws.}
 
@@ -49,7 +49,7 @@ spurhalflife(
 }
 \value{
 A list of class \code{"spur_halflife"} with \code{ci_l}, \code{ci_u}, \code{max_dist},
-\code{components}, and \code{full}.
+\code{components}, \code{full}, and the basis flags \code{tied} and \code{all_directions}.
 }
 \description{
 Inverts the continuous half-life tests of Mueller and Watson (2024).

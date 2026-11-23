@@ -63,8 +63,8 @@ Formula interface for \code{spurtransform}.
 \details{
 Nearest-neighbor differencing averages the observations tied at the
 smallest positive distance. It requires at least two distinct locations.
-Isotropic differencing averages neighbors at positive distances up to and
-including the radius. Observations with no such neighbors transform to zero.
+Isotropic differencing averages other observations strictly within the radius,
+including observations at the same site. An isolated observation transforms to zero.
 LBM-GLS centers each transformed column.
 }
 \examples{

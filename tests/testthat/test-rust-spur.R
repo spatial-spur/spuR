@@ -304,28 +304,21 @@ testthat::test_that("a stale SPUR native library routes auto to the fallback", {
   sym <- "wrap__rust_run_spur_i0"
   testthat::skip_if_not(is.loaded(sym, PACKAGE = "spuR"))
   testthat::local_mocked_bindings(
-    .spur_build_info = function() list(spur_api_version = 5L, spec_version = "0.3.7"),
+    .spur_build_info = function() list(spur_api_version = 6L, spec_version = "0.3.8"),
     .package = "spuR"
   )
   testthat::expect_identical(.spur_rust_fallback_reason("auto", sym), "native_unavailable")
-  testthat::expect_error(.spur_rust_fallback_reason("rust", sym), "methods spec 0.3.8")
+  testthat::expect_error(.spur_rust_fallback_reason("rust", sym), "methods spec 0.3.9")
 })
 
-testthat::test_that("residual tests preserve inference with a nearly constant nuisance column", {
+testthat::test_that("residual tests distinguish a near-constant column from cancelling regressors", {
   set.seed(123L)
   s <- seq(0, 1, length.out = 60L)
-  d <- data.frame(s = s, x = 1 + 1e-8 * s, y = rnorm(length(s)))
-  shifted <- transform(d, y = y + 1e9 * x)
-  backends <- c("fallback", if (is.loaded("wrap__rust_run_spur_i0_resid", PACKAGE = "spuR")) "rust")
-  for (backend in backends) {
-    test <- function(data) {
-      spurtest_i0resid(y ~ 0 + x, data, coords_euclidean = "s", q = 8L, nrep = 3000L,
-                      seed = 42L, backend = backend, nthreads = 1L)
-    }
-    base <- test(d)
-    with_nuisance <- test(shifted)
-    testthat::expect_equal(with_nuisance$teststat, base$teststat, tolerance = 1e-6)
-    testthat::expect_equal(with_nuisance$pvalue, base$pvalue)
+  d <- data.frame(s = runif(length(s)), trend = s, x = 1+1e-8*s, a = 1+1e6*s, b = -1e6*s, y = rnorm(length(s)))
+  for (backend in c("fallback", if (.is_spur_rust_loaded("wrap__rust_run_spur_i0_resid")) "rust")) {
+    run <- function(form) spurtest_i0resid(form, d, coords_euclidean = "s", q = 8L, nrep = 199L, seed = 42L, backend = backend)
+    testthat::expect_error(run(y ~ 0 + x), "spans a constant")
+    testthat::expect_equal(run(y ~ 0 + a + b)$teststat, run(y ~ trend)$teststat, tolerance = 1e-8)
   }
 })
 

@@ -1,6 +1,6 @@
 Package: spuR
 Title: Spatial Unit Root Tests and Transformations
-Version: 0.1.2.9004
+Version: 0.1.2.9005
 Authors@R: c(
     person("Paul", "Boll", email = "david.boll@warwick.ac.uk",
            role = c("aut", "cre")),

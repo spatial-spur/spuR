@@ -61,7 +61,9 @@ spur_persistence <- function(Z, distmat, emat, level) {
 
   q <- dims$q
   nrep <- dims$nrep
-  basis <- .extract_spur_basis(get_sigma_lbm_dm(distmat), q)
+  if (q > 100L) stop(sprintf("q=%d exceeds the validated half-life quadrature limit of 100.", q))
+  selection <- .extract_spur_basis(get_sigma_lbm_dm(distmat), q, distmat)
+  basis <- selection$R
   projected <- sweep(basis, 2L, colMeans(basis), "-")
   observed <- .project_spur_y(y_info, basis)
   covariance <- function(h) {
@@ -120,6 +122,7 @@ spur_persistence <- function(Z, distmat, emat, level) {
     hl_ci_lower = if (nrow(components)) unname(components[1L, 1L]) else NA_real_,
     hl_ci_upper = if (nrow(components)) unname(components[nrow(components), 2L]) else NA_real_,
     components = components,
+    tied = selection$tied, all_directions = selection$all_directions,
     pv_mat = (1 + counts) / (nrep + 1),
     hl_grid_ho = h_grid
   )

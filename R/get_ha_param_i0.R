@@ -10,6 +10,10 @@
 #' @return A numeric scalar representing the parameter \code{g}.
 #' @keywords internal
 get_ha_param_i0 <- function(om_ho, om_i0, om_bm, e) {
+  .fit_spur_i0(om_ho, om_i0, om_bm, e)$rate
+}
+
+.fit_spur_i0 <- function(om_ho, om_i0, om_bm, e) {
   pow_eval <- .make_pow_qf_evaluator(om0 = om_ho, e = e)
 
   # First phase: find g1 such that power is below 50%
@@ -25,24 +29,30 @@ get_ha_param_i0 <- function(om_ho, om_i0, om_bm, e) {
     pow <- pow_eval(om_i0 + g * om_bm)
     gtry <- g / 2
   }
+  if (pow == 0.5) return(list(rate = g, power = NA_real_))
   g1 <- g
   
   # Second phase: find g2 such that power is above 50%
+  best_g <- g
+  best_power <- pow
+  limit_shape <- om_bm / sum(diag(om_bm))
   pow <- 0
-  gtry <- 30
-  best_g <- gtry
-  best_power <- -1
+  gtry <- if (bracket_steps > 1L) 2 * g1 else 30
   bracket_steps <- 0L
   while (pow < 0.5) {
     bracket_steps <- bracket_steps + 1L
     if (bracket_steps > 200L) {
-      return(best_g)
+      return(list(rate = best_g, power = best_power))
     }
     g <- gtry
-    pow <- pow_eval(om_i0 + g * om_bm)
+    mixture <- om_i0 + g * om_bm
+    pow <- pow_eval(mixture)
     if (pow > best_power) {
       best_power <- pow
       best_g <- g
+    }
+    if (pow < 0.5 && max(abs(mixture / sum(diag(mixture)) - limit_shape)) <= 8 * .Machine$double.eps) {
+      return(list(rate = best_g, power = best_power))
     }
     gtry <- g * 2
   }
@@ -62,5 +72,5 @@ get_ha_param_i0 <- function(om_ho, om_i0, om_bm, e) {
     if (ii > 20) break
   }
   
-  return(g)
+  list(rate = g, power = NA_real_)
 }

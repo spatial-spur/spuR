@@ -96,15 +96,15 @@ lvech <- function(S) {
 }
 
 #' @keywords internal
-.extract_spur_basis <- function(sigdm, q, eig = NULL) {
-  r_out <- if (is.null(eig)) get_r(sigdm, q) else .select_spur_eigenvectors(eig, q)
-  ds <- r_out$DS
-  lead <- ds[1L]
-  tail <- ds[q]
-  if (!is.finite(lead) || lead <= 0 || !is.finite(tail) || tail <= 1e-12 * lead) {
-    stop("SPUR covariance basis has insufficient positive rank for requested `q`.")
-  }
-  r_out$R
+.extract_spur_basis <- function(sigdm, q, distmat, eig = NULL) {
+  r_out <- tryCatch(if (is.null(eig)) get_r(sigdm, q) else .select_spur_eigenvectors(eig, q),
+    error = function(e) stop(conditionMessage(e), " ", .spur_site_summary(distmat), call. = FALSE))
+  r_out
+}
+
+.spur_site_summary <- function(d) {
+  sites <- sum(vapply(seq_len(nrow(d)), function(i) !any(d[i, seq_len(i - 1L)] == 0), logical(1L)))
+  sprintf("%d distinct locations, co-located-pair fraction %.6f.", sites, mean(lvech(d) == 0))
 }
 
 #' @keywords internal
@@ -145,16 +145,21 @@ lvech <- function(S) {
   values - q_x %*% crossprod(q_x, values)
 }
 
-.spur_constant_residual <- function(q_x) {
+.spur_constant_residual <- function(q_x, design) {
   n <- nrow(q_x)
   constant <- rep(1 / sqrt(n), n)
   residual <- .residualize_spur(.residualize_spur(constant, q_x), q_x)
   # Squared norm bounds the fraction of the constant covariance left by projection.
-  norm_sq <- sum(residual^2)
-  if (norm_sq > .Machine$double.eps) {
+  residual_norm <- sqrt(sum(residual^2))
+  eps <- .Machine$double.eps
+  if (residual_norm <= 8 * eps) return(NULL)
+  scaled <- sweep(design, 2L, apply(abs(design), 2L, max), "/")
+  fit <- svd(scaled, nv = 0L)
+  coeff_norm <- sqrt(sum((colSums(fit$u) / (sqrt(n) * fit$d))^2))
+  if (residual_norm > 64 * eps * (1 + fit$d[1L] * coeff_norm)) {
     stop("SPUR residual tests require a design that spans a constant.", call. = FALSE)
   }
-  if (norm_sq <= (8 * .Machine$double.eps)^2) NULL else as.numeric(residual) * sqrt(n)
+  as.numeric(residual) * sqrt(n)
 }
 
 #' @keywords internal
